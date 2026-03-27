@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "zoteropdf2md"
+version = "0.1.0"
+description = "Local Zotero collection PDF to Markdown converter with GUI"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [
+  { name = "NixWrk" }
+]
+dependencies = []
+
+[project.scripts]
+zoteropdf2md-gui = "zoteropdf2md.gui:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]

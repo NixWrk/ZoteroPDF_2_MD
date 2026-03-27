@@ -1,0 +1,22 @@
+﻿__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+*.log
+*.tmp
+*.bak
+.dist/
+build/
+dist/
+
+# Runtime artifacts
+md_output/
+_staging/
