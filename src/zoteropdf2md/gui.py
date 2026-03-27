@@ -4,6 +4,7 @@ import queue
 import threading
 import tkinter as tk
 from pathlib import Path
+from time import perf_counter
 from tkinter import filedialog, messagebox, scrolledtext, ttk
 
 from .history import find_processed_elsewhere
@@ -135,10 +136,23 @@ class ZoteroPdfGui:
         actions.grid(row=row, column=0, columnspan=3, sticky="w", pady=(4, 10))
         tk.Button(actions, text="Run", command=self._run).pack(side="left")
         tk.Button(actions, text="Stop", command=self._stop).pack(side="left", padx=(8, 0))
+        tk.Button(actions, text="Copy selected log", command=self._copy_log_selection).pack(side="left", padx=(14, 0))
+        tk.Button(actions, text="Copy all log", command=self._copy_log_all).pack(side="left", padx=(6, 0))
 
         row += 1
         self.log = scrolledtext.ScrolledText(frame, width=150, height=22)
         self.log.grid(row=row, column=0, columnspan=3, sticky="nsew")
+        self.log.bind("<Control-c>", self._on_log_ctrl_c)
+        self.log.bind("<Control-C>", self._on_log_ctrl_c)
+        self.log.bind("<Control-a>", self._on_log_ctrl_a)
+        self.log.bind("<Control-A>", self._on_log_ctrl_a)
+        self.log.bind("<Button-3>", self._show_log_context_menu)
+
+        self.log_context_menu = tk.Menu(self.root, tearoff=0)
+        self.log_context_menu.add_command(label="Copy selected", command=self._copy_log_selection)
+        self.log_context_menu.add_command(label="Copy all", command=self._copy_log_all)
+        self.log_context_menu.add_separator()
+        self.log_context_menu.add_command(label="Select all", command=self._select_all_log_text)
 
         frame.grid_columnconfigure(0, weight=1)
         frame.grid_rowconfigure(row - 4, weight=1)
@@ -176,6 +190,56 @@ class ZoteroPdfGui:
                 self._log(line)
         self.root.after(100, self._drain_log_queue)
 
+    def _copy_to_clipboard(self, text: str) -> None:
+        self.root.clipboard_clear()
+        self.root.clipboard_append(text)
+        self.root.update_idletasks()
+
+    def _selected_log_text(self) -> str:
+        try:
+            return self.log.get("sel.first", "sel.last")
+        except tk.TclError:
+            return ""
+
+    def _copy_log_selection(self, notify_if_empty: bool = True) -> None:
+        text = self._selected_log_text()
+        if not text:
+            if notify_if_empty:
+                messagebox.showinfo("Copy log", "Select text in the log first.")
+            return
+        self._copy_to_clipboard(text)
+        self._log("Log: selected text copied to clipboard.")
+
+    def _copy_log_all(self) -> None:
+        text = self.log.get("1.0", "end-1c")
+        if not text.strip():
+            messagebox.showinfo("Copy log", "Log is empty.")
+            return
+        self._copy_to_clipboard(text)
+        self._log("Log: all text copied to clipboard.")
+
+    def _select_all_log_text(self) -> None:
+        self.log.focus_set()
+        self.log.tag_add("sel", "1.0", "end-1c")
+        self.log.mark_set("insert", "1.0")
+        self.log.see("insert")
+
+    def _on_log_ctrl_c(self, _event: tk.Event) -> str:
+        self._copy_log_selection(notify_if_empty=False)
+        return "break"
+
+    def _on_log_ctrl_a(self, _event: tk.Event) -> str:
+        self._select_all_log_text()
+        return "break"
+
+    def _show_log_context_menu(self, event: tk.Event) -> str:
+        self.log.focus_set()
+        try:
+            self.log_context_menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            self.log_context_menu.grab_release()
+        return "break"
+
     def _load_collections(self) -> None:
         zotero_data_dir = self.zotero_data_dir.get().strip()
         if not zotero_data_dir:
@@ -207,6 +271,7 @@ class ZoteroPdfGui:
             return
 
     def _scan_pdfs_internal(self, show_errors: bool) -> bool:
+        scan_started_at = perf_counter()
         display = self.collection_display.get().strip()
         collection_key = self.collection_lookup.get(display)
         if not collection_key:
@@ -221,17 +286,21 @@ class ZoteroPdfGui:
             return False
 
         try:
+            discover_started_at = perf_counter()
             discovery = discover_collection_pdfs(
                 zotero_data_dir=self.zotero_data_dir.get().strip(),
                 collection_key=collection_key,
                 include_subcollections=self.include_subcollections.get(),
                 output_dir=output_dir,
+                log=self._log,
             )
+            self._log(f"[timer] gui.scan.discover_collection_pdfs: {perf_counter() - discover_started_at:.2f}s")
         except Exception as exc:
             if show_errors:
                 messagebox.showerror("Error", f"Failed to scan PDFs: {exc}")
             return False
 
+        rebuild_started_at = perf_counter()
         self.pdf_candidates = sorted(
             discovery.candidates,
             key=lambda candidate: (
@@ -240,12 +309,14 @@ class ZoteroPdfGui:
             ),
         )
         self._rebuild_pdf_checkboxes()
+        self._log(f"[timer] gui.scan.rebuild_checkboxes: {perf_counter() - rebuild_started_at:.2f}s")
 
         done_in_output = sum(1 for c in discovery.candidates if c.already_in_output)
         self._log(
             f"PDF scan: resolved={len(discovery.candidates)}, "
             f"already_in_output={done_in_output}, unresolved={discovery.unresolved_total}"
         )
+        self._log(f"[timer] gui.scan.total: {perf_counter() - scan_started_at:.2f}s")
         return True
 
     def _rebuild_pdf_checkboxes(self) -> None:
@@ -398,6 +469,7 @@ class ZoteroPdfGui:
         return result["skip_norms"]
 
     def _run(self) -> None:
+        run_prepare_started_at = perf_counter()
         if self.worker_thread is not None and self.worker_thread.is_alive():
             messagebox.showwarning("Busy", "Conversion is already running.")
             return
@@ -432,13 +504,17 @@ class ZoteroPdfGui:
 
         run_skip_existing = self.skip_existing.get()
         skip_existing_override = False
+        existing_started_at = perf_counter()
         already_in_current_output = detect_existing_results(output_dir_path, selected_pdf_path_objs)
+        self._log(f"[timer] gui.run.detect_existing_in_current_output: {perf_counter() - existing_started_at:.2f}s")
         if already_in_current_output:
             existing_paths = [
                 path for path in selected_pdf_path_objs
                 if normalize_source_path(path) in already_in_current_output
             ]
+            dialog_started_at = perf_counter()
             skip_norms = self._prompt_existing_in_output_selection(existing_paths, output_dir_path)
+            self._log(f"[timer] gui.run.existing_results_dialog: {perf_counter() - dialog_started_at:.2f}s")
             if skip_norms is None:
                 self._log("Run cancelled by user: existing-results prompt.")
                 return
@@ -460,10 +536,12 @@ class ZoteroPdfGui:
             run_skip_existing = False
             skip_existing_override = True
 
+        history_started_at = perf_counter()
         processed_elsewhere = find_processed_elsewhere(
             selected_pdf_path_objs,
             output_dir_path,
         )
+        self._log(f"[timer] gui.run.find_processed_elsewhere: {perf_counter() - history_started_at:.2f}s")
         if processed_elsewhere:
             preview_lines = []
             for idx, record in enumerate(processed_elsewhere.values(), start=1):
@@ -487,6 +565,7 @@ class ZoteroPdfGui:
                 self._log("Run cancelled by user: already-processed-elsewhere warning.")
                 return
 
+        options_started_at = perf_counter()
         options = PipelineOptions(
             zotero_data_dir=self.zotero_data_dir.get().strip(),
             collection_key=collection_key,
@@ -501,6 +580,8 @@ class ZoteroPdfGui:
             selected_source_pdf_paths=[str(path) for path in selected_pdf_path_objs],
             skip_existing_source_pdf_paths=None if not skip_existing_override else [],
         )
+        self._log(f"[timer] gui.run.build_pipeline_options: {perf_counter() - options_started_at:.2f}s")
+        self._log(f"[timer] gui.run.pre_worker_total: {perf_counter() - run_prepare_started_at:.2f}s")
 
         self.stop_event.clear()
         self._log("\n=== run started ===")

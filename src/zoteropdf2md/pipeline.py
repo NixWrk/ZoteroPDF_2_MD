@@ -3,6 +3,7 @@
 import os
 from dataclasses import dataclass
 from pathlib import Path
+from time import perf_counter
 from typing import Callable
 
 from .attachments import resolve_pdf_attachments
@@ -53,6 +54,12 @@ class PdfDiscoveryResult:
     candidates: list[PdfCandidate]
 
 
+def _log_elapsed(log: Callable[[str], None] | None, stage: str, started_at: float) -> None:
+    if log is None:
+        return
+    log(f"[timer] {stage}: {perf_counter() - started_at:.2f}s")
+
+
 def _build_env(options: PipelineOptions) -> dict[str, str]:
     env = os.environ.copy()
     if options.use_cuda:
@@ -72,18 +79,39 @@ def discover_collection_pdfs(
     collection_key: str,
     include_subcollections: bool,
     output_dir: str,
+    log: Callable[[str], None] | None = None,
 ) -> PdfDiscoveryResult:
+    discover_started_at = perf_counter()
+
+    started_at = perf_counter()
     zotero_dir = resolve_zotero_data_dir(zotero_data_dir)
     out_dir = Path(output_dir).expanduser().resolve()
+    _log_elapsed(log, "discover.resolve_paths", started_at)
 
+    started_at = perf_counter()
     repo = ZoteroRepository(zotero_dir)
+    _log_elapsed(log, "discover.open_repository", started_at)
+
+    started_at = perf_counter()
     collection = repo.get_collection_by_key(collection_key)
+    _log_elapsed(log, "discover.get_collection", started_at)
+
+    started_at = perf_counter()
     collection_ids = repo.get_descendant_collection_ids(collection.collection_id, include_subcollections)
+    _log_elapsed(log, "discover.get_descendant_collection_ids", started_at)
 
+    started_at = perf_counter()
     attachment_records = repo.get_attachment_records(collection_ids)
-    resolved, unresolved = resolve_pdf_attachments(zotero_dir, attachment_records)
+    _log_elapsed(log, "discover.get_attachment_records", started_at)
 
+    started_at = perf_counter()
+    resolved, unresolved = resolve_pdf_attachments(zotero_dir, attachment_records)
+    _log_elapsed(log, "discover.resolve_pdf_attachments", started_at)
+
+    started_at = perf_counter()
     existing_in_output = detect_existing_results(out_dir, [r.source_pdf_path for r in resolved])
+    _log_elapsed(log, "discover.detect_existing_results", started_at)
+
     candidates = [
         PdfCandidate(
             resolved_attachment=r,
@@ -91,6 +119,7 @@ def discover_collection_pdfs(
         )
         for r in resolved
     ]
+    _log_elapsed(log, "discover.total", discover_started_at)
 
     return PdfDiscoveryResult(
         collection_name=collection.full_name,
@@ -107,171 +136,206 @@ def run_pipeline(
     log: Callable[[str], None],
     is_cancelled: Callable[[], bool],
 ) -> PipelineSummary:
+    pipeline_started_at = perf_counter()
     output_dir = Path(options.output_dir).expanduser().resolve()
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    discovery = discover_collection_pdfs(
-        zotero_data_dir=options.zotero_data_dir,
-        collection_key=options.collection_key,
-        include_subcollections=options.include_subcollections,
-        output_dir=options.output_dir,
-    )
-
-    log(f"Selected collection: {discovery.collection_name} ({discovery.collection_key})")
-    log(f"Attachment records in scope: {discovery.attachments_total}")
-    log(f"Resolved PDF attachments: {len(discovery.candidates)}")
-    if discovery.unresolved_total:
-        log(f"Skipped/unresolved attachments: {discovery.unresolved_total}")
-
-    resolved = [c.resolved_attachment for c in discovery.candidates]
-    if not resolved:
-        raise RuntimeError("No local PDF attachments found for selected collection.")
-
-    if options.selected_source_pdf_paths:
-        selected_norm = {
-            normalize_source_path(Path(path))
-            for path in options.selected_source_pdf_paths
-        }
-        before = len(resolved)
-        resolved = [
-            item for item in resolved
-            if normalize_source_path(item.source_pdf_path) in selected_norm
-        ]
-        log(f"Selected in GUI: {len(resolved)} of {before}")
-
-    if not resolved:
-        raise RuntimeError("No PDFs selected for processing.")
-
-    skipped_existing = 0
-    existing_in_output = detect_existing_results(output_dir, [r.source_pdf_path for r in resolved])
-    skip_existing_set: set[str] = set()
-    if options.skip_existing_source_pdf_paths is not None:
-        skip_existing_set = {
-            normalize_source_path(Path(path))
-            for path in options.skip_existing_source_pdf_paths
-        }
-        skip_existing_set &= existing_in_output
-    elif options.skip_existing:
-        skip_existing_set = set(existing_in_output)
-
-    if skip_existing_set:
-        before = len(resolved)
-        resolved = [
-            item for item in resolved
-            if normalize_source_path(item.source_pdf_path) not in skip_existing_set
-        ]
-        skipped_existing = before - len(resolved)
-        if skipped_existing:
-            log(f"Already present in output folder, skipped before run: {skipped_existing}")
-
-    if not resolved:
-        filename_map_path = output_dir / FILENAME_MAP_NAME
-        return PipelineSummary(
-            collection_key=discovery.collection_key,
-            collection_name=discovery.collection_name,
-            attachments_total=discovery.attachments_total,
-            pdfs_resolved=len(discovery.candidates),
-            staged_total=0,
-            converted_total=0,
-            skipped_existing=skipped_existing,
-            failed_total=0,
-            output_dir=output_dir,
-            filename_map_path=filename_map_path,
-        )
-
-    if is_cancelled():
-        raise RuntimeError("Cancelled before staging.")
-
-    stage = stage_resolved_pdfs(resolved, output_dir, options.max_base_len)
-    log(
-        "Staging prepared: "
-        f"requested_max={stage.requested_max_base_len}, "
-        f"max_by_output_path={stage.max_base_len_by_output_path}, "
-        f"effective_max={stage.effective_max_base_len}, "
-        f"files={len(stage.staged_files)}"
-    )
-
-    filename_map_path = write_filename_map(output_dir, stage.staged_files)
-    log(f"Filename map: {filename_map_path}")
-
-    env = _build_env(options)
-    if env.get("MODEL_CACHE_DIR"):
-        log(f"MODEL_CACHE_DIR={env['MODEL_CACHE_DIR']}")
-    if env.get("TORCH_DEVICE"):
-        log(f"TORCH_DEVICE={env['TORCH_DEVICE']}")
-
-    converted_total = 0
-
     try:
-        if is_cancelled():
-            raise RuntimeError("Cancelled before conversion.")
+        started_at = perf_counter()
+        output_dir.mkdir(parents=True, exist_ok=True)
+        _log_elapsed(log, "pipeline.prepare_output_dir", started_at)
 
-        # If skip logic was already resolved per-file in GUI, don't pass --skip_existing
-        # to marker, or it will skip files that user explicitly chose to reprocess.
-        batch_skip_existing = options.skip_existing and options.skip_existing_source_pdf_paths is None
-
-        batch_result = runner.run_batch(
-            input_dir=stage.staging_dir,
-            output_dir=output_dir,
-            skip_existing=batch_skip_existing,
-            disable_multiprocessing=options.disable_batch_multiprocessing,
-            env=env,
+        started_at = perf_counter()
+        discovery = discover_collection_pdfs(
+            zotero_data_dir=options.zotero_data_dir,
+            collection_key=options.collection_key,
+            include_subcollections=options.include_subcollections,
+            output_dir=options.output_dir,
             log=log,
         )
-        log(f"marker batch exit_code={batch_result.exit_code}")
+        _log_elapsed(log, "pipeline.discover_collection_pdfs", started_at)
 
-        pending = []
-        for staged_file in stage.staged_files:
-            md_path = expected_output_md_path(output_dir, staged_file.alias_base_name)
-            if md_path.exists():
-                converted_total += 1
-                continue
-            pending.append(staged_file)
+        log(f"Selected collection: {discovery.collection_name} ({discovery.collection_key})")
+        log(f"Attachment records in scope: {discovery.attachments_total}")
+        log(f"Resolved PDF attachments: {len(discovery.candidates)}")
+        if discovery.unresolved_total:
+            log(f"Skipped/unresolved attachments: {discovery.unresolved_total}")
 
-        if pending:
-            log(f"Fallback conversion for missing outputs: {len(pending)}")
+        resolved = [c.resolved_attachment for c in discovery.candidates]
+        if not resolved:
+            raise RuntimeError("No local PDF attachments found for selected collection.")
 
-        for staged_file in pending:
-            if is_cancelled():
-                raise RuntimeError("Cancelled during fallback conversion.")
+        if options.selected_source_pdf_paths:
+            started_at = perf_counter()
+            selected_norm = {
+                normalize_source_path(Path(path))
+                for path in options.selected_source_pdf_paths
+            }
+            before = len(resolved)
+            resolved = [
+                item for item in resolved
+                if normalize_source_path(item.source_pdf_path) in selected_norm
+            ]
+            _log_elapsed(log, "pipeline.apply_gui_selection_filter", started_at)
+            log(f"Selected in GUI: {len(resolved)} of {before}")
 
-            single_result = runner.run_single(
-                pdf_path=staged_file.alias_pdf_path,
+        if not resolved:
+            raise RuntimeError("No PDFs selected for processing.")
+
+        skipped_existing = 0
+        started_at = perf_counter()
+        existing_in_output = detect_existing_results(output_dir, [r.source_pdf_path for r in resolved])
+        _log_elapsed(log, "pipeline.detect_existing_results", started_at)
+
+        skip_existing_set: set[str] = set()
+        if options.skip_existing_source_pdf_paths is not None:
+            skip_existing_set = {
+                normalize_source_path(Path(path))
+                for path in options.skip_existing_source_pdf_paths
+            }
+            skip_existing_set &= existing_in_output
+        elif options.skip_existing:
+            skip_existing_set = set(existing_in_output)
+
+        if skip_existing_set:
+            started_at = perf_counter()
+            before = len(resolved)
+            resolved = [
+                item for item in resolved
+                if normalize_source_path(item.source_pdf_path) not in skip_existing_set
+            ]
+            skipped_existing = before - len(resolved)
+            _log_elapsed(log, "pipeline.apply_skip_existing", started_at)
+            if skipped_existing:
+                log(f"Already present in output folder, skipped before run: {skipped_existing}")
+
+        if not resolved:
+            filename_map_path = output_dir / FILENAME_MAP_NAME
+            return PipelineSummary(
+                collection_key=discovery.collection_key,
+                collection_name=discovery.collection_name,
+                attachments_total=discovery.attachments_total,
+                pdfs_resolved=len(discovery.candidates),
+                staged_total=0,
+                converted_total=0,
+                skipped_existing=skipped_existing,
+                failed_total=0,
                 output_dir=output_dir,
+                filename_map_path=filename_map_path,
+            )
+
+        if is_cancelled():
+            raise RuntimeError("Cancelled before staging.")
+
+        started_at = perf_counter()
+        stage = stage_resolved_pdfs(resolved, output_dir, options.max_base_len)
+        _log_elapsed(log, "pipeline.stage_resolved_pdfs", started_at)
+        log(
+            "Staging prepared: "
+            f"requested_max={stage.requested_max_base_len}, "
+            f"max_by_output_path={stage.max_base_len_by_output_path}, "
+            f"effective_max={stage.effective_max_base_len}, "
+            f"files={len(stage.staged_files)}"
+        )
+
+        started_at = perf_counter()
+        filename_map_path = write_filename_map(output_dir, stage.staged_files)
+        _log_elapsed(log, "pipeline.write_filename_map", started_at)
+        log(f"Filename map: {filename_map_path}")
+
+        started_at = perf_counter()
+        env = _build_env(options)
+        _log_elapsed(log, "pipeline.build_env", started_at)
+        if env.get("MODEL_CACHE_DIR"):
+            log(f"MODEL_CACHE_DIR={env['MODEL_CACHE_DIR']}")
+        if env.get("TORCH_DEVICE"):
+            log(f"TORCH_DEVICE={env['TORCH_DEVICE']}")
+
+        converted_total = 0
+
+        try:
+            if is_cancelled():
+                raise RuntimeError("Cancelled before conversion.")
+
+            # If skip logic was already resolved per-file in GUI, don't pass --skip_existing
+            # to marker, or it will skip files that user explicitly chose to reprocess.
+            batch_skip_existing = options.skip_existing and options.skip_existing_source_pdf_paths is None
+
+            started_at = perf_counter()
+            batch_result = runner.run_batch(
+                input_dir=stage.staging_dir,
+                output_dir=output_dir,
+                skip_existing=batch_skip_existing,
+                disable_multiprocessing=options.disable_batch_multiprocessing,
                 env=env,
                 log=log,
             )
-            md_path = expected_output_md_path(output_dir, staged_file.alias_base_name)
-            if single_result.exit_code == 0 and md_path.exists():
-                converted_total += 1
+            _log_elapsed(log, "pipeline.marker_batch", started_at)
+            log(f"marker batch exit_code={batch_result.exit_code}")
 
-        converted_source_paths: list[Path] = []
-        for staged_file in stage.staged_files:
-            md_path = expected_output_md_path(output_dir, staged_file.alias_base_name)
-            if md_path.exists():
-                converted_source_paths.append(staged_file.source_pdf_path)
+            pending = []
+            for staged_file in stage.staged_files:
+                md_path = expected_output_md_path(output_dir, staged_file.alias_base_name)
+                if md_path.exists():
+                    converted_total += 1
+                    continue
+                pending.append(staged_file)
 
-        if converted_source_paths:
-            history_path = append_history(converted_source_paths, output_dir)
-            log(f"History updated: {history_path}")
+            if pending:
+                log(f"Fallback conversion for missing outputs: {len(pending)}")
 
-        failed_total = len(stage.staged_files) - len(converted_source_paths)
+            fallback_started_at = perf_counter()
+            for staged_file in pending:
+                if is_cancelled():
+                    raise RuntimeError("Cancelled during fallback conversion.")
 
-        return PipelineSummary(
-            collection_key=discovery.collection_key,
-            collection_name=discovery.collection_name,
-            attachments_total=discovery.attachments_total,
-            pdfs_resolved=len(discovery.candidates),
-            staged_total=len(stage.staged_files),
-            converted_total=len(converted_source_paths),
-            skipped_existing=skipped_existing,
-            failed_total=failed_total,
-            output_dir=output_dir,
-            filename_map_path=filename_map_path,
-        )
+                single_started_at = perf_counter()
+                single_result = runner.run_single(
+                    pdf_path=staged_file.alias_pdf_path,
+                    output_dir=output_dir,
+                    env=env,
+                    log=log,
+                )
+                _log_elapsed(log, f"pipeline.marker_single.{staged_file.alias_pdf_path.name}", single_started_at)
+                md_path = expected_output_md_path(output_dir, staged_file.alias_base_name)
+                if single_result.exit_code == 0 and md_path.exists():
+                    converted_total += 1
+            if pending:
+                _log_elapsed(log, "pipeline.fallback_total", fallback_started_at)
+
+            started_at = perf_counter()
+            converted_source_paths: list[Path] = []
+            for staged_file in stage.staged_files:
+                md_path = expected_output_md_path(output_dir, staged_file.alias_base_name)
+                if md_path.exists():
+                    converted_source_paths.append(staged_file.source_pdf_path)
+            _log_elapsed(log, "pipeline.collect_converted_results", started_at)
+
+            if converted_source_paths:
+                started_at = perf_counter()
+                history_path = append_history(converted_source_paths, output_dir)
+                _log_elapsed(log, "pipeline.append_history", started_at)
+                log(f"History updated: {history_path}")
+
+            failed_total = len(stage.staged_files) - len(converted_source_paths)
+
+            return PipelineSummary(
+                collection_key=discovery.collection_key,
+                collection_name=discovery.collection_name,
+                attachments_total=discovery.attachments_total,
+                pdfs_resolved=len(discovery.candidates),
+                staged_total=len(stage.staged_files),
+                converted_total=len(converted_source_paths),
+                skipped_existing=skipped_existing,
+                failed_total=failed_total,
+                output_dir=output_dir,
+                filename_map_path=filename_map_path,
+            )
+        finally:
+            cleanup_started_at = perf_counter()
+            if options.cleanup_staging:
+                cleanup_staging_dir(stage.staging_dir)
+                log("Staging folder cleaned up.")
+            else:
+                log(f"Staging folder kept: {stage.staging_dir}")
+            _log_elapsed(log, "pipeline.cleanup_staging", cleanup_started_at)
     finally:
-        if options.cleanup_staging:
-            cleanup_staging_dir(stage.staging_dir)
-            log("Staging folder cleaned up.")
-        else:
-            log(f"Staging folder kept: {stage.staging_dir}")
+        _log_elapsed(log, "pipeline.total", pipeline_started_at)
