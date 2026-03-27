@@ -232,7 +232,13 @@ class ZoteroPdfGui:
                 messagebox.showerror("Error", f"Failed to scan PDFs: {exc}")
             return False
 
-        self.pdf_candidates = discovery.candidates
+        self.pdf_candidates = sorted(
+            discovery.candidates,
+            key=lambda candidate: (
+                candidate.resolved_attachment.source_pdf_path.name.lower(),
+                str(candidate.resolved_attachment.source_pdf_path).lower(),
+            ),
+        )
         self._rebuild_pdf_checkboxes()
 
         done_in_output = sum(1 for c in discovery.candidates if c.already_in_output)

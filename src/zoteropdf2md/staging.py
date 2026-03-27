@@ -139,11 +139,14 @@ def write_filename_map(output_dir: Path, staged_files: list[StagedFile]) -> Path
             reader = csv.DictReader(fh)
             for row in reader:
                 source_path = (row.get("source_pdf_path") or "").strip()
+                alias_pdf_path = (row.get("alias_pdf_path") or "").strip()
                 if not source_path:
                     continue
-                merged_rows[os.path.normcase(source_path)] = {
+                alias_base = Path(alias_pdf_path).stem.lower()
+                key = f"{os.path.normcase(source_path)}||{alias_base}"
+                merged_rows[key] = {
                     "source_pdf_path": source_path,
-                    "alias_pdf_path": (row.get("alias_pdf_path") or "").strip(),
+                    "alias_pdf_path": alias_pdf_path,
                     "source_base_len": (row.get("source_base_len") or "").strip(),
                     "alias_base_len": (row.get("alias_base_len") or "").strip(),
                     "was_shortened": (row.get("was_shortened") or "").strip(),
@@ -152,7 +155,9 @@ def write_filename_map(output_dir: Path, staged_files: list[StagedFile]) -> Path
 
     for staged in staged_files:
         source_path = str(staged.source_pdf_path)
-        merged_rows[os.path.normcase(source_path)] = {
+        alias_base = staged.alias_base_name.lower()
+        key = f"{os.path.normcase(source_path)}||{alias_base}"
+        merged_rows[key] = {
             "source_pdf_path": source_path,
             "alias_pdf_path": str(staged.alias_pdf_path),
             "source_base_len": staged.source_base_len,
