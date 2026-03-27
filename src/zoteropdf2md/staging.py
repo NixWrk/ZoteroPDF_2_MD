@@ -133,20 +133,40 @@ def write_filename_map(output_dir: Path, staged_files: list[StagedFile]) -> Path
         "materialization",
     ]
 
+    merged_rows: dict[str, dict[str, str | int]] = {}
+    if map_path.is_file():
+        with map_path.open("r", encoding="utf-8", newline="") as fh:
+            reader = csv.DictReader(fh)
+            for row in reader:
+                source_path = (row.get("source_pdf_path") or "").strip()
+                if not source_path:
+                    continue
+                merged_rows[os.path.normcase(source_path)] = {
+                    "source_pdf_path": source_path,
+                    "alias_pdf_path": (row.get("alias_pdf_path") or "").strip(),
+                    "source_base_len": (row.get("source_base_len") or "").strip(),
+                    "alias_base_len": (row.get("alias_base_len") or "").strip(),
+                    "was_shortened": (row.get("was_shortened") or "").strip(),
+                    "materialization": (row.get("materialization") or "").strip(),
+                }
+
+    for staged in staged_files:
+        source_path = str(staged.source_pdf_path)
+        merged_rows[os.path.normcase(source_path)] = {
+            "source_pdf_path": source_path,
+            "alias_pdf_path": str(staged.alias_pdf_path),
+            "source_base_len": staged.source_base_len,
+            "alias_base_len": staged.alias_base_len,
+            "was_shortened": "yes" if staged.was_shortened else "no",
+            "materialization": staged.materialization,
+        }
+
+    ordered_rows = sorted(merged_rows.values(), key=lambda row: str(row["source_pdf_path"]).lower())
+
     with map_path.open("w", encoding="utf-8", newline="") as fh:
         writer = csv.DictWriter(fh, fieldnames=fieldnames)
         writer.writeheader()
-        for staged in staged_files:
-            writer.writerow(
-                {
-                    "source_pdf_path": str(staged.source_pdf_path),
-                    "alias_pdf_path": str(staged.alias_pdf_path),
-                    "source_base_len": staged.source_base_len,
-                    "alias_base_len": staged.alias_base_len,
-                    "was_shortened": "yes" if staged.was_shortened else "no",
-                    "materialization": staged.materialization,
-                }
-            )
+        writer.writerows(ordered_rows)
 
     return map_path
 

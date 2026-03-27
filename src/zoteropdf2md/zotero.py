@@ -1,6 +1,9 @@
 ﻿from __future__ import annotations
 
+import contextlib
+import shutil
 import sqlite3
+import tempfile
 from pathlib import Path
 from typing import Iterable
 
@@ -14,20 +17,62 @@ class ZoteroRepository:
         if not self.db_path.is_file():
             raise FileNotFoundError(f"zotero.sqlite not found: {self.db_path}")
 
-    def _connect(self) -> sqlite3.Connection:
+    def _connect_primary(self) -> sqlite3.Connection:
         uri = f"file:{self.db_path.as_posix()}?mode=ro"
-        conn = sqlite3.connect(uri, uri=True)
+        conn = sqlite3.connect(uri, uri=True, timeout=1.5)
         conn.row_factory = sqlite3.Row
         return conn
 
+    def _connect_snapshot(self) -> tuple[sqlite3.Connection, Path]:
+        snapshot_dir = Path(tempfile.mkdtemp(prefix="zotero_sqlite_snapshot_"))
+        snapshot_db_path = snapshot_dir / "zotero.sqlite"
+
+        shutil.copy2(self.db_path, snapshot_db_path)
+        for suffix in ("-wal", "-shm"):
+            sidecar = Path(str(self.db_path) + suffix)
+            if sidecar.exists():
+                with contextlib.suppress(Exception):
+                    shutil.copy2(sidecar, snapshot_dir / f"zotero.sqlite{suffix}")
+
+        uri = f"file:{snapshot_db_path.as_posix()}?mode=ro"
+        conn = sqlite3.connect(uri, uri=True, timeout=1.5)
+        conn.row_factory = sqlite3.Row
+        return conn, snapshot_dir
+
+    @staticmethod
+    def _is_lock_error(exc: Exception) -> bool:
+        msg = str(exc).lower()
+        return (
+            "database is locked" in msg
+            or "database table is locked" in msg
+            or "database is busy" in msg
+        )
+
+    def _fetchall(self, query: str, params: tuple | None = None) -> list[sqlite3.Row]:
+        params = tuple() if params is None else params
+
+        try:
+            with self._connect_primary() as conn:
+                return conn.execute(query, params).fetchall()
+        except sqlite3.OperationalError as exc:
+            if not self._is_lock_error(exc):
+                raise
+
+        conn, snapshot_dir = self._connect_snapshot()
+        try:
+            return conn.execute(query, params).fetchall()
+        finally:
+            conn.close()
+            with contextlib.suppress(Exception):
+                shutil.rmtree(snapshot_dir, ignore_errors=True)
+
     def get_collections(self) -> list[Collection]:
-        with self._connect() as conn:
-            rows = conn.execute(
-                """
-                SELECT collectionID, key, collectionName, parentCollectionID
-                FROM collections
-                """
-            ).fetchall()
+        rows = self._fetchall(
+            """
+            SELECT collectionID, key, collectionName, parentCollectionID
+            FROM collections
+            """
+        )
 
         raw = {
             int(r["collectionID"]): {
@@ -88,23 +133,22 @@ class ZoteroRepository:
         if not include_subcollections:
             return [root_collection_id]
 
-        with self._connect() as conn:
-            rows = conn.execute(
-                """
-                WITH RECURSIVE sub(collectionID) AS (
-                    SELECT collectionID
-                    FROM collections
-                    WHERE collectionID = ?
-                    UNION ALL
-                    SELECT c.collectionID
-                    FROM collections c
-                    JOIN sub s ON c.parentCollectionID = s.collectionID
-                )
+        rows = self._fetchall(
+            """
+            WITH RECURSIVE sub(collectionID) AS (
                 SELECT collectionID
-                FROM sub
-                """,
-                (root_collection_id,),
-            ).fetchall()
+                FROM collections
+                WHERE collectionID = ?
+                UNION ALL
+                SELECT c.collectionID
+                FROM collections c
+                JOIN sub s ON c.parentCollectionID = s.collectionID
+            )
+            SELECT collectionID
+            FROM sub
+            """,
+            (root_collection_id,),
+        )
         return [int(r["collectionID"]) for r in rows]
 
     def get_attachment_records(self, collection_ids: Iterable[int]) -> list[AttachmentRecord]:
@@ -139,8 +183,7 @@ class ZoteroRepository:
               AND di.itemID IS NULL
         """
 
-        with self._connect() as conn:
-            rows = conn.execute(query, tuple(collection_ids)).fetchall()
+        rows = self._fetchall(query, tuple(collection_ids))
 
         records = [
             AttachmentRecord(
