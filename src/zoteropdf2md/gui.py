@@ -8,7 +8,7 @@ from tkinter import filedialog, messagebox, scrolledtext, ttk
 
 from .history import find_processed_elsewhere
 from .marker_runner import MarkerRunner
-from .output_state import normalize_source_path
+from .output_state import detect_existing_results, normalize_source_path
 from .paths import detect_default_zotero_data_dir
 from .pipeline import PdfCandidate, PipelineOptions, discover_collection_pdfs, run_pipeline
 from .staging import DEFAULT_MAX_BASE_LEN, MIN_BASE_LEN
@@ -290,6 +290,113 @@ class ZoteroPdfGui:
                 selected.append(str(source_pdf_path))
         return selected
 
+    def _prompt_existing_in_output_selection(self, existing_paths: list[Path], output_dir_path: Path) -> set[str] | None:
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Files already in output folder")
+        dialog.geometry("1080x640")
+        dialog.transient(self.root)
+        dialog.grab_set()
+
+        result: dict[str, set[str] | None] = {"skip_norms": None}
+
+        header = tk.Label(
+            dialog,
+            text=(
+                f"Found {len(existing_paths)} selected PDFs with existing results in:\n"
+                f"{output_dir_path}\n\n"
+                "Select files with checkboxes, then choose action:\n"
+                "1) Skip selected (others will be reprocessed)\n"
+                "2) Reprocess selected (others will be skipped)"
+            ),
+            justify="left",
+            anchor="w",
+        )
+        header.pack(fill="x", padx=10, pady=(10, 6))
+
+        controls = tk.Frame(dialog)
+        controls.pack(fill="x", padx=10, pady=(0, 6))
+        selected_count_var = tk.StringVar(value="")
+
+        canvas_holder = tk.Frame(dialog, bd=1, relief="sunken")
+        canvas_holder.pack(fill="both", expand=True, padx=10, pady=(0, 8))
+        canvas = tk.Canvas(canvas_holder)
+        canvas.pack(side="left", fill="both", expand=True)
+        scrollbar = tk.Scrollbar(canvas_holder, orient="vertical", command=canvas.yview)
+        scrollbar.pack(side="right", fill="y")
+        canvas.configure(yscrollcommand=scrollbar.set)
+
+        list_frame = tk.Frame(canvas)
+        list_window = canvas.create_window((0, 0), window=list_frame, anchor="nw")
+        list_frame.bind(
+            "<Configure>",
+            lambda _: canvas.configure(scrollregion=canvas.bbox("all")),
+        )
+        canvas.bind(
+            "<Configure>",
+            lambda event: canvas.itemconfigure(list_window, width=event.width),
+        )
+
+        path_vars: dict[str, tk.BooleanVar] = {}
+        ordered_paths = sorted(existing_paths, key=lambda p: (p.name.lower(), str(p).lower()))
+
+        def update_selected_count() -> None:
+            selected_count = sum(1 for v in path_vars.values() if v.get())
+            selected_count_var.set(f"Selected: {selected_count} / {len(path_vars)}")
+
+        for idx, path in enumerate(ordered_paths, start=1):
+            norm = normalize_source_path(path)
+            var = tk.BooleanVar(value=True)
+            path_vars[norm] = var
+            chk = tk.Checkbutton(
+                list_frame,
+                text=f"{idx}. {path}",
+                variable=var,
+                anchor="w",
+                justify="left",
+                command=update_selected_count,
+            )
+            chk.pack(anchor="w", fill="x")
+
+        def select_all() -> None:
+            for var in path_vars.values():
+                var.set(True)
+            update_selected_count()
+
+        def select_none() -> None:
+            for var in path_vars.values():
+                var.set(False)
+            update_selected_count()
+
+        tk.Button(controls, text="Select all", command=select_all).pack(side="left")
+        tk.Button(controls, text="Select none", command=select_none).pack(side="left", padx=(6, 0))
+        tk.Label(controls, textvariable=selected_count_var).pack(side="left", padx=(12, 0))
+        update_selected_count()
+
+        actions = tk.Frame(dialog)
+        actions.pack(fill="x", padx=10, pady=(0, 10))
+
+        def apply_skip_selected() -> None:
+            result["skip_norms"] = {norm for norm, var in path_vars.items() if var.get()}
+            dialog.destroy()
+
+        def apply_reprocess_selected() -> None:
+            selected = {norm for norm, var in path_vars.items() if var.get()}
+            all_norms = set(path_vars.keys())
+            result["skip_norms"] = all_norms - selected
+            dialog.destroy()
+
+        def on_cancel() -> None:
+            result["skip_norms"] = None
+            dialog.destroy()
+
+        tk.Button(actions, text="Skip selected", command=apply_skip_selected).pack(side="left")
+        tk.Button(actions, text="Reprocess selected", command=apply_reprocess_selected).pack(side="left", padx=(8, 0))
+        tk.Button(actions, text="Cancel", command=on_cancel).pack(side="left", padx=(8, 0))
+
+        dialog.protocol("WM_DELETE_WINDOW", on_cancel)
+        dialog.wait_window()
+        return result["skip_norms"]
+
     def _run(self) -> None:
         if self.worker_thread is not None and self.worker_thread.is_alive():
             messagebox.showwarning("Busy", "Conversion is already running.")
@@ -321,8 +428,40 @@ class ZoteroPdfGui:
             return
 
         output_dir_path = Path(self.output_dir.get().strip()).expanduser().resolve()
+        selected_pdf_path_objs = [Path(path) for path in selected_pdf_paths]
+
+        run_skip_existing = self.skip_existing.get()
+        skip_existing_override = False
+        already_in_current_output = detect_existing_results(output_dir_path, selected_pdf_path_objs)
+        if already_in_current_output:
+            existing_paths = [
+                path for path in selected_pdf_path_objs
+                if normalize_source_path(path) in already_in_current_output
+            ]
+            skip_norms = self._prompt_existing_in_output_selection(existing_paths, output_dir_path)
+            if skip_norms is None:
+                self._log("Run cancelled by user: existing-results prompt.")
+                return
+
+            selected_pdf_path_objs = [
+                path for path in selected_pdf_path_objs
+                if normalize_source_path(path) not in skip_norms
+            ]
+            self._log(
+                f"Existing files decision applied: skip={len(skip_norms)}, "
+                f"reprocess={len(existing_paths) - len(skip_norms)}"
+            )
+            if not selected_pdf_path_objs:
+                messagebox.showinfo("No files to run", "All selected files were skipped by current-output decision.")
+                self._log("Run skipped: no files left after current-output decision.")
+                return
+
+            # Existing-file handling already resolved by per-file decision dialog.
+            run_skip_existing = False
+            skip_existing_override = True
+
         processed_elsewhere = find_processed_elsewhere(
-            [Path(path) for path in selected_pdf_paths],
+            selected_pdf_path_objs,
             output_dir_path,
         )
         if processed_elsewhere:
@@ -353,13 +492,14 @@ class ZoteroPdfGui:
             collection_key=collection_key,
             include_subcollections=self.include_subcollections.get(),
             output_dir=self.output_dir.get().strip(),
-            skip_existing=self.skip_existing.get(),
+            skip_existing=run_skip_existing,
             use_cuda=self.use_cuda.get(),
             model_cache_dir=self.model_cache_dir.get().strip() or None,
             max_base_len=max_base_len,
             disable_batch_multiprocessing=self.disable_batch_multiprocessing.get(),
             cleanup_staging=not self.keep_staging.get(),
-            selected_source_pdf_paths=selected_pdf_paths,
+            selected_source_pdf_paths=[str(path) for path in selected_pdf_path_objs],
+            skip_existing_source_pdf_paths=None if not skip_existing_override else [],
         )
 
         self.stop_event.clear()

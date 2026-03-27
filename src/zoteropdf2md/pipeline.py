@@ -35,6 +35,7 @@ class PipelineOptions:
     disable_batch_multiprocessing: bool = False
     cleanup_staging: bool = True
     selected_source_pdf_paths: list[str] | None = None
+    skip_existing_source_pdf_paths: list[str] | None = None
 
 
 @dataclass(frozen=True)
@@ -142,17 +143,26 @@ def run_pipeline(
         raise RuntimeError("No PDFs selected for processing.")
 
     skipped_existing = 0
-    if options.skip_existing:
-        existing_in_output = detect_existing_results(output_dir, [r.source_pdf_path for r in resolved])
-        if existing_in_output:
-            before = len(resolved)
-            resolved = [
-                item for item in resolved
-                if normalize_source_path(item.source_pdf_path) not in existing_in_output
-            ]
-            skipped_existing = before - len(resolved)
-            if skipped_existing:
-                log(f"Already present in output folder, skipped before run: {skipped_existing}")
+    existing_in_output = detect_existing_results(output_dir, [r.source_pdf_path for r in resolved])
+    skip_existing_set: set[str] = set()
+    if options.skip_existing_source_pdf_paths is not None:
+        skip_existing_set = {
+            normalize_source_path(Path(path))
+            for path in options.skip_existing_source_pdf_paths
+        }
+        skip_existing_set &= existing_in_output
+    elif options.skip_existing:
+        skip_existing_set = set(existing_in_output)
+
+    if skip_existing_set:
+        before = len(resolved)
+        resolved = [
+            item for item in resolved
+            if normalize_source_path(item.source_pdf_path) not in skip_existing_set
+        ]
+        skipped_existing = before - len(resolved)
+        if skipped_existing:
+            log(f"Already present in output folder, skipped before run: {skipped_existing}")
 
     if not resolved:
         filename_map_path = output_dir / FILENAME_MAP_NAME
@@ -196,10 +206,14 @@ def run_pipeline(
         if is_cancelled():
             raise RuntimeError("Cancelled before conversion.")
 
+        # If skip logic was already resolved per-file in GUI, don't pass --skip_existing
+        # to marker, or it will skip files that user explicitly chose to reprocess.
+        batch_skip_existing = options.skip_existing and options.skip_existing_source_pdf_paths is None
+
         batch_result = runner.run_batch(
             input_dir=stage.staging_dir,
             output_dir=output_dir,
-            skip_existing=options.skip_existing,
+            skip_existing=batch_skip_existing,
             disable_multiprocessing=options.disable_batch_multiprocessing,
             env=env,
             log=log,
