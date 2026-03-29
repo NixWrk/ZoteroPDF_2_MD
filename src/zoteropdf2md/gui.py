@@ -11,7 +11,7 @@ from .export_modes import ExportMode, all_export_mode_specs, get_export_mode_spe
 from .history import find_processed_elsewhere
 from .marker_runner import MarkerRunner
 from .output_state import detect_existing_results, normalize_source_path
-from .paths import detect_default_zotero_data_dir
+from .paths import detect_default_zotero_data_dir, discover_zotero_profiles
 from .pipeline import PdfCandidate, PipelineOptions, discover_collection_pdfs, run_pipeline
 from .staging import DEFAULT_MAX_BASE_LEN, MIN_BASE_LEN
 from .zotero import ZoteroRepository
@@ -29,6 +29,7 @@ class ZoteroPdfGui:
         self.output_dir = tk.StringVar(value=str(Path.cwd() / "md_output"))
         self.model_cache_dir = tk.StringVar(value="")
         self.collection_display = tk.StringVar(value="")
+        self.profile_display = tk.StringVar(value="")
         self.pdf_status = tk.StringVar(value="No PDF scan yet")
 
         self.include_subcollections = tk.BooleanVar(value=True)
@@ -41,6 +42,7 @@ class ZoteroPdfGui:
         self.max_base_len = tk.StringVar(value=str(DEFAULT_MAX_BASE_LEN))
 
         self.collection_lookup: dict[str, str] = {}
+        self.profile_lookup: dict[str, str] = {}
         self.pdf_candidates: list[PdfCandidate] = []
         self.pdf_selection_vars: dict[str, tk.BooleanVar] = {}
 
@@ -50,6 +52,7 @@ class ZoteroPdfGui:
         self.runner = MarkerRunner()
 
         self._build_ui()
+        self._refresh_profiles(initial=True)
         self.root.after(100, self._drain_log_queue)
 
     def _build_ui(self) -> None:
@@ -57,6 +60,19 @@ class ZoteroPdfGui:
         frame.pack(fill="both", expand=True)
 
         row = 0
+        tk.Label(frame, text="Detected Zotero profile").grid(row=row, column=0, sticky="w")
+        row += 1
+        self.profile_combo = ttk.Combobox(
+            frame,
+            textvariable=self.profile_display,
+            width=108,
+            state="readonly",
+        )
+        self.profile_combo.grid(row=row, column=0, sticky="we")
+        self.profile_combo.bind("<<ComboboxSelected>>", self._on_profile_selected)
+        tk.Button(frame, text="Refresh profiles", command=self._refresh_profiles).grid(row=row, column=1, padx=6)
+
+        row += 1
         tk.Label(frame, text="Zotero data folder (.../zotero)").grid(row=row, column=0, sticky="w")
         row += 1
         tk.Entry(frame, textvariable=self.zotero_data_dir, width=115).grid(row=row, column=0, sticky="we")
@@ -175,6 +191,9 @@ class ZoteroPdfGui:
         folder = filedialog.askdirectory(title="Select Zotero data directory")
         if folder:
             self.zotero_data_dir.set(folder)
+            if self.profile_display.get().strip():
+                self.profile_display.set("")
+            self._log(f"Manual Zotero data folder selected: {folder}")
 
     def _pick_output_dir(self) -> None:
         folder = filedialog.askdirectory(title="Select output directory")
@@ -258,6 +277,50 @@ class ZoteroPdfGui:
 
     def _current_artifact_extension(self) -> str:
         return get_export_mode_spec(self._current_export_mode()).artifact_extension
+
+    def _on_profile_selected(self, _event: tk.Event | None = None) -> None:
+        selected = self.profile_display.get().strip()
+        path = self.profile_lookup.get(selected)
+        if not path:
+            return
+        self.zotero_data_dir.set(path)
+        self._log(f"Profile selected: {selected}")
+
+    def _refresh_profiles(self, initial: bool = False) -> None:
+        previous_path = self.zotero_data_dir.get().strip()
+        profiles = discover_zotero_profiles()
+
+        self.profile_lookup.clear()
+        displays: list[str] = []
+        for profile in profiles:
+            display = profile.display
+            self.profile_lookup[display] = str(profile.zotero_data_dir)
+            displays.append(display)
+
+        self.profile_combo["values"] = displays
+        if not displays:
+            self.profile_display.set("")
+            if initial:
+                self._log("No Zotero profiles auto-detected. Manual path is still available.")
+            else:
+                self._log("Profile refresh: no Zotero profiles auto-detected.")
+            return
+
+        preferred_display = displays[0]
+        for display in displays:
+            if self.profile_lookup[display] == previous_path:
+                preferred_display = display
+                break
+
+        self.profile_display.set(preferred_display)
+        selected_path = self.profile_lookup[preferred_display]
+        if not previous_path or previous_path != selected_path:
+            self.zotero_data_dir.set(selected_path)
+
+        if initial:
+            self._log(f"Auto-detected Zotero profiles: {len(displays)}. Using: {preferred_display}")
+        else:
+            self._log(f"Profile refresh: found {len(displays)} profiles. Using: {preferred_display}")
 
     def _load_collections(self) -> None:
         zotero_data_dir = self.zotero_data_dir.get().strip()

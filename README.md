@@ -31,20 +31,21 @@ python app.py
 
 ## GUI Workflow
 
-1. Set **Zotero data folder** (profile `.../zotero` directory).
-2. Click **Load collections**.
-3. Select a collection.
-4. Set **Output folder**.
-5. Choose **Export mode**:
+1. Use **Detected Zotero profile** (auto-detected from `profiles.ini` + profile `prefs.js`).
+2. If needed, set **Zotero data folder** manually (profile `.../zotero` directory).
+3. Click **Load collections**.
+4. Select a collection.
+5. Set **Output folder**.
+6. Choose **Export mode**:
    - `Classic (MD in separate folders)`
    - `LLM bundle (flat folder: md + images)`
    - `Zotero single-file HTML attachment`
-6. Optional settings:
+7. Optional settings:
    - include subcollections
    - skip existing outputs
    - CUDA env setup
    - max source base-name length for aliasing
-7. Click **Run**.
+8. Click **Run**.
 
 ## Output
 
