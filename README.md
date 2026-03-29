@@ -1,6 +1,6 @@
 # ZoteroPDF_2_MD
 
-GUI app to convert PDF attachments from a local Zotero collection into Markdown using Marker.
+GUI app to process PDF attachments from a local Zotero collection with multiple export modes based on Marker.
 
 ## What It Does
 
@@ -9,7 +9,11 @@ GUI app to convert PDF attachments from a local Zotero collection into Markdown 
 3. Resolves local PDF attachments from that collection (optionally including subcollections).
 4. Stages files with deterministic short aliases for Windows path safety.
 5. Runs `marker` batch conversion and falls back to `marker_single` for missing outputs.
-6. Writes a filename map CSV for traceability.
+6. Supports 3 export modes:
+   - `classic`: original marker markdown output structure
+   - `llm_bundle`: flat folder with mixed `.md` + images (collection-named folder)
+   - `zotero_single_html`: marker HTML -> single-file HTML (images inlined as base64) -> attach back to Zotero parent item
+7. Writes a filename map CSV for traceability.
 
 ## Requirements
 
@@ -31,22 +35,30 @@ python app.py
 2. Click **Load collections**.
 3. Select a collection.
 4. Set **Output folder**.
-5. Optional settings:
+5. Choose **Export mode**:
+   - `Classic (MD in separate folders)`
+   - `LLM bundle (flat folder: md + images)`
+   - `Zotero single-file HTML attachment`
+6. Optional settings:
    - include subcollections
    - skip existing outputs
    - CUDA env setup
    - max source base-name length for aliasing
-6. Click **Run**.
+7. Click **Run**.
 
 ## Output
 
-- Markdown output folders: `<output_dir>/<alias_base>/<alias_base>.md`
-- Metadata JSON from Marker for each file.
+- `classic`: marker output folders like `<output_dir>/<alias_base>/<alias_base>.md`
+- `llm_bundle`: collection folder `<output_dir>/<collection_name>/` with flattened markdown + images
+- `zotero_single_html`: marker HTML used as intermediate, then a single-file HTML is attached to Zotero parent item as stored attachment
+- Metadata JSON from Marker for each file
 - Filename map CSV: `<output_dir>/_source_filename_map.csv`
 
 ## Notes
 
-- Source Zotero files are never modified.
+- Source PDF files are never modified.
+- `zotero_single_html` writes new attachment records into local `zotero.sqlite`.
+- If Zotero DB is locked for writing, close Zotero and retry Zotero mode.
 - `attachments:` linked-base-dir paths are currently skipped in MVP.
 - If batch mode fails due multiprocessing environment issues, app uses single-file fallback automatically.
 
