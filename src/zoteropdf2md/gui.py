@@ -7,6 +7,7 @@ from pathlib import Path
 from time import perf_counter
 from tkinter import filedialog, messagebox, scrolledtext, ttk
 
+from .export_modes import ExportMode, all_export_mode_specs, get_export_mode_spec, parse_export_mode
 from .history import find_processed_elsewhere
 from .marker_runner import MarkerRunner
 from .output_state import detect_existing_results, normalize_source_path
@@ -35,6 +36,7 @@ class ZoteroPdfGui:
         self.use_cuda = tk.BooleanVar(value=True)
         self.disable_batch_multiprocessing = tk.BooleanVar(value=False)
         self.keep_staging = tk.BooleanVar(value=False)
+        self.export_mode = tk.StringVar(value=ExportMode.CLASSIC.value)
 
         self.max_base_len = tk.StringVar(value=str(DEFAULT_MAX_BASE_LEN))
 
@@ -125,6 +127,17 @@ class ZoteroPdfGui:
         tk.Checkbutton(options, text="Use CUDA (TORCH_DEVICE=cuda)", variable=self.use_cuda).pack(anchor="w")
         tk.Checkbutton(options, text="Disable marker batch multiprocessing", variable=self.disable_batch_multiprocessing).pack(anchor="w")
         tk.Checkbutton(options, text="Keep staging folder (debug)", variable=self.keep_staging).pack(anchor="w")
+
+        mode_frame = tk.Frame(options)
+        mode_frame.pack(anchor="w", pady=(6, 0))
+        tk.Label(mode_frame, text="Export mode:").pack(anchor="w")
+        for spec in all_export_mode_specs():
+            tk.Radiobutton(
+                mode_frame,
+                text=spec.label,
+                variable=self.export_mode,
+                value=spec.mode.value,
+            ).pack(anchor="w")
 
         limits = tk.Frame(options)
         limits.pack(anchor="w", pady=(6, 0))
@@ -240,6 +253,12 @@ class ZoteroPdfGui:
             self.log_context_menu.grab_release()
         return "break"
 
+    def _current_export_mode(self) -> ExportMode:
+        return parse_export_mode(self.export_mode.get())
+
+    def _current_artifact_extension(self) -> str:
+        return get_export_mode_spec(self._current_export_mode()).artifact_extension
+
     def _load_collections(self) -> None:
         zotero_data_dir = self.zotero_data_dir.get().strip()
         if not zotero_data_dir:
@@ -292,6 +311,7 @@ class ZoteroPdfGui:
                 collection_key=collection_key,
                 include_subcollections=self.include_subcollections.get(),
                 output_dir=output_dir,
+                artifact_extension=self._current_artifact_extension(),
                 log=self._log,
             )
             self._log(f"[timer] gui.scan.discover_collection_pdfs: {perf_counter() - discover_started_at:.2f}s")
@@ -501,11 +521,17 @@ class ZoteroPdfGui:
 
         output_dir_path = Path(self.output_dir.get().strip()).expanduser().resolve()
         selected_pdf_path_objs = [Path(path) for path in selected_pdf_paths]
+        current_export_mode = self._current_export_mode()
+        artifact_extension = get_export_mode_spec(current_export_mode).artifact_extension
 
         run_skip_existing = self.skip_existing.get()
         skip_existing_override = False
         existing_started_at = perf_counter()
-        already_in_current_output = detect_existing_results(output_dir_path, selected_pdf_path_objs)
+        already_in_current_output = detect_existing_results(
+            output_dir_path,
+            selected_pdf_path_objs,
+            artifact_extension=artifact_extension,
+        )
         self._log(f"[timer] gui.run.detect_existing_in_current_output: {perf_counter() - existing_started_at:.2f}s")
         if already_in_current_output:
             existing_paths = [
@@ -579,9 +605,11 @@ class ZoteroPdfGui:
             cleanup_staging=not self.keep_staging.get(),
             selected_source_pdf_paths=[str(path) for path in selected_pdf_path_objs],
             skip_existing_source_pdf_paths=None if not skip_existing_override else [],
+            export_mode=current_export_mode.value,
         )
         self._log(f"[timer] gui.run.build_pipeline_options: {perf_counter() - options_started_at:.2f}s")
         self._log(f"[timer] gui.run.pre_worker_total: {perf_counter() - run_prepare_started_at:.2f}s")
+        self._log(f"GUI selected export mode: {current_export_mode.value}")
 
         self.stop_event.clear()
         self._log("\n=== run started ===")
@@ -597,6 +625,7 @@ class ZoteroPdfGui:
                 self._queue_log("=== run finished ===")
                 self._queue_log(
                     "Summary: "
+                    f"mode={summary.export_mode}, "
                     f"attachments={summary.attachments_total}, "
                     f"resolved_pdfs={summary.pdfs_resolved}, "
                     f"staged={summary.staged_total}, "
@@ -604,6 +633,19 @@ class ZoteroPdfGui:
                     f"skipped_existing={summary.skipped_existing}, "
                     f"failed={summary.failed_total}"
                 )
+                if summary.llm_bundle_dir is not None:
+                    self._queue_log(
+                        "LLM bundle: "
+                        f"{summary.llm_bundle_dir} "
+                        f"(md={summary.llm_bundle_markdown_files}, "
+                        f"images={summary.llm_bundle_image_files})"
+                    )
+                if summary.export_mode == ExportMode.ZOTERO.value:
+                    self._queue_log(
+                        "Zotero HTML attachments: "
+                        f"attached={summary.zotero_html_attached_total}, "
+                        f"failed={summary.zotero_html_failed_total}"
+                    )
                 self._queue_log(f"Output dir: {summary.output_dir}")
                 self._queue_log(f"Filename map: {summary.filename_map_path}")
             except Exception as exc:

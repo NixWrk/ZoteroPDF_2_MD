@@ -181,5 +181,10 @@ def cleanup_staging_dir(staging_dir: Path) -> None:
         shutil.rmtree(staging_dir, ignore_errors=True)
 
 
+def expected_output_artifact_path(output_dir: Path, alias_base_name: str, artifact_extension: str) -> Path:
+    normalized_ext = artifact_extension if artifact_extension.startswith(".") else f".{artifact_extension}"
+    return output_dir / alias_base_name / f"{alias_base_name}{normalized_ext.lower()}"
+
+
 def expected_output_md_path(output_dir: Path, alias_base_name: str) -> Path:
-    return output_dir / alias_base_name / f"{alias_base_name}.md"
+    return expected_output_artifact_path(output_dir, alias_base_name, ".md")

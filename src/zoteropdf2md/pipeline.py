@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import os
 from dataclasses import dataclass
@@ -7,20 +7,24 @@ from time import perf_counter
 from typing import Callable
 
 from .attachments import resolve_pdf_attachments
+from .export_modes import ExportMode, get_export_mode_spec, parse_export_mode
 from .history import append_history
+from .llm_bundle import LlmBundleResult, create_llm_bundle
 from .marker_runner import MarkerRunner
 from .models import PipelineSummary, ResolvedAttachment
 from .output_state import detect_existing_results, normalize_source_path
 from .paths import resolve_zotero_data_dir
+from .single_file_html import inline_images_from_html_file
 from .staging import (
     DEFAULT_MAX_BASE_LEN,
     FILENAME_MAP_NAME,
     cleanup_staging_dir,
-    expected_output_md_path,
+    expected_output_artifact_path,
     stage_resolved_pdfs,
     write_filename_map,
 )
 from .zotero import ZoteroRepository
+from .zotero_html_attachment import attach_single_file_html
 
 
 @dataclass(frozen=True)
@@ -37,6 +41,7 @@ class PipelineOptions:
     cleanup_staging: bool = True
     selected_source_pdf_paths: list[str] | None = None
     skip_existing_source_pdf_paths: list[str] | None = None
+    export_mode: str = ExportMode.CLASSIC.value
 
 
 @dataclass(frozen=True)
@@ -79,6 +84,7 @@ def discover_collection_pdfs(
     collection_key: str,
     include_subcollections: bool,
     output_dir: str,
+    artifact_extension: str = ".md",
     log: Callable[[str], None] | None = None,
 ) -> PdfDiscoveryResult:
     discover_started_at = perf_counter()
@@ -109,7 +115,11 @@ def discover_collection_pdfs(
     _log_elapsed(log, "discover.resolve_pdf_attachments", started_at)
 
     started_at = perf_counter()
-    existing_in_output = detect_existing_results(out_dir, [r.source_pdf_path for r in resolved])
+    existing_in_output = detect_existing_results(
+        out_dir,
+        [r.source_pdf_path for r in resolved],
+        artifact_extension=artifact_extension,
+    )
     _log_elapsed(log, "discover.detect_existing_results", started_at)
 
     candidates = [
@@ -138,6 +148,11 @@ def run_pipeline(
 ) -> PipelineSummary:
     pipeline_started_at = perf_counter()
     output_dir = Path(options.output_dir).expanduser().resolve()
+    export_mode = parse_export_mode(options.export_mode)
+    export_spec = get_export_mode_spec(export_mode)
+    artifact_extension = export_spec.artifact_extension
+    marker_output_format = export_spec.marker_output_format
+
     try:
         started_at = perf_counter()
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -149,6 +164,7 @@ def run_pipeline(
             collection_key=options.collection_key,
             include_subcollections=options.include_subcollections,
             output_dir=options.output_dir,
+            artifact_extension=artifact_extension,
             log=log,
         )
         _log_elapsed(log, "pipeline.discover_collection_pdfs", started_at)
@@ -156,6 +172,7 @@ def run_pipeline(
         log(f"Selected collection: {discovery.collection_name} ({discovery.collection_key})")
         log(f"Attachment records in scope: {discovery.attachments_total}")
         log(f"Resolved PDF attachments: {len(discovery.candidates)}")
+        log(f"Export mode: {export_mode.value}")
         if discovery.unresolved_total:
             log(f"Skipped/unresolved attachments: {discovery.unresolved_total}")
 
@@ -182,7 +199,11 @@ def run_pipeline(
 
         skipped_existing = 0
         started_at = perf_counter()
-        existing_in_output = detect_existing_results(output_dir, [r.source_pdf_path for r in resolved])
+        existing_in_output = detect_existing_results(
+            output_dir,
+            [r.source_pdf_path for r in resolved],
+            artifact_extension=artifact_extension,
+        )
         _log_elapsed(log, "pipeline.detect_existing_results", started_at)
 
         skip_existing_set: set[str] = set()
@@ -220,6 +241,7 @@ def run_pipeline(
                 failed_total=0,
                 output_dir=output_dir,
                 filename_map_path=filename_map_path,
+                export_mode=export_mode.value,
             )
 
         if is_cancelled():
@@ -265,6 +287,7 @@ def run_pipeline(
                 output_dir=output_dir,
                 skip_existing=batch_skip_existing,
                 disable_multiprocessing=options.disable_batch_multiprocessing,
+                output_format=marker_output_format,
                 env=env,
                 log=log,
             )
@@ -273,8 +296,8 @@ def run_pipeline(
 
             pending = []
             for staged_file in stage.staged_files:
-                md_path = expected_output_md_path(output_dir, staged_file.alias_base_name)
-                if md_path.exists():
+                artifact_path = expected_output_artifact_path(output_dir, staged_file.alias_base_name, artifact_extension)
+                if artifact_path.exists():
                     converted_total += 1
                     continue
                 pending.append(staged_file)
@@ -291,31 +314,104 @@ def run_pipeline(
                 single_result = runner.run_single(
                     pdf_path=staged_file.alias_pdf_path,
                     output_dir=output_dir,
+                    output_format=marker_output_format,
                     env=env,
                     log=log,
                 )
                 _log_elapsed(log, f"pipeline.marker_single.{staged_file.alias_pdf_path.name}", single_started_at)
-                md_path = expected_output_md_path(output_dir, staged_file.alias_base_name)
-                if single_result.exit_code == 0 and md_path.exists():
+                artifact_path = expected_output_artifact_path(output_dir, staged_file.alias_base_name, artifact_extension)
+                if single_result.exit_code == 0 and artifact_path.exists():
                     converted_total += 1
             if pending:
                 _log_elapsed(log, "pipeline.fallback_total", fallback_started_at)
 
             started_at = perf_counter()
+            converted_staged_files = []
             converted_source_paths: list[Path] = []
             for staged_file in stage.staged_files:
-                md_path = expected_output_md_path(output_dir, staged_file.alias_base_name)
-                if md_path.exists():
+                artifact_path = expected_output_artifact_path(output_dir, staged_file.alias_base_name, artifact_extension)
+                if artifact_path.exists():
+                    converted_staged_files.append(staged_file)
                     converted_source_paths.append(staged_file.source_pdf_path)
             _log_elapsed(log, "pipeline.collect_converted_results", started_at)
 
-            if converted_source_paths:
+            llm_bundle_result: LlmBundleResult | None = None
+            zotero_html_attached_total = 0
+            zotero_html_failed_total = 0
+            history_paths = list(converted_source_paths)
+
+            if converted_source_paths and export_mode == ExportMode.LLM:
                 started_at = perf_counter()
-                history_path = append_history(converted_source_paths, output_dir)
+                llm_bundle_result = create_llm_bundle(
+                    output_dir=output_dir,
+                    collection_name=discovery.collection_name,
+                    staged_files=stage.staged_files,
+                    converted_source_paths=converted_source_paths,
+                )
+                _log_elapsed(log, "pipeline.llm_bundle", started_at)
+                log(
+                    "LLM bundle created: "
+                    f"{llm_bundle_result.bundle_dir} "
+                    f"(md={llm_bundle_result.markdown_files}, images={llm_bundle_result.image_files})"
+                )
+
+            if converted_source_paths and export_mode == ExportMode.ZOTERO:
+                started_at = perf_counter()
+                zotero_dir = resolve_zotero_data_dir(options.zotero_data_dir)
+                source_to_resolved = {normalize_source_path(r.source_pdf_path): r for r in resolved}
+                history_paths = []
+
+                for staged_file in converted_staged_files:
+                    source_norm = normalize_source_path(staged_file.source_pdf_path)
+                    resolved_item = source_to_resolved.get(source_norm)
+                    if resolved_item is None:
+                        zotero_html_failed_total += 1
+                        log(f"Zotero attach skipped, source mapping missing: {staged_file.source_pdf_path}")
+                        continue
+
+                    html_path = expected_output_artifact_path(output_dir, staged_file.alias_base_name, ".html")
+                    if not html_path.is_file():
+                        zotero_html_failed_total += 1
+                        log(f"Zotero attach skipped, HTML not found: {html_path}")
+                        continue
+
+                    try:
+                        inline_result = inline_images_from_html_file(html_path)
+                        parent_item_id = resolved_item.attachment.parent_item_id or resolved_item.attachment.item_id
+                        attach_result = attach_single_file_html(
+                            zotero_data_dir=zotero_dir,
+                            parent_item_id=parent_item_id,
+                            source_pdf_path=staged_file.source_pdf_path,
+                            html_content=inline_result.html,
+                        )
+                        zotero_html_attached_total += 1
+                        history_paths.append(staged_file.source_pdf_path)
+                        log(
+                            "Zotero attachment created: "
+                            f"parent={attach_result.parent_item_id}, "
+                            f"itemID={attach_result.item_id}, "
+                            f"key={attach_result.item_key}, "
+                            f"inlined_images={inline_result.inlined_images}"
+                        )
+                    except RuntimeError as exc:
+                        if "locked for writing" in str(exc).lower():
+                            raise
+                        zotero_html_failed_total += 1
+                        log(f"Zotero attachment failed for {staged_file.source_pdf_path}: {exc}")
+                    except Exception as exc:
+                        zotero_html_failed_total += 1
+                        log(f"Zotero attachment failed for {staged_file.source_pdf_path}: {exc}")
+
+                _log_elapsed(log, "pipeline.zotero_attach_html", started_at)
+
+            if history_paths:
+                started_at = perf_counter()
+                history_path = append_history(history_paths, output_dir)
                 _log_elapsed(log, "pipeline.append_history", started_at)
                 log(f"History updated: {history_path}")
 
-            failed_total = len(stage.staged_files) - len(converted_source_paths)
+            marker_failed_total = len(stage.staged_files) - len(converted_source_paths)
+            failed_total = marker_failed_total + zotero_html_failed_total
 
             return PipelineSummary(
                 collection_key=discovery.collection_key,
@@ -328,6 +424,12 @@ def run_pipeline(
                 failed_total=failed_total,
                 output_dir=output_dir,
                 filename_map_path=filename_map_path,
+                export_mode=export_mode.value,
+                llm_bundle_dir=None if llm_bundle_result is None else llm_bundle_result.bundle_dir,
+                llm_bundle_markdown_files=0 if llm_bundle_result is None else llm_bundle_result.markdown_files,
+                llm_bundle_image_files=0 if llm_bundle_result is None else llm_bundle_result.image_files,
+                zotero_html_attached_total=zotero_html_attached_total,
+                zotero_html_failed_total=zotero_html_failed_total,
             )
         finally:
             cleanup_started_at = perf_counter()
@@ -339,3 +441,4 @@ def run_pipeline(
             _log_elapsed(log, "pipeline.cleanup_staging", cleanup_started_at)
     finally:
         _log_elapsed(log, "pipeline.total", pipeline_started_at)
+

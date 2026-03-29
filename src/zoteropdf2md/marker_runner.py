@@ -72,6 +72,7 @@ class MarkerRunner:
         output_dir: Path,
         skip_existing: bool,
         disable_multiprocessing: bool,
+        output_format: str,
         env: dict[str, str],
         log: callable,
     ) -> RunResult:
@@ -80,6 +81,8 @@ class MarkerRunner:
             str(input_dir),
             "--output_dir",
             str(output_dir),
+            "--output_format",
+            output_format,
         ]
         if skip_existing:
             cmd.append("--skip_existing")
@@ -91,6 +94,7 @@ class MarkerRunner:
         self,
         pdf_path: Path,
         output_dir: Path,
+        output_format: str,
         env: dict[str, str],
         log: callable,
     ) -> RunResult:
@@ -99,6 +103,8 @@ class MarkerRunner:
             str(pdf_path),
             "--output_dir",
             str(output_dir),
+            "--output_format",
+            output_format,
             "--PdfProvider_pdftext_workers",
             "1",
         ]

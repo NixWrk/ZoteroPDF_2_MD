@@ -52,3 +52,9 @@ class PipelineSummary:
     failed_total: int
     output_dir: Path
     filename_map_path: Path
+    export_mode: str = "classic"
+    llm_bundle_dir: Path | None = None
+    llm_bundle_markdown_files: int = 0
+    llm_bundle_image_files: int = 0
+    zotero_html_attached_total: int = 0
+    zotero_html_failed_total: int = 0
