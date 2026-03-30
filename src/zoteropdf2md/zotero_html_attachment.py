@@ -224,3 +224,22 @@ def attach_single_file_html(
         raise
     finally:
         conn.close()
+
+
+def check_zotero_write_access(zotero_data_dir: Path) -> None:
+    db_path = zotero_data_dir / "zotero.sqlite"
+    if not db_path.is_file():
+        raise FileNotFoundError(f"zotero.sqlite not found: {db_path}")
+
+    conn = sqlite3.connect(db_path, timeout=2.0)
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        conn.rollback()
+    except sqlite3.OperationalError as exc:
+        if _is_lock_error(exc):
+            raise RuntimeError(
+                "Zotero database is locked for writing. Close Zotero and retry Zotero export mode."
+            ) from exc
+        raise
+    finally:
+        conn.close()

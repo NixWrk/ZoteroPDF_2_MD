@@ -24,7 +24,7 @@ from .staging import (
     write_filename_map,
 )
 from .zotero import ZoteroRepository
-from .zotero_html_attachment import attach_single_file_html
+from .zotero_html_attachment import attach_single_file_html, check_zotero_write_access
 
 
 @dataclass(frozen=True)
@@ -152,6 +152,7 @@ def run_pipeline(
     export_spec = get_export_mode_spec(export_mode)
     artifact_extension = export_spec.artifact_extension
     marker_output_format = export_spec.marker_output_format
+    zotero_dir_for_mode: Path | None = None
 
     try:
         started_at = perf_counter()
@@ -243,6 +244,12 @@ def run_pipeline(
                 filename_map_path=filename_map_path,
                 export_mode=export_mode.value,
             )
+
+        if export_mode == ExportMode.ZOTERO:
+            started_at = perf_counter()
+            zotero_dir_for_mode = resolve_zotero_data_dir(options.zotero_data_dir)
+            check_zotero_write_access(zotero_dir_for_mode)
+            _log_elapsed(log, "pipeline.zotero_preflight_write_access", started_at)
 
         if is_cancelled():
             raise RuntimeError("Cancelled before staging.")
@@ -357,7 +364,7 @@ def run_pipeline(
 
             if converted_source_paths and export_mode == ExportMode.ZOTERO:
                 started_at = perf_counter()
-                zotero_dir = resolve_zotero_data_dir(options.zotero_data_dir)
+                zotero_dir = zotero_dir_for_mode or resolve_zotero_data_dir(options.zotero_data_dir)
                 source_to_resolved = {normalize_source_path(r.source_pdf_path): r for r in resolved}
                 history_paths = []
 
@@ -441,4 +448,3 @@ def run_pipeline(
             _log_elapsed(log, "pipeline.cleanup_staging", cleanup_started_at)
     finally:
         _log_elapsed(log, "pipeline.total", pipeline_started_at)
-

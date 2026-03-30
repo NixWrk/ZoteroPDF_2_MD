@@ -1,7 +1,9 @@
 import sqlite3
 from pathlib import Path
 
-from zoteropdf2md.zotero_html_attachment import attach_single_file_html
+import pytest
+
+from zoteropdf2md.zotero_html_attachment import attach_single_file_html, check_zotero_write_access
 
 
 def _prepare_minimal_zotero_db(db_path: Path) -> None:
@@ -109,3 +111,29 @@ def test_attach_single_file_html_creates_storage_and_db_rows(tmp_path: Path) -> 
     finally:
         conn.close()
 
+
+def test_check_zotero_write_access_ok(tmp_path: Path) -> None:
+    zotero_dir = tmp_path / "zotero"
+    zotero_dir.mkdir(parents=True)
+    db_path = zotero_dir / "zotero.sqlite"
+    _prepare_minimal_zotero_db(db_path)
+    (zotero_dir / "storage").mkdir(exist_ok=True)
+
+    check_zotero_write_access(zotero_dir)
+
+
+def test_check_zotero_write_access_reports_lock(tmp_path: Path) -> None:
+    zotero_dir = tmp_path / "zotero"
+    zotero_dir.mkdir(parents=True)
+    db_path = zotero_dir / "zotero.sqlite"
+    _prepare_minimal_zotero_db(db_path)
+    (zotero_dir / "storage").mkdir(exist_ok=True)
+
+    locker = sqlite3.connect(db_path, timeout=0.1)
+    try:
+        locker.execute("BEGIN EXCLUSIVE")
+        with pytest.raises(RuntimeError, match="locked for writing"):
+            check_zotero_write_access(zotero_dir)
+    finally:
+        locker.rollback()
+        locker.close()
