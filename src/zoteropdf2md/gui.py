@@ -12,7 +12,13 @@ from .history import find_processed_elsewhere
 from .marker_runner import MarkerRunner
 from .output_state import detect_existing_results, normalize_source_path
 from .paths import detect_default_zotero_data_dir, discover_zotero_profiles
-from .pipeline import PdfCandidate, PipelineOptions, discover_collection_pdfs, run_pipeline
+from .pipeline import (
+    PdfCandidate,
+    PipelineOptions,
+    discover_collection_pdfs,
+    retry_pending_zotero_exports,
+    run_pipeline,
+)
 from .staging import DEFAULT_MAX_BASE_LEN, MIN_BASE_LEN
 from .zotero import ZoteroRepository
 
@@ -165,6 +171,7 @@ class ZoteroPdfGui:
         actions.grid(row=row, column=0, columnspan=3, sticky="w", pady=(4, 10))
         tk.Button(actions, text="Run", command=self._run).pack(side="left")
         tk.Button(actions, text="Stop", command=self._stop).pack(side="left", padx=(8, 0))
+        tk.Button(actions, text="Retry pending Zotero", command=self._retry_pending_zotero).pack(side="left", padx=(8, 0))
         tk.Button(actions, text="Copy selected log", command=self._copy_log_selection).pack(side="left", padx=(14, 0))
         tk.Button(actions, text="Copy all log", command=self._copy_log_all).pack(side="left", padx=(6, 0))
 
@@ -707,7 +714,9 @@ class ZoteroPdfGui:
                     self._queue_log(
                         "Zotero HTML attachments: "
                         f"attached={summary.zotero_html_attached_total}, "
-                        f"failed={summary.zotero_html_failed_total}"
+                        f"failed={summary.zotero_html_failed_total}, "
+                        f"queued={summary.zotero_html_queued_total}, "
+                        f"pending_total={summary.zotero_pending_total}"
                     )
                 self._queue_log(f"Output dir: {summary.output_dir}")
                 self._queue_log(f"Filename map: {summary.filename_map_path}")
@@ -723,6 +732,38 @@ class ZoteroPdfGui:
         self.stop_event.set()
         self.runner.terminate_current()
         self._log("Stop requested.")
+
+    def _retry_pending_zotero(self) -> None:
+        if self.worker_thread is not None and self.worker_thread.is_alive():
+            messagebox.showwarning("Busy", "Another task is already running.")
+            return
+
+        zotero_data_dir = self.zotero_data_dir.get().strip()
+        output_dir = self.output_dir.get().strip()
+        if not zotero_data_dir:
+            messagebox.showerror("Error", "Set Zotero data directory first.")
+            return
+        if not output_dir:
+            messagebox.showerror("Error", "Set output directory first.")
+            return
+
+        self._log("\n=== retry pending Zotero started ===")
+
+        def worker() -> None:
+            try:
+                retry_pending_zotero_exports(
+                    zotero_data_dir=zotero_data_dir,
+                    output_dir=output_dir,
+                    log=self._queue_log,
+                )
+                self._queue_log("=== retry pending Zotero finished ===")
+            except Exception as exc:
+                self._queue_log(f"ERROR: {exc}")
+            finally:
+                self.worker_thread = None
+
+        self.worker_thread = threading.Thread(target=worker, daemon=True)
+        self.worker_thread.start()
 
 
 def main() -> None:

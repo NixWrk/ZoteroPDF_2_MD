@@ -47,11 +47,16 @@ python app.py
    - max source base-name length for aliasing
 8. Click **Run**.
 
+For `zotero_single_html` mode:
+- If Zotero write lock is active, HTML results are queued in output pending file instead of failing the whole run.
+- Use **Retry pending Zotero** button later to attach queued HTML files.
+
 ## Output
 
 - `classic`: marker output folders like `<output_dir>/<alias_base>/<alias_base>.md`
 - `llm_bundle`: collection folder `<output_dir>/<collection_name>/` with flattened markdown + images
 - `zotero_single_html`: marker HTML used as intermediate, then a single-file HTML is attached to Zotero parent item as stored attachment
+- Pending queue file for locked Zotero writes: `<output_dir>/_zotero_pending_attachments.json`
 - Metadata JSON from Marker for each file
 - Filename map CSV: `<output_dir>/_source_filename_map.csv`
 

@@ -25,6 +25,12 @@ from .staging import (
 )
 from .zotero import ZoteroRepository
 from .zotero_html_attachment import attach_single_file_html, check_zotero_write_access
+from .zotero_pending import (
+    build_pending_entry,
+    enqueue_pending_attachments,
+    load_pending_attachments,
+    retry_pending_attachments,
+)
 
 
 @dataclass(frozen=True)
@@ -153,6 +159,7 @@ def run_pipeline(
     artifact_extension = export_spec.artifact_extension
     marker_output_format = export_spec.marker_output_format
     zotero_dir_for_mode: Path | None = None
+    zotero_write_lock_detected = False
 
     try:
         started_at = perf_counter()
@@ -248,7 +255,17 @@ def run_pipeline(
         if export_mode == ExportMode.ZOTERO:
             started_at = perf_counter()
             zotero_dir_for_mode = resolve_zotero_data_dir(options.zotero_data_dir)
-            check_zotero_write_access(zotero_dir_for_mode)
+            try:
+                check_zotero_write_access(zotero_dir_for_mode)
+            except RuntimeError as exc:
+                if "locked for writing" in str(exc).lower():
+                    zotero_write_lock_detected = True
+                    log(
+                        "Zotero write lock detected before conversion. "
+                        "HTML results will be queued in output pending file for retry."
+                    )
+                else:
+                    raise
             _log_elapsed(log, "pipeline.zotero_preflight_write_access", started_at)
 
         if is_cancelled():
@@ -345,6 +362,8 @@ def run_pipeline(
             llm_bundle_result: LlmBundleResult | None = None
             zotero_html_attached_total = 0
             zotero_html_failed_total = 0
+            zotero_html_queued_total = 0
+            zotero_pending_total = 0
             history_paths = list(converted_source_paths)
 
             if converted_source_paths and export_mode == ExportMode.LLM:
@@ -368,48 +387,93 @@ def run_pipeline(
                 source_to_resolved = {normalize_source_path(r.source_pdf_path): r for r in resolved}
                 history_paths = []
 
-                for staged_file in converted_staged_files:
-                    source_norm = normalize_source_path(staged_file.source_pdf_path)
-                    resolved_item = source_to_resolved.get(source_norm)
-                    if resolved_item is None:
-                        zotero_html_failed_total += 1
-                        log(f"Zotero attach skipped, source mapping missing: {staged_file.source_pdf_path}")
-                        continue
-
-                    html_path = expected_output_artifact_path(output_dir, staged_file.alias_base_name, ".html")
-                    if not html_path.is_file():
-                        zotero_html_failed_total += 1
-                        log(f"Zotero attach skipped, HTML not found: {html_path}")
-                        continue
-
-                    try:
-                        inline_result = inline_images_from_html_file(html_path)
+                def queue_entries_from(staged_items: list, error_message: str) -> None:
+                    nonlocal zotero_html_queued_total, zotero_pending_total, zotero_html_failed_total
+                    queue_batch = []
+                    for item in staged_items:
+                        source_norm = normalize_source_path(item.source_pdf_path)
+                        resolved_item = source_to_resolved.get(source_norm)
+                        if resolved_item is None:
+                            zotero_html_failed_total += 1
+                            log(f"Zotero queue skipped, source mapping missing: {item.source_pdf_path}")
+                            continue
+                        html_path = expected_output_artifact_path(output_dir, item.alias_base_name, ".html")
+                        if not html_path.is_file():
+                            zotero_html_failed_total += 1
+                            log(f"Zotero queue skipped, HTML not found: {html_path}")
+                            continue
                         parent_item_id = resolved_item.attachment.parent_item_id or resolved_item.attachment.item_id
-                        attach_result = attach_single_file_html(
-                            zotero_data_dir=zotero_dir,
-                            parent_item_id=parent_item_id,
-                            source_pdf_path=staged_file.source_pdf_path,
-                            html_content=inline_result.html,
+                        queue_batch.append(
+                            build_pending_entry(
+                                source_pdf_path=item.source_pdf_path,
+                                html_path=html_path,
+                                parent_item_id=parent_item_id,
+                                last_error=error_message,
+                            )
                         )
-                        zotero_html_attached_total += 1
-                        history_paths.append(staged_file.source_pdf_path)
+                    if queue_batch:
+                        added, total = enqueue_pending_attachments(output_dir, queue_batch)
+                        zotero_html_queued_total += len(queue_batch)
+                        zotero_pending_total = total
                         log(
-                            "Zotero attachment created: "
-                            f"parent={attach_result.parent_item_id}, "
-                            f"itemID={attach_result.item_id}, "
-                            f"key={attach_result.item_key}, "
-                            f"inlined_images={inline_result.inlined_images}"
+                            "Queued pending Zotero attachments: "
+                            f"queued_now={len(queue_batch)}, "
+                            f"new_unique={added}, pending_total={total}"
                         )
-                    except RuntimeError as exc:
-                        if "locked for writing" in str(exc).lower():
-                            raise
-                        zotero_html_failed_total += 1
-                        log(f"Zotero attachment failed for {staged_file.source_pdf_path}: {exc}")
-                    except Exception as exc:
-                        zotero_html_failed_total += 1
-                        log(f"Zotero attachment failed for {staged_file.source_pdf_path}: {exc}")
+
+                if zotero_write_lock_detected:
+                    queue_entries_from(
+                        converted_staged_files,
+                        "Zotero database locked for writing during run",
+                    )
+                else:
+                    for idx, staged_file in enumerate(converted_staged_files):
+                        source_norm = normalize_source_path(staged_file.source_pdf_path)
+                        resolved_item = source_to_resolved.get(source_norm)
+                        if resolved_item is None:
+                            zotero_html_failed_total += 1
+                            log(f"Zotero attach skipped, source mapping missing: {staged_file.source_pdf_path}")
+                            continue
+
+                        html_path = expected_output_artifact_path(output_dir, staged_file.alias_base_name, ".html")
+                        if not html_path.is_file():
+                            zotero_html_failed_total += 1
+                            log(f"Zotero attach skipped, HTML not found: {html_path}")
+                            continue
+
+                        try:
+                            inline_result = inline_images_from_html_file(html_path)
+                            parent_item_id = resolved_item.attachment.parent_item_id or resolved_item.attachment.item_id
+                            attach_result = attach_single_file_html(
+                                zotero_data_dir=zotero_dir,
+                                parent_item_id=parent_item_id,
+                                source_pdf_path=staged_file.source_pdf_path,
+                                html_content=inline_result.html,
+                            )
+                            zotero_html_attached_total += 1
+                            history_paths.append(staged_file.source_pdf_path)
+                            log(
+                                "Zotero attachment created: "
+                                f"parent={attach_result.parent_item_id}, "
+                                f"itemID={attach_result.item_id}, "
+                                f"key={attach_result.item_key}, "
+                                f"inlined_images={inline_result.inlined_images}"
+                            )
+                        except RuntimeError as exc:
+                            if "locked for writing" in str(exc).lower():
+                                queue_entries_from(
+                                    converted_staged_files[idx:],
+                                    str(exc),
+                                )
+                                break
+                            zotero_html_failed_total += 1
+                            log(f"Zotero attachment failed for {staged_file.source_pdf_path}: {exc}")
+                        except Exception as exc:
+                            zotero_html_failed_total += 1
+                            log(f"Zotero attachment failed for {staged_file.source_pdf_path}: {exc}")
 
                 _log_elapsed(log, "pipeline.zotero_attach_html", started_at)
+                zotero_pending_total = len(load_pending_attachments(output_dir))
 
             if history_paths:
                 started_at = perf_counter()
@@ -437,6 +501,8 @@ def run_pipeline(
                 llm_bundle_image_files=0 if llm_bundle_result is None else llm_bundle_result.image_files,
                 zotero_html_attached_total=zotero_html_attached_total,
                 zotero_html_failed_total=zotero_html_failed_total,
+                zotero_html_queued_total=zotero_html_queued_total,
+                zotero_pending_total=zotero_pending_total,
             )
         finally:
             cleanup_started_at = perf_counter()
@@ -448,3 +514,25 @@ def run_pipeline(
             _log_elapsed(log, "pipeline.cleanup_staging", cleanup_started_at)
     finally:
         _log_elapsed(log, "pipeline.total", pipeline_started_at)
+
+
+def retry_pending_zotero_exports(
+    zotero_data_dir: str,
+    output_dir: str,
+    log: Callable[[str], None],
+) -> None:
+    summary = retry_pending_attachments(
+        zotero_data_dir=zotero_data_dir,
+        output_dir=output_dir,
+        log=log,
+    )
+    log(
+        "Pending retry summary: "
+        f"attempted={summary.attempted}, "
+        f"attached={summary.attached}, "
+        f"kept_pending={summary.kept_pending}, "
+        f"dropped_missing_html={summary.dropped_missing_html}, "
+        f"failed_non_lock={summary.failed_non_lock}, "
+        f"lock_blocked={summary.lock_blocked}"
+    )
+    log(f"Pending queue file: {summary.queue_path}")
