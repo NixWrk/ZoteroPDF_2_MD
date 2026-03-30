@@ -14,6 +14,7 @@ from .marker_runner import MarkerRunner
 from .models import PipelineSummary, ResolvedAttachment
 from .output_state import detect_existing_results, normalize_source_path
 from .paths import resolve_zotero_data_dir
+from .runtime_temp import cleanup_runtime_temp_root, runtime_temp_root
 from .single_file_html import inline_images_from_html_file
 from .staging import (
     DEFAULT_MAX_BASE_LEN,
@@ -91,6 +92,7 @@ def discover_collection_pdfs(
     include_subcollections: bool,
     output_dir: str,
     artifact_extension: str = ".md",
+    temp_root: Path | None = None,
     log: Callable[[str], None] | None = None,
 ) -> PdfDiscoveryResult:
     discover_started_at = perf_counter()
@@ -101,7 +103,7 @@ def discover_collection_pdfs(
     _log_elapsed(log, "discover.resolve_paths", started_at)
 
     started_at = perf_counter()
-    repo = ZoteroRepository(zotero_dir)
+    repo = ZoteroRepository(zotero_dir, snapshot_temp_root=temp_root)
     _log_elapsed(log, "discover.open_repository", started_at)
 
     started_at = perf_counter()
@@ -154,6 +156,7 @@ def run_pipeline(
 ) -> PipelineSummary:
     pipeline_started_at = perf_counter()
     output_dir = Path(options.output_dir).expanduser().resolve()
+    runtime_tmp_root = runtime_temp_root(output_dir)
     export_mode = parse_export_mode(options.export_mode)
     export_spec = get_export_mode_spec(export_mode)
     artifact_extension = export_spec.artifact_extension
@@ -173,6 +176,7 @@ def run_pipeline(
             include_subcollections=options.include_subcollections,
             output_dir=options.output_dir,
             artifact_extension=artifact_extension,
+            temp_root=runtime_tmp_root,
             log=log,
         )
         _log_elapsed(log, "pipeline.discover_collection_pdfs", started_at)
@@ -272,7 +276,7 @@ def run_pipeline(
             raise RuntimeError("Cancelled before staging.")
 
         started_at = perf_counter()
-        stage = stage_resolved_pdfs(resolved, output_dir, options.max_base_len)
+        stage = stage_resolved_pdfs(resolved, output_dir, options.max_base_len, temp_root=runtime_tmp_root)
         _log_elapsed(log, "pipeline.stage_resolved_pdfs", started_at)
         log(
             "Staging prepared: "
@@ -506,13 +510,12 @@ def run_pipeline(
             )
         finally:
             cleanup_started_at = perf_counter()
-            if options.cleanup_staging:
-                cleanup_staging_dir(stage.staging_dir)
-                log("Staging folder cleaned up.")
-            else:
-                log(f"Staging folder kept: {stage.staging_dir}")
+            cleanup_staging_dir(stage.staging_dir)
+            log("Staging folder cleaned up.")
             _log_elapsed(log, "pipeline.cleanup_staging", cleanup_started_at)
     finally:
+        cleanup_runtime_temp_root(runtime_tmp_root)
+        log(f"Runtime temp cleaned: {runtime_tmp_root}")
         _log_elapsed(log, "pipeline.total", pipeline_started_at)
 
 

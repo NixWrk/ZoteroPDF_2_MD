@@ -4,11 +4,11 @@ import csv
 import hashlib
 import os
 import shutil
-import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
 from .models import ResolvedAttachment, StagedFile
+from .runtime_temp import make_temp_dir, runtime_temp_root
 
 
 WINDOWS_PATH_LIMIT = 260
@@ -78,6 +78,7 @@ def stage_resolved_pdfs(
     resolved_attachments: list[ResolvedAttachment],
     output_dir: Path,
     requested_max_base_len: int,
+    temp_root: Path | None = None,
 ) -> StageResult:
     max_by_output_dir = get_max_base_len_for_output_dir(output_dir)
     effective_max_len = min(requested_max_base_len, max_by_output_dir)
@@ -87,7 +88,8 @@ def stage_resolved_pdfs(
             "Output path is too long for safe marker output. Use a shorter output directory."
         )
 
-    staging_dir = Path(tempfile.mkdtemp(prefix="zotero_pdf_stage_"))
+    runtime_root = temp_root if temp_root is not None else runtime_temp_root(output_dir)
+    staging_dir = make_temp_dir(runtime_root, prefix="zotero_pdf_stage_")
 
     used_names: set[str] = set()
     staged_files: list[StagedFile] = []

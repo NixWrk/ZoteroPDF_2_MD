@@ -50,6 +50,7 @@ python app.py
 For `zotero_single_html` mode:
 - If Zotero write lock is active, HTML results are queued in output pending file instead of failing the whole run.
 - Use **Retry pending Zotero** button later to attach queued HTML files.
+- Runtime temp files are created under `<output_dir>/_z2m_runtime_tmp` and cleaned automatically after each run.
 
 ## Output
 

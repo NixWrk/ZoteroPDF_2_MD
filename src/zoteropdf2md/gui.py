@@ -19,11 +19,17 @@ from .pipeline import (
     retry_pending_zotero_exports,
     run_pipeline,
 )
+from .runtime_temp import cleanup_runtime_temp_root, runtime_temp_root
 from .staging import DEFAULT_MAX_BASE_LEN, MIN_BASE_LEN
 from .zotero import ZoteroRepository
 
 
 class ZoteroPdfGui:
+    @staticmethod
+    def _default_output_dir() -> Path:
+        # Use repo-local output folder by default to avoid C:\\Windows\\System32 when cwd is system dir.
+        return (Path(__file__).resolve().parents[2] / "md_output").resolve(strict=False)
+
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
         self.root.title("ZoteroPDF_2_MD")
@@ -32,7 +38,7 @@ class ZoteroPdfGui:
         default_zotero = detect_default_zotero_data_dir()
 
         self.zotero_data_dir = tk.StringVar(value=str(default_zotero) if default_zotero else "")
-        self.output_dir = tk.StringVar(value=str(Path.cwd() / "md_output"))
+        self.output_dir = tk.StringVar(value=str(self._default_output_dir()))
         self.model_cache_dir = tk.StringVar(value="")
         self.collection_display = tk.StringVar(value="")
         self.profile_display = tk.StringVar(value="")
@@ -42,7 +48,6 @@ class ZoteroPdfGui:
         self.skip_existing = tk.BooleanVar(value=True)
         self.use_cuda = tk.BooleanVar(value=True)
         self.disable_batch_multiprocessing = tk.BooleanVar(value=False)
-        self.keep_staging = tk.BooleanVar(value=False)
         self.export_mode = tk.StringVar(value=ExportMode.CLASSIC.value)
 
         self.max_base_len = tk.StringVar(value=str(DEFAULT_MAX_BASE_LEN))
@@ -148,7 +153,6 @@ class ZoteroPdfGui:
         tk.Checkbutton(options, text="Skip existing outputs", variable=self.skip_existing).pack(anchor="w")
         tk.Checkbutton(options, text="Use CUDA (TORCH_DEVICE=cuda)", variable=self.use_cuda).pack(anchor="w")
         tk.Checkbutton(options, text="Disable marker batch multiprocessing", variable=self.disable_batch_multiprocessing).pack(anchor="w")
-        tk.Checkbutton(options, text="Keep staging folder (debug)", variable=self.keep_staging).pack(anchor="w")
 
         mode_frame = tk.Frame(options)
         mode_frame.pack(anchor="w", pady=(6, 0))
@@ -285,6 +289,20 @@ class ZoteroPdfGui:
     def _current_artifact_extension(self) -> str:
         return get_export_mode_spec(self._current_export_mode()).artifact_extension
 
+    def _resolve_output_dir(self) -> Path:
+        raw = self.output_dir.get().strip()
+        if not raw:
+            raise ValueError("Set output directory first.")
+        candidate = Path(raw).expanduser()
+        if not candidate.is_absolute():
+            candidate = self._default_output_dir().parent / candidate
+        resolved = candidate.resolve(strict=False)
+        self.output_dir.set(str(resolved))
+        return resolved
+
+    def _runtime_temp_root(self) -> Path:
+        return runtime_temp_root(self._resolve_output_dir())
+
     def _on_profile_selected(self, _event: tk.Event | None = None) -> None:
         selected = self.profile_display.get().strip()
         path = self.profile_lookup.get(selected)
@@ -335,12 +353,17 @@ class ZoteroPdfGui:
             messagebox.showerror("Error", "Set Zotero data directory first.")
             return
 
+        temp_root: Path | None = None
         try:
-            repo = ZoteroRepository(Path(zotero_data_dir))
+            temp_root = self._runtime_temp_root()
+            repo = ZoteroRepository(Path(zotero_data_dir), snapshot_temp_root=temp_root)
             collections = repo.get_collections()
         except Exception as exc:
             messagebox.showerror("Error", f"Failed to load collections: {exc}")
             return
+        finally:
+            if temp_root is not None:
+                cleanup_runtime_temp_root(temp_root)
 
         self.collection_lookup.clear()
         displays = []
@@ -375,13 +398,16 @@ class ZoteroPdfGui:
             return False
 
         try:
+            resolved_output_dir = self._resolve_output_dir()
+            temp_root = runtime_temp_root(resolved_output_dir)
             discover_started_at = perf_counter()
             discovery = discover_collection_pdfs(
                 zotero_data_dir=self.zotero_data_dir.get().strip(),
                 collection_key=collection_key,
                 include_subcollections=self.include_subcollections.get(),
-                output_dir=output_dir,
+                output_dir=str(resolved_output_dir),
                 artifact_extension=self._current_artifact_extension(),
+                temp_root=temp_root,
                 log=self._log,
             )
             self._log(f"[timer] gui.scan.discover_collection_pdfs: {perf_counter() - discover_started_at:.2f}s")
@@ -389,6 +415,9 @@ class ZoteroPdfGui:
             if show_errors:
                 messagebox.showerror("Error", f"Failed to scan PDFs: {exc}")
             return False
+        finally:
+            if "temp_root" in locals():
+                cleanup_runtime_temp_root(temp_root)
 
         rebuild_started_at = perf_counter()
         self.pdf_candidates = sorted(
@@ -589,7 +618,11 @@ class ZoteroPdfGui:
             messagebox.showerror("Error", "Select at least one PDF.")
             return
 
-        output_dir_path = Path(self.output_dir.get().strip()).expanduser().resolve()
+        try:
+            output_dir_path = self._resolve_output_dir()
+        except ValueError as exc:
+            messagebox.showerror("Error", str(exc))
+            return
         selected_pdf_path_objs = [Path(path) for path in selected_pdf_paths]
         current_export_mode = self._current_export_mode()
         artifact_extension = get_export_mode_spec(current_export_mode).artifact_extension
@@ -666,13 +699,13 @@ class ZoteroPdfGui:
             zotero_data_dir=self.zotero_data_dir.get().strip(),
             collection_key=collection_key,
             include_subcollections=self.include_subcollections.get(),
-            output_dir=self.output_dir.get().strip(),
+            output_dir=str(output_dir_path),
             skip_existing=run_skip_existing,
             use_cuda=self.use_cuda.get(),
             model_cache_dir=self.model_cache_dir.get().strip() or None,
             max_base_len=max_base_len,
             disable_batch_multiprocessing=self.disable_batch_multiprocessing.get(),
-            cleanup_staging=not self.keep_staging.get(),
+            cleanup_staging=True,
             selected_source_pdf_paths=[str(path) for path in selected_pdf_path_objs],
             skip_existing_source_pdf_paths=None if not skip_existing_override else [],
             export_mode=current_export_mode.value,
@@ -739,12 +772,13 @@ class ZoteroPdfGui:
             return
 
         zotero_data_dir = self.zotero_data_dir.get().strip()
-        output_dir = self.output_dir.get().strip()
         if not zotero_data_dir:
             messagebox.showerror("Error", "Set Zotero data directory first.")
             return
-        if not output_dir:
-            messagebox.showerror("Error", "Set output directory first.")
+        try:
+            output_dir = str(self._resolve_output_dir())
+        except ValueError as exc:
+            messagebox.showerror("Error", str(exc))
             return
 
         self._log("\n=== retry pending Zotero started ===")

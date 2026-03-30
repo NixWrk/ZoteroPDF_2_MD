@@ -3,17 +3,18 @@
 import contextlib
 import shutil
 import sqlite3
-import tempfile
 from pathlib import Path
 from typing import Iterable
 
 from .models import AttachmentRecord, Collection
+from .runtime_temp import make_temp_dir
 
 
 class ZoteroRepository:
-    def __init__(self, zotero_data_dir: Path) -> None:
+    def __init__(self, zotero_data_dir: Path, snapshot_temp_root: Path | None = None) -> None:
         self.zotero_data_dir = zotero_data_dir
         self.db_path = zotero_data_dir / "zotero.sqlite"
+        self.snapshot_temp_root = snapshot_temp_root
         if not self.db_path.is_file():
             raise FileNotFoundError(f"zotero.sqlite not found: {self.db_path}")
 
@@ -24,7 +25,10 @@ class ZoteroRepository:
         return conn
 
     def _connect_snapshot(self) -> tuple[sqlite3.Connection, Path]:
-        snapshot_dir = Path(tempfile.mkdtemp(prefix="zotero_sqlite_snapshot_"))
+        if self.snapshot_temp_root is None:
+            snapshot_dir = make_temp_dir(self.zotero_data_dir, prefix="zotero_sqlite_snapshot_")
+        else:
+            snapshot_dir = make_temp_dir(self.snapshot_temp_root, prefix="zotero_sqlite_snapshot_")
         snapshot_db_path = snapshot_dir / "zotero.sqlite"
 
         shutil.copy2(self.db_path, snapshot_db_path)
