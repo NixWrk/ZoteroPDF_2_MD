@@ -83,6 +83,8 @@ class MarkerRunner:
             str(output_dir),
             "--output_format",
             output_format,
+            "--drop_repeated_text",
+            "--drop_repeated_table_text",
         ]
         if skip_existing:
             cmd.append("--skip_existing")
@@ -105,6 +107,8 @@ class MarkerRunner:
             str(output_dir),
             "--output_format",
             output_format,
+            "--drop_repeated_text",
+            "--drop_repeated_table_text",
             "--PdfProvider_pdftext_workers",
             "1",
         ]

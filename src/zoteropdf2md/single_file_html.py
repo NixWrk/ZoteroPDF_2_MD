@@ -14,6 +14,30 @@ _HTML_OPEN_PATTERN = re.compile(r"<html\b[^>]*>", re.IGNORECASE)
 _BODY_PATTERN = re.compile(r"(<body\b[^>]*>)(.*?)(</body>)", re.IGNORECASE | re.DOTALL)
 _ESCAPED_INLINE_TAG_PATTERN = re.compile(r"&lt;(/?)(sup|sub)&gt;", re.IGNORECASE)
 
+_LATEX_LABEL_PATTERN = re.compile(r"\\label\{[^{}]*\}")
+_LATEX_TEXTBF_PATTERN = re.compile(r"\\textbf\{([^{}]*)\}")
+_LATEX_ITALIC_PATTERN = re.compile(r"\\(?:textit|emph)\{([^{}]*)\}")
+_LATEX_TEXTRM_PATTERN = re.compile(r"\\textrm\{([^{}]*)\}")
+_LATEX_TEXT_PATTERN = re.compile(r"\\text\{([^{}]*)\}")
+
+# Matches a phrase of 2-7 words repeated 2+ additional times back-to-back.
+# Example: "the property of the property of the property of" → "the property of"
+_REPEATED_PHRASE_PATTERN = re.compile(
+    r"\b((?:\w+\s+){2,7}\w+)(?:\s+\1){2,}",
+    re.IGNORECASE,
+)
+
+_MATHJAX_SCRIPT = (
+    '<script>'
+    'MathJax={'
+    'tex:{inlineMath:[["$","$"],["\\\\(","\\\\)"]],displayMath:[["$$","$$"],["\\\\[","\\\\]"]]},'
+    'svg:{fontCache:"global"}'
+    '};'
+    '</script>\n'
+    '<script id="MathJax-script" async '
+    'src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-svg.js"></script>'
+)
+
 _DEFAULT_READABILITY_STYLE = """
 <style data-z2m-style="readable">
   :root { color-scheme: light; }
@@ -124,6 +148,36 @@ def _wrap_body_in_container(html: str) -> str:
     return _BODY_PATTERN.sub(replace, html, count=1)
 
 
+def drop_repeated_phrases(text: str) -> str:
+    """Collapse runs where a phrase of 3–8 words repeats 3+ times consecutively.
+
+    Works on plain text and HTML alike (the pattern only matches word sequences,
+    so it never fires inside tag attributes or markup).  Iterates until stable to
+    handle nested / chained repetitions.
+    """
+    prev = None
+    result = text
+    while result != prev:
+        prev = result
+        result = _REPEATED_PHRASE_PATTERN.sub(r"\1", result)
+    return result
+
+
+def _fix_latex_text_commands(html: str) -> str:
+    html = _LATEX_LABEL_PATTERN.sub("", html)
+    html = _LATEX_TEXTBF_PATTERN.sub(r"<strong>\1</strong>", html)
+    html = _LATEX_ITALIC_PATTERN.sub(r"<em>\1</em>", html)
+    html = _LATEX_TEXTRM_PATTERN.sub(r"\1", html)
+    html = _LATEX_TEXT_PATTERN.sub(r"\1", html)
+    return html
+
+
+def _inject_mathjax(html: str) -> str:
+    if 'MathJax-script' in html:
+        return html
+    return _HEAD_CLOSE_PATTERN.sub(f"{_MATHJAX_SCRIPT}\n</head>", html, count=1)
+
+
 def _unescape_inline_sup_sub(html: str) -> str:
     return _ESCAPED_INLINE_TAG_PATTERN.sub(r"<\1\2>", html)
 
@@ -164,8 +218,11 @@ def inline_images_from_html_file(html_path: Path) -> InlineHtmlResult:
         return f"{prefix}{quote}{data_url}{suffix}"
 
     inlined_html = _IMG_SRC_PATTERN.sub(replace, text)
+    inlined_html = drop_repeated_phrases(inlined_html)
+    inlined_html = _fix_latex_text_commands(inlined_html)
     inlined_html = _unescape_inline_sup_sub(inlined_html)
     inlined_html = _fix_common_mojibake(inlined_html)
     inlined_html = _inject_default_styles(inlined_html)
+    inlined_html = _inject_mathjax(inlined_html)
     inlined_html = _wrap_body_in_container(inlined_html)
     return InlineHtmlResult(html=inlined_html, inlined_images=inlined_count)

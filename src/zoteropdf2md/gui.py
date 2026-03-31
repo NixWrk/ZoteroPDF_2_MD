@@ -48,7 +48,10 @@ class ZoteroPdfGui:
         self.skip_existing = tk.BooleanVar(value=True)
         self.use_cuda = tk.BooleanVar(value=True)
         self.disable_batch_multiprocessing = tk.BooleanVar(value=False)
-        self.export_mode = tk.StringVar(value=ExportMode.CLASSIC.value)
+        self.export_mode_vars: dict[str, tk.BooleanVar] = {
+            spec.mode.value: tk.BooleanVar(value=(spec.mode == ExportMode.CLASSIC))
+            for spec in all_export_mode_specs()
+        }
 
         self.max_base_len = tk.StringVar(value=str(DEFAULT_MAX_BASE_LEN))
 
@@ -156,13 +159,12 @@ class ZoteroPdfGui:
 
         mode_frame = tk.Frame(options)
         mode_frame.pack(anchor="w", pady=(6, 0))
-        tk.Label(mode_frame, text="Export mode:").pack(anchor="w")
+        tk.Label(mode_frame, text="Export modes:").pack(anchor="w")
         for spec in all_export_mode_specs():
-            tk.Radiobutton(
+            tk.Checkbutton(
                 mode_frame,
                 text=spec.label,
-                variable=self.export_mode,
-                value=spec.mode.value,
+                variable=self.export_mode_vars[spec.mode.value],
             ).pack(anchor="w")
 
         limits = tk.Frame(options)
@@ -283,11 +285,18 @@ class ZoteroPdfGui:
             self.log_context_menu.grab_release()
         return "break"
 
-    def _current_export_mode(self) -> ExportMode:
-        return parse_export_mode(self.export_mode.get())
+    def _selected_export_modes(self) -> list[ExportMode]:
+        return [
+            parse_export_mode(key)
+            for key, var in self.export_mode_vars.items()
+            if var.get()
+        ]
 
     def _current_artifact_extension(self) -> str:
-        return get_export_mode_spec(self._current_export_mode()).artifact_extension
+        modes = self._selected_export_modes()
+        if not modes:
+            return ".md"
+        return get_export_mode_spec(modes[0]).artifact_extension
 
     def _resolve_output_dir(self) -> Path:
         raw = self.output_dir.get().strip()
@@ -623,9 +632,13 @@ class ZoteroPdfGui:
         except ValueError as exc:
             messagebox.showerror("Error", str(exc))
             return
+        selected_modes = self._selected_export_modes()
+        if not selected_modes:
+            messagebox.showerror("Error", "Select at least one export mode.")
+            return
+
         selected_pdf_path_objs = [Path(path) for path in selected_pdf_paths]
-        current_export_mode = self._current_export_mode()
-        artifact_extension = get_export_mode_spec(current_export_mode).artifact_extension
+        artifact_extension = get_export_mode_spec(selected_modes[0]).artifact_extension
 
         run_skip_existing = self.skip_existing.get()
         skip_existing_override = False
@@ -694,65 +707,79 @@ class ZoteroPdfGui:
                 self._log("Run cancelled by user: already-processed-elsewhere warning.")
                 return
 
+        # Group selected modes by Marker output format so Marker runs only once per format.
+        # e.g. Classic + LLM → one markdown run; Classic + Zotero → two runs.
         options_started_at = perf_counter()
-        options = PipelineOptions(
-            zotero_data_dir=self.zotero_data_dir.get().strip(),
-            collection_key=collection_key,
-            include_subcollections=self.include_subcollections.get(),
-            output_dir=str(output_dir_path),
-            skip_existing=run_skip_existing,
-            use_cuda=self.use_cuda.get(),
-            model_cache_dir=self.model_cache_dir.get().strip() or None,
-            max_base_len=max_base_len,
-            disable_batch_multiprocessing=self.disable_batch_multiprocessing.get(),
-            cleanup_staging=True,
-            selected_source_pdf_paths=[str(path) for path in selected_pdf_path_objs],
-            skip_existing_source_pdf_paths=None if not skip_existing_override else [],
-            export_mode=current_export_mode.value,
-        )
+        format_groups: dict[str, list[ExportMode]] = {}
+        for mode in selected_modes:
+            fmt = get_export_mode_spec(mode).marker_output_format
+            format_groups.setdefault(fmt, []).append(mode)
+
+        all_options: list[PipelineOptions] = []
+        for modes_in_group in format_groups.values():
+            export_mode_str = ",".join(m.value for m in modes_in_group)
+            all_options.append(PipelineOptions(
+                zotero_data_dir=self.zotero_data_dir.get().strip(),
+                collection_key=collection_key,
+                include_subcollections=self.include_subcollections.get(),
+                output_dir=str(output_dir_path),
+                skip_existing=run_skip_existing,
+                use_cuda=self.use_cuda.get(),
+                model_cache_dir=self.model_cache_dir.get().strip() or None,
+                max_base_len=max_base_len,
+                disable_batch_multiprocessing=self.disable_batch_multiprocessing.get(),
+                cleanup_staging=True,
+                selected_source_pdf_paths=[str(path) for path in selected_pdf_path_objs],
+                skip_existing_source_pdf_paths=None if not skip_existing_override else [],
+                export_mode=export_mode_str,
+            ))
         self._log(f"[timer] gui.run.build_pipeline_options: {perf_counter() - options_started_at:.2f}s")
         self._log(f"[timer] gui.run.pre_worker_total: {perf_counter() - run_prepare_started_at:.2f}s")
-        self._log(f"GUI selected export mode: {current_export_mode.value}")
+        self._log(f"GUI selected export modes: {', '.join(m.value for m in selected_modes)}")
 
         self.stop_event.clear()
         self._log("\n=== run started ===")
 
         def worker() -> None:
             try:
-                summary = run_pipeline(
-                    options=options,
-                    runner=self.runner,
-                    log=self._queue_log,
-                    is_cancelled=self.stop_event.is_set,
-                )
+                for options in all_options:
+                    if self.stop_event.is_set():
+                        self._queue_log("Stopped before next format group.")
+                        break
+                    summary = run_pipeline(
+                        options=options,
+                        runner=self.runner,
+                        log=self._queue_log,
+                        is_cancelled=self.stop_event.is_set,
+                    )
+                    self._queue_log(
+                        "Summary: "
+                        f"mode={summary.export_mode}, "
+                        f"attachments={summary.attachments_total}, "
+                        f"resolved_pdfs={summary.pdfs_resolved}, "
+                        f"staged={summary.staged_total}, "
+                        f"converted={summary.converted_total}, "
+                        f"skipped_existing={summary.skipped_existing}, "
+                        f"failed={summary.failed_total}"
+                    )
+                    if summary.llm_bundle_dir is not None:
+                        self._queue_log(
+                            "LLM bundle: "
+                            f"{summary.llm_bundle_dir} "
+                            f"(md={summary.llm_bundle_markdown_files}, "
+                            f"images={summary.llm_bundle_image_files})"
+                        )
+                    if ExportMode.ZOTERO.value in summary.export_mode:
+                        self._queue_log(
+                            "Zotero HTML attachments: "
+                            f"attached={summary.zotero_html_attached_total}, "
+                            f"failed={summary.zotero_html_failed_total}, "
+                            f"queued={summary.zotero_html_queued_total}, "
+                            f"pending_total={summary.zotero_pending_total}"
+                        )
+                    self._queue_log(f"Output dir: {summary.output_dir}")
+                    self._queue_log(f"Filename map: {summary.filename_map_path}")
                 self._queue_log("=== run finished ===")
-                self._queue_log(
-                    "Summary: "
-                    f"mode={summary.export_mode}, "
-                    f"attachments={summary.attachments_total}, "
-                    f"resolved_pdfs={summary.pdfs_resolved}, "
-                    f"staged={summary.staged_total}, "
-                    f"converted={summary.converted_total}, "
-                    f"skipped_existing={summary.skipped_existing}, "
-                    f"failed={summary.failed_total}"
-                )
-                if summary.llm_bundle_dir is not None:
-                    self._queue_log(
-                        "LLM bundle: "
-                        f"{summary.llm_bundle_dir} "
-                        f"(md={summary.llm_bundle_markdown_files}, "
-                        f"images={summary.llm_bundle_image_files})"
-                    )
-                if summary.export_mode == ExportMode.ZOTERO.value:
-                    self._queue_log(
-                        "Zotero HTML attachments: "
-                        f"attached={summary.zotero_html_attached_total}, "
-                        f"failed={summary.zotero_html_failed_total}, "
-                        f"queued={summary.zotero_html_queued_total}, "
-                        f"pending_total={summary.zotero_pending_total}"
-                    )
-                self._queue_log(f"Output dir: {summary.output_dir}")
-                self._queue_log(f"Filename map: {summary.filename_map_path}")
             except Exception as exc:
                 self._queue_log(f"ERROR: {exc}")
             finally:

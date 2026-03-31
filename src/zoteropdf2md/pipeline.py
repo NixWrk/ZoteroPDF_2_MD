@@ -15,7 +15,7 @@ from .models import PipelineSummary, ResolvedAttachment
 from .output_state import detect_existing_results, normalize_source_path
 from .paths import resolve_zotero_data_dir
 from .runtime_temp import cleanup_runtime_temp_root, runtime_temp_root
-from .single_file_html import inline_images_from_html_file
+from .single_file_html import drop_repeated_phrases, inline_images_from_html_file
 from .staging import (
     DEFAULT_MAX_BASE_LEN,
     FILENAME_MAP_NAME,
@@ -48,7 +48,13 @@ class PipelineOptions:
     cleanup_staging: bool = True
     selected_source_pdf_paths: list[str] | None = None
     skip_existing_source_pdf_paths: list[str] | None = None
+    # Comma-separated export modes, e.g. "classic" or "classic,llm_bundle".
+    # Multiple modes sharing the same marker_output_format run with one Marker call.
     export_mode: str = ExportMode.CLASSIC.value
+
+    @property
+    def export_modes_list(self) -> list[ExportMode]:
+        return [parse_export_mode(m.strip()) for m in self.export_mode.split(",") if m.strip()]
 
 
 @dataclass(frozen=True)
@@ -148,6 +154,18 @@ def discover_collection_pdfs(
     )
 
 
+def _clean_md_repeated_phrases(md_path: Path, log: Callable[[str], None]) -> None:
+    """Read an MD file, remove repeated-phrase hallucinations, write back if changed."""
+    try:
+        original = md_path.read_text(encoding="utf-8", errors="replace")
+        cleaned = drop_repeated_phrases(original)
+        if cleaned != original:
+            md_path.write_text(cleaned, encoding="utf-8")
+            log(f"Repetitions removed: {md_path.name} (-{len(original) - len(cleaned)} chars)")
+    except Exception as exc:
+        log(f"Warning: repetition cleanup failed for {md_path.name}: {exc}")
+
+
 def run_pipeline(
     options: PipelineOptions,
     runner: MarkerRunner,
@@ -157,10 +175,14 @@ def run_pipeline(
     pipeline_started_at = perf_counter()
     output_dir = Path(options.output_dir).expanduser().resolve()
     runtime_tmp_root = runtime_temp_root(output_dir)
-    export_mode = parse_export_mode(options.export_mode)
-    export_spec = get_export_mode_spec(export_mode)
-    artifact_extension = export_spec.artifact_extension
-    marker_output_format = export_spec.marker_output_format
+
+    # Support comma-separated multi-mode (e.g. "classic,llm_bundle").
+    # All modes in one pipeline call must share the same marker_output_format.
+    export_modes_list = options.export_modes_list
+    primary_spec = get_export_mode_spec(export_modes_list[0])
+    artifact_extension = primary_spec.artifact_extension
+    marker_output_format = primary_spec.marker_output_format
+
     zotero_dir_for_mode: Path | None = None
     zotero_write_lock_detected = False
 
@@ -184,7 +206,7 @@ def run_pipeline(
         log(f"Selected collection: {discovery.collection_name} ({discovery.collection_key})")
         log(f"Attachment records in scope: {discovery.attachments_total}")
         log(f"Resolved PDF attachments: {len(discovery.candidates)}")
-        log(f"Export mode: {export_mode.value}")
+        log(f"Export mode: {options.export_mode}")
         if discovery.unresolved_total:
             log(f"Skipped/unresolved attachments: {discovery.unresolved_total}")
 
@@ -253,10 +275,10 @@ def run_pipeline(
                 failed_total=0,
                 output_dir=output_dir,
                 filename_map_path=filename_map_path,
-                export_mode=export_mode.value,
+                export_mode=options.export_mode,
             )
 
-        if export_mode == ExportMode.ZOTERO:
+        if ExportMode.ZOTERO in export_modes_list:
             started_at = perf_counter()
             zotero_dir_for_mode = resolve_zotero_data_dir(options.zotero_data_dir)
             try:
@@ -370,7 +392,18 @@ def run_pipeline(
             zotero_pending_total = 0
             history_paths = list(converted_source_paths)
 
-            if converted_source_paths and export_mode == ExportMode.LLM:
+            # Level 3: clean repetition hallucinations from markdown outputs.
+            if marker_output_format == "markdown" and converted_staged_files:
+                started_at = perf_counter()
+                for staged_file in converted_staged_files:
+                    md_path = expected_output_artifact_path(
+                        output_dir, staged_file.alias_base_name, ".md"
+                    )
+                    if md_path.is_file():
+                        _clean_md_repeated_phrases(md_path, log)
+                _log_elapsed(log, "pipeline.clean_md_repetitions", started_at)
+
+            if converted_source_paths and ExportMode.LLM in export_modes_list:
                 started_at = perf_counter()
                 llm_bundle_result = create_llm_bundle(
                     output_dir=output_dir,
@@ -385,7 +418,7 @@ def run_pipeline(
                     f"(md={llm_bundle_result.markdown_files}, images={llm_bundle_result.image_files})"
                 )
 
-            if converted_source_paths and export_mode == ExportMode.ZOTERO:
+            if converted_source_paths and ExportMode.ZOTERO in export_modes_list:
                 started_at = perf_counter()
                 zotero_dir = zotero_dir_for_mode or resolve_zotero_data_dir(options.zotero_data_dir)
                 source_to_resolved = {normalize_source_path(r.source_pdf_path): r for r in resolved}
@@ -499,7 +532,7 @@ def run_pipeline(
                 failed_total=failed_total,
                 output_dir=output_dir,
                 filename_map_path=filename_map_path,
-                export_mode=export_mode.value,
+                export_mode=options.export_mode,
                 llm_bundle_dir=None if llm_bundle_result is None else llm_bundle_result.bundle_dir,
                 llm_bundle_markdown_files=0 if llm_bundle_result is None else llm_bundle_result.markdown_files,
                 llm_bundle_image_files=0 if llm_bundle_result is None else llm_bundle_result.image_files,
