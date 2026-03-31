@@ -736,21 +736,41 @@ class ZoteroPdfGui:
         self._log(f"[timer] gui.run.build_pipeline_options: {perf_counter() - options_started_at:.2f}s")
         self._log(f"[timer] gui.run.pre_worker_total: {perf_counter() - run_prepare_started_at:.2f}s")
         self._log(f"GUI selected export modes: {', '.join(m.value for m in selected_modes)}")
+        self._log(f"GUI pipeline groups: {len(all_options)}")
+        for idx, options in enumerate(all_options, start=1):
+            modes = options.export_modes_list
+            marker_format = get_export_mode_spec(modes[0]).marker_output_format
+            self._log(
+                f"  group {idx}/{len(all_options)}: "
+                f"modes={', '.join(m.value for m in modes)}, "
+                f"marker_output_format={marker_format}"
+            )
 
         self.stop_event.clear()
         self._log("\n=== run started ===")
 
         def worker() -> None:
             try:
-                for options in all_options:
+                for idx, options in enumerate(all_options, start=1):
                     if self.stop_event.is_set():
                         self._queue_log("Stopped before next format group.")
                         break
+                    modes = options.export_modes_list
+                    marker_format = get_export_mode_spec(modes[0]).marker_output_format
+                    self._queue_log(
+                        f"Starting group {idx}/{len(all_options)}: "
+                        f"modes={', '.join(m.value for m in modes)}, "
+                        f"marker_output_format={marker_format}"
+                    )
+                    group_started_at = perf_counter()
                     summary = run_pipeline(
                         options=options,
                         runner=self.runner,
                         log=self._queue_log,
                         is_cancelled=self.stop_event.is_set,
+                    )
+                    self._queue_log(
+                        f"[timer] gui.worker.group_total.{idx}: {perf_counter() - group_started_at:.2f}s"
                     )
                     self._queue_log(
                         "Summary: "

@@ -4,6 +4,7 @@ import subprocess
 import threading
 from dataclasses import dataclass
 from pathlib import Path
+from time import perf_counter
 
 
 @dataclass(frozen=True)
@@ -29,7 +30,9 @@ class MarkerRunner:
         env: dict[str, str],
         log: callable,
     ) -> RunResult:
+        run_started_at = perf_counter()
         log("$ " + " ".join(f'"{part}"' if " " in part else part for part in command))
+        spawn_started_at = perf_counter()
         process = subprocess.Popen(
             command,
             stdout=subprocess.PIPE,
@@ -40,9 +43,32 @@ class MarkerRunner:
             env=env,
             bufsize=1,
         )
+        log(f"[timer] runner.spawn_process: {perf_counter() - spawn_started_at:.2f}s")
+        log(f"Runner process started: pid={process.pid}")
 
         with self._lock:
             self._current_process = process
+
+        first_output_at: float | None = None
+        last_output_at: float | None = None
+        max_output_gap = 0.0
+        line_count = 0
+        heartbeat_stop = threading.Event()
+
+        def heartbeat() -> None:
+            while not heartbeat_stop.wait(10):
+                elapsed = perf_counter() - run_started_at
+                if first_output_at is None:
+                    log(f"[timer] runner.waiting_first_output: {elapsed:.2f}s")
+                else:
+                    since_last_output = 0.0 if last_output_at is None else perf_counter() - last_output_at
+                    log(
+                        "[timer] runner.process_alive: "
+                        f"elapsed={elapsed:.2f}s, since_last_output={since_last_output:.2f}s"
+                    )
+
+        heartbeat_thread = threading.Thread(target=heartbeat, daemon=True)
+        heartbeat_thread.start()
 
         try:
             assert process.stdout is not None
@@ -51,18 +77,50 @@ class MarkerRunner:
                 ch = process.stdout.read(1)
                 if ch == "":
                     break
+
+                now = perf_counter()
+                if first_output_at is None:
+                    first_output_at = now
+                    log(f"[timer] runner.first_output: {first_output_at - run_started_at:.2f}s")
+
                 if ch in ("\n", "\r"):
                     if line_buffer:
-                        log("".join(line_buffer))
+                        line = "".join(line_buffer)
+                        if last_output_at is not None:
+                            max_output_gap = max(max_output_gap, now - last_output_at)
+                        last_output_at = now
+                        line_count += 1
+                        log(line)
                         line_buffer = []
                 else:
                     line_buffer.append(ch)
             if line_buffer:
-                log("".join(line_buffer))
+                now = perf_counter()
+                line = "".join(line_buffer)
+                if last_output_at is not None:
+                    max_output_gap = max(max_output_gap, now - last_output_at)
+                last_output_at = now
+                line_count += 1
+                log(line)
 
+            wait_started_at = perf_counter()
             exit_code = process.wait()
+            log(f"[timer] runner.wait_after_stdout_eof: {perf_counter() - wait_started_at:.2f}s")
+            if first_output_at is None:
+                log("[timer] runner.first_output: no output before process exit")
+            if last_output_at is not None:
+                log(f"[timer] runner.last_output: {last_output_at - run_started_at:.2f}s")
+            log(f"[timer] runner.total: {perf_counter() - run_started_at:.2f}s")
+            log(
+                "Runner diagnostics: "
+                f"exit_code={exit_code}, "
+                f"stdout_lines={line_count}, "
+                f"max_gap_between_lines={max_output_gap:.2f}s"
+            )
             return RunResult(command=command, exit_code=exit_code)
         finally:
+            heartbeat_stop.set()
+            heartbeat_thread.join(timeout=0.2)
             with self._lock:
                 self._current_process = None
 

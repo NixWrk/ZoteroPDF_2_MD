@@ -320,6 +320,27 @@ def run_pipeline(
             log(f"MODEL_CACHE_DIR={env['MODEL_CACHE_DIR']}")
         if env.get("TORCH_DEVICE"):
             log(f"TORCH_DEVICE={env['TORCH_DEVICE']}")
+        log(
+            "Pipeline mode details: "
+            f"modes={', '.join(m.value for m in export_modes_list)}, "
+            f"marker_output_format={marker_output_format}, "
+            f"artifact_extension={artifact_extension}"
+        )
+
+        staged_source_bytes = 0
+        for staged_file in stage.staged_files:
+            try:
+                staged_source_bytes += staged_file.source_pdf_path.stat().st_size
+            except OSError:
+                pass
+        hardlinks = sum(1 for sf in stage.staged_files if sf.materialization == "hardlink")
+        copies = sum(1 for sf in stage.staged_files if sf.materialization == "copy")
+        shortened = sum(1 for sf in stage.staged_files if sf.was_shortened)
+        log(
+            "Staging details: "
+            f"total_source_size_mb={staged_source_bytes / (1024 * 1024):.2f}, "
+            f"hardlinks={hardlinks}, copies={copies}, shortened_aliases={shortened}"
+        )
 
         converted_total = 0
 
@@ -330,6 +351,13 @@ def run_pipeline(
             # If skip logic was already resolved per-file in GUI, don't pass --skip_existing
             # to marker, or it will skip files that user explicitly chose to reprocess.
             batch_skip_existing = options.skip_existing and options.skip_existing_source_pdf_paths is None
+            log(
+                "Marker run config: "
+                f"files={len(stage.staged_files)}, "
+                f"skip_existing_for_batch={batch_skip_existing}, "
+                f"disable_batch_multiprocessing={options.disable_batch_multiprocessing}"
+            )
+            conversion_started_at = perf_counter()
 
             started_at = perf_counter()
             batch_result = runner.run_batch(
@@ -344,6 +372,7 @@ def run_pipeline(
             _log_elapsed(log, "pipeline.marker_batch", started_at)
             log(f"marker batch exit_code={batch_result.exit_code}")
 
+            started_at = perf_counter()
             pending = []
             for staged_file in stage.staged_files:
                 artifact_path = expected_output_artifact_path(output_dir, staged_file.alias_base_name, artifact_extension)
@@ -351,6 +380,12 @@ def run_pipeline(
                     converted_total += 1
                     continue
                 pending.append(staged_file)
+            _log_elapsed(log, "pipeline.detect_missing_after_batch", started_at)
+            log(
+                "Batch output check: "
+                f"converted_after_batch={converted_total}, "
+                f"missing_after_batch={len(pending)}"
+            )
 
             if pending:
                 log(f"Fallback conversion for missing outputs: {len(pending)}")
@@ -374,6 +409,7 @@ def run_pipeline(
                     converted_total += 1
             if pending:
                 _log_elapsed(log, "pipeline.fallback_total", fallback_started_at)
+            _log_elapsed(log, "pipeline.conversion_total", conversion_started_at)
 
             started_at = perf_counter()
             converted_staged_files = []
