@@ -66,6 +66,7 @@ class ZoteroPdfGui:
         self.runner = MarkerRunner()
 
         self._build_ui()
+        self.root.protocol("WM_DELETE_WINDOW", self._on_close)
         self._refresh_profiles(initial=True)
         self.root.after(100, self._drain_log_queue)
 
@@ -602,6 +603,8 @@ class ZoteroPdfGui:
             messagebox.showwarning("Busy", "Conversion is already running.")
             return
 
+        self.runner.cleanup_spawned_processes(log=self._log)
+
         display = self.collection_display.get().strip()
         collection_key = self.collection_lookup.get(display)
         if not collection_key:
@@ -803,6 +806,7 @@ class ZoteroPdfGui:
             except Exception as exc:
                 self._queue_log(f"ERROR: {exc}")
             finally:
+                self.runner.cleanup_spawned_processes(log=self._queue_log)
                 self.worker_thread = None
 
         self.worker_thread = threading.Thread(target=worker, daemon=True)
@@ -812,6 +816,22 @@ class ZoteroPdfGui:
         self.stop_event.set()
         self.runner.terminate_current()
         self._log("Stop requested.")
+
+    def _on_close(self) -> None:
+        if self.worker_thread is not None and self.worker_thread.is_alive():
+            should_close = messagebox.askyesno(
+                "Exit",
+                "Conversion is still running. Stop it and close the app?",
+            )
+            if not should_close:
+                return
+            self.stop_event.set()
+            self.runner.terminate_current()
+            if self.worker_thread is not None:
+                self.worker_thread.join(timeout=3)
+
+        self.runner.cleanup_spawned_processes(log=self._log)
+        self.root.destroy()
 
     def _retry_pending_zotero(self) -> None:
         if self.worker_thread is not None and self.worker_thread.is_alive():
@@ -841,6 +861,7 @@ class ZoteroPdfGui:
             except Exception as exc:
                 self._queue_log(f"ERROR: {exc}")
             finally:
+                self.runner.cleanup_spawned_processes(log=self._queue_log)
                 self.worker_thread = None
 
         self.worker_thread = threading.Thread(target=worker, daemon=True)

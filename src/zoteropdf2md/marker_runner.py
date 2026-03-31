@@ -2,9 +2,16 @@
 
 import subprocess
 import threading
+from collections.abc import Callable
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 from time import perf_counter
+
+try:
+    import psutil
+except Exception:  # pragma: no cover - optional runtime dependency
+    psutil = None
 
 
 @dataclass(frozen=True)
@@ -17,12 +24,92 @@ class MarkerRunner:
     def __init__(self) -> None:
         self._current_process: subprocess.Popen | None = None
         self._lock = threading.Lock()
+        self._tracked_pids: set[int] = set()
+
+    def _track_pid(self, pid: int) -> None:
+        if pid <= 0:
+            return
+        with self._lock:
+            self._tracked_pids.add(pid)
+
+    def _tracked_snapshot(self) -> list[int]:
+        with self._lock:
+            return sorted(self._tracked_pids)
+
+    def _register_child_pids(self, root_pid: int) -> None:
+        if psutil is None or root_pid <= 0:
+            return
+        try:
+            process = psutil.Process(root_pid)
+            children = process.children(recursive=True)
+        except Exception:
+            return
+        for child in children:
+            self._track_pid(child.pid)
+
+    @staticmethod
+    def _kill_pid_tree(pid: int) -> bool:
+        if pid <= 0:
+            return True
+
+        try:
+            result = subprocess.run(
+                ["taskkill", "/PID", str(pid), "/T", "/F"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+            )
+        except Exception:
+            return False
+
+        if result.returncode == 0:
+            return True
+
+        output = (result.stdout or "").lower()
+        return (
+            "not found" in output
+            or "no running instance" in output
+            or "not running" in output
+        )
+
+    def cleanup_spawned_processes(self, log: Callable[[str], None] | None = None) -> None:
+        tracked = self._tracked_snapshot()
+        if not tracked:
+            return
+
+        killed = 0
+        remaining: list[int] = []
+        for pid in tracked:
+            if self._kill_pid_tree(pid):
+                killed += 1
+            else:
+                remaining.append(pid)
+
+        with self._lock:
+            self._tracked_pids = set(remaining)
+
+        if log is not None:
+            log(
+                "Runner cleanup: "
+                f"tracked={len(tracked)}, killed={killed}, remaining={len(remaining)}"
+            )
+            if remaining:
+                log(f"Runner cleanup remaining PIDs: {', '.join(str(pid) for pid in remaining)}")
 
     def terminate_current(self) -> None:
         with self._lock:
             proc = self._current_process
         if proc is not None and proc.poll() is None:
-            proc.terminate()
+            self._track_pid(proc.pid)
+            self._register_child_pids(proc.pid)
+            with suppress(Exception):
+                proc.terminate()
+            with suppress(Exception):
+                proc.wait(timeout=2)
+            self._kill_pid_tree(proc.pid)
+        self.cleanup_spawned_processes()
 
     def _run(
         self,
@@ -45,6 +132,7 @@ class MarkerRunner:
         )
         log(f"[timer] runner.spawn_process: {perf_counter() - spawn_started_at:.2f}s")
         log(f"Runner process started: pid={process.pid}")
+        self._track_pid(process.pid)
 
         with self._lock:
             self._current_process = process
@@ -58,6 +146,7 @@ class MarkerRunner:
         def heartbeat() -> None:
             while not heartbeat_stop.wait(10):
                 elapsed = perf_counter() - run_started_at
+                self._register_child_pids(process.pid)
                 if first_output_at is None:
                     log(f"[timer] runner.waiting_first_output: {elapsed:.2f}s")
                 else:
@@ -121,8 +210,10 @@ class MarkerRunner:
         finally:
             heartbeat_stop.set()
             heartbeat_thread.join(timeout=0.2)
+            self._register_child_pids(process.pid)
             with self._lock:
                 self._current_process = None
+                self._tracked_pids.discard(process.pid)
 
     def run_batch(
         self,

@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -u -c \":*)",
+      "Bash(marker --help)",
+      "Bash(marker_single --help)",
+      "Bash(nvidia-smi)"
+    ]
+  }
+}
