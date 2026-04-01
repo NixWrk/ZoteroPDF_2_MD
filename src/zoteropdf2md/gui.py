@@ -24,6 +24,21 @@ from .staging import DEFAULT_MAX_BASE_LEN, MIN_BASE_LEN
 from .zotero import ZoteroRepository
 
 
+def _derive_marker_single_cmd(marker_cmd: str) -> str:
+    """Given a marker executable path/name, return the corresponding marker_single path."""
+    p = Path(marker_cmd)
+    # If it's just a bare name like "marker" → "marker_single"
+    if p.parent == Path(".") and not marker_cmd.startswith(("/", ".", "\\")):
+        stem = p.stem  # handles "marker" or "marker.exe"
+        suffix = p.suffix
+        return f"{stem}_single{suffix}" if stem == "marker" else f"{stem}_single{suffix}"
+    # Full path: replace the filename
+    stem = p.stem
+    suffix = p.suffix
+    single_name = f"{stem}_single{suffix}" if stem == "marker" else f"{stem}_single{suffix}"
+    return str(p.parent / single_name)
+
+
 class ZoteroPdfGui:
     @staticmethod
     def _default_output_dir() -> Path:
@@ -54,6 +69,7 @@ class ZoteroPdfGui:
         }
 
         self.max_base_len = tk.StringVar(value=str(DEFAULT_MAX_BASE_LEN))
+        self.marker_executable = tk.StringVar(value="marker")
 
         self.collection_lookup: dict[str, str] = {}
         self.profile_lookup: dict[str, str] = {}
@@ -117,6 +133,12 @@ class ZoteroPdfGui:
         row += 1
         tk.Entry(frame, textvariable=self.model_cache_dir, width=115).grid(row=row, column=0, sticky="we")
         tk.Button(frame, text="Browse", command=self._pick_model_cache_dir).grid(row=row, column=1, padx=6)
+
+        row += 1
+        tk.Label(frame, text="marker executable (name or full path)").grid(row=row, column=0, sticky="w", pady=(10, 0))
+        row += 1
+        tk.Entry(frame, textvariable=self.marker_executable, width=115).grid(row=row, column=0, sticky="we")
+        tk.Button(frame, text="Browse", command=self._pick_marker_executable).grid(row=row, column=1, padx=6)
 
         row += 1
         pdf_head = tk.Frame(frame)
@@ -218,6 +240,14 @@ class ZoteroPdfGui:
         folder = filedialog.askdirectory(title="Select model cache directory")
         if folder:
             self.model_cache_dir.set(folder)
+
+    def _pick_marker_executable(self) -> None:
+        path = filedialog.askopenfilename(
+            title="Select marker executable",
+            filetypes=[("Executable", "*.exe"), ("All files", "*.*")],
+        )
+        if path:
+            self.marker_executable.set(path)
 
     def _log(self, text: str) -> None:
         self.log.insert(tk.END, text + "\n")
@@ -748,6 +778,12 @@ class ZoteroPdfGui:
                 f"modes={', '.join(m.value for m in modes)}, "
                 f"marker_output_format={marker_format}"
             )
+
+        marker_cmd = self.marker_executable.get().strip() or "marker"
+        marker_single_cmd = _derive_marker_single_cmd(marker_cmd)
+        self.runner = MarkerRunner(marker_cmd=marker_cmd, marker_single_cmd=marker_single_cmd)
+        self._log(f"Marker executable: {marker_cmd}")
+        self._log(f"Marker-single executable: {marker_single_cmd}")
 
         self.stop_event.clear()
         self._log("\n=== run started ===")

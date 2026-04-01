@@ -21,7 +21,13 @@ class RunResult:
 
 
 class MarkerRunner:
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        marker_cmd: str = "marker",
+        marker_single_cmd: str = "marker_single",
+    ) -> None:
+        self._marker_cmd = marker_cmd
+        self._marker_single_cmd = marker_single_cmd
         self._current_process: subprocess.Popen | None = None
         self._lock = threading.Lock()
         self._tracked_pids: set[int] = set()
@@ -226,7 +232,7 @@ class MarkerRunner:
         log: callable,
     ) -> RunResult:
         cmd = [
-            "marker",
+            self._marker_cmd,
             str(input_dir),
             "--output_dir",
             str(output_dir),
@@ -250,7 +256,7 @@ class MarkerRunner:
         log: callable,
     ) -> RunResult:
         cmd = [
-            "marker_single",
+            self._marker_single_cmd,
             str(pdf_path),
             "--output_dir",
             str(output_dir),
