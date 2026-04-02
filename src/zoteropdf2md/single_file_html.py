@@ -22,13 +22,20 @@ _EMPTY_PARAGRAPH_PATTERN = re.compile(r"<p>\s*(?:&nbsp;|\u00a0)?\s*</p>", re.IGN
 _EXCESSIVE_BREAKS_PATTERN = re.compile(r"(?:<br\s*/?>\s*){4,}", re.IGNORECASE)
 _URL_PATTERN = re.compile(r"(?P<url>(?:https?://|www\.)[^\s<>\"]+)", re.IGNORECASE)
 _REFERENCES_HEADING_PATTERN = re.compile(
-    r"<h([1-6])\b[^>]*>\s*(?:<[^>]+>\s*)*References\s*(?:</[^>]+>\s*)*</h\1>",
+    r"<h([1-6])\b[^>]*>\s*(?:<[^>]+>\s*)*"
+    r"(?:References|Bibliography|Литература|Список литературы|Источники|Referenzen|参考文献|参考资料)"
+    r"\s*(?:</[^>]+>\s*)*</h\1>",
     re.IGNORECASE | re.DOTALL,
 )
 _LI_OPEN_PATTERN = re.compile(r"<li\b([^>]*)>", re.IGNORECASE)
+_LI_BLOCK_PATTERN = re.compile(r"<li\b([^>]*)>(.*?)</li>", re.IGNORECASE | re.DOTALL)
+_LI_ID_PATTERN = re.compile(r'\bid\s*=\s*["\']ref-(\d+)["\']', re.IGNORECASE)
 _SUP_PATTERN = re.compile(r"<sup>(.*?)</sup>", re.IGNORECASE | re.DOTALL)
 _SUP_NUMBER_PATTERN = re.compile(r"\d+")
 _SKIP_AUTOLINK_TAGS = {"script", "style", "code", "pre", "math", "svg", "a"}
+_LEADING_REF_NUMBER_PATTERN = re.compile(r"^\s*(?:<[^>]+>\s*)*\d+\.\s+", re.IGNORECASE)
+_SLASH_PIPE_ARTIFACT_PATTERN = re.compile(r"\s*\\\s*\|\s*\\\s*")
+_SPACED_BACKSLASH_ARTIFACT_PATTERN = re.compile(r"(\s)\\(\s)")
 
 _LATEX_LABEL_PATTERN = re.compile(r"\\label\{[^{}]*\}")
 _LATEX_TEXTBF_PATTERN = re.compile(r"\\textbf\{([^{}]*)\}")
@@ -94,6 +101,10 @@ _DEFAULT_READABILITY_STYLE = """
   }
   .z2m-ref-link {
     text-decoration: none;
+  }
+  .z2m-ref-num {
+    font-weight: 600;
+    margin-right: 0.3em;
   }
   ul, ol { margin: 0.65em 0 0.75em 1.3em; }
   li { margin: 0.28em 0; }
@@ -284,6 +295,28 @@ def _fix_common_mojibake(html: str) -> str:
     return fixed
 
 
+def _cleanup_marker_escape_artifacts(html: str) -> str:
+    parts = _TAG_SPLIT_PATTERN.split(html)
+    out: list[str] = []
+    skip_stack: list[str] = []
+
+    for part in parts:
+        if not part:
+            continue
+        if part.startswith("<"):
+            _update_skip_stack(part, skip_stack)
+            out.append(part)
+            continue
+        if skip_stack:
+            out.append(part)
+            continue
+        cleaned = _SLASH_PIPE_ARTIFACT_PATTERN.sub(" | ", part)
+        cleaned = _SPACED_BACKSLASH_ARTIFACT_PATTERN.sub(r"\1\2", cleaned)
+        out.append(cleaned)
+
+    return "".join(out)
+
+
 def _update_skip_stack(tag_fragment: str, skip_stack: list[str]) -> None:
     raw = tag_fragment.strip()
     if not raw.startswith("<") or raw.startswith("<!--") or raw.startswith("<!"):
@@ -386,6 +419,21 @@ def _add_reference_ids_and_citation_links(html: str) -> str:
     if ref_index == 0:
         return html
 
+    if not re.search(r"<ol\b", references_with_ids, re.IGNORECASE):
+        def ensure_visible_ref_number(match: re.Match[str]) -> str:
+            attrs = match.group(1) or ""
+            body = match.group(2) or ""
+            if _LEADING_REF_NUMBER_PATTERN.search(body):
+                return match.group(0)
+            id_match = _LI_ID_PATTERN.search(attrs)
+            if id_match is None:
+                return match.group(0)
+            number = id_match.group(1)
+            numbered_body = f'<span class="z2m-ref-num">{number}.</span> {body.lstrip()}'
+            return f"<li{attrs}>{numbered_body}</li>"
+
+        references_with_ids = _LI_BLOCK_PATTERN.sub(ensure_visible_ref_number, references_with_ids)
+
     def link_sup(match: re.Match[str]) -> str:
         inner = match.group(1)
         if "<a " in inner.lower():
@@ -419,6 +467,7 @@ def polish_html_document(html: str) -> str:
     polished = _fix_latex_text_commands(polished)
     polished = _unescape_inline_sup_sub(polished)
     polished = _fix_common_mojibake(polished)
+    polished = _cleanup_marker_escape_artifacts(polished)
     polished = _add_reference_ids_and_citation_links(polished)
     polished = _autolink_plain_urls(polished)
     polished = _inject_utf8_charset(polished)

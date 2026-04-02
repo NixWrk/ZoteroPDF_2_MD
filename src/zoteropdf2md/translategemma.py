@@ -32,7 +32,13 @@ _TAG_SPLIT_PATTERN = re.compile(r"(<[^>]+>)")
 _OPEN_TAG_PATTERN = re.compile(r"^<\s*([a-zA-Z0-9:_-]+)")
 _CLOSE_TAG_PATTERN = re.compile(r"^<\s*/\s*([a-zA-Z0-9:_-]+)")
 _TRANSLATABLE_TEXT_PATTERN = re.compile(r"[A-Za-z\u0400-\u04FF\u4E00-\u9FFF]")
-_SKIP_TRANSLATION_TAGS = {"script", "style", "code", "pre", "math", "svg"}
+_SKIP_TRANSLATION_TAGS = {"script", "style", "code", "pre", "math", "svg", "a"}
+_REFERENCES_SECTION_HEADING_PATTERN = re.compile(
+    r"<h[1-6]\b[^>]*>\s*(?:<[^>]+>\s*)*"
+    r"(?:References|Bibliography|Литература|Список литературы|Источники|Referenzen|参考文献|参考资料)"
+    r"\s*(?:</[^>]+>\s*)*</h[1-6]>",
+    re.IGNORECASE | re.DOTALL,
+)
 
 
 @dataclass(frozen=True)
@@ -46,6 +52,7 @@ class TranslateGemmaConfig:
     max_chunk_chars: int = 12000
     max_new_tokens: int = 65536
     context_safety_margin_tokens: int = 4096
+    preserve_reference_section: bool = True
 
 
 @dataclass(frozen=True)
@@ -242,6 +249,14 @@ def _translate_text_segment(
         cache[core] = translated_core
 
     return segment[:leading_len] + translated_core + segment[core_end:]
+
+
+def _split_references_tail(html: str) -> tuple[str, str]:
+    heading_match = _REFERENCES_SECTION_HEADING_PATTERN.search(html)
+    if heading_match is None:
+        return html, ""
+    split_at = heading_match.start()
+    return html[:split_at], html[split_at:]
 
 
 def translate_html_text_nodes(
@@ -464,11 +479,17 @@ class TranslateGemmaTranslator:
             instruction = (
                 f"Translate the following text to {target_language}. "
                 "Detect the source language automatically. "
+                "Preserve personal names, organization names, journal titles, "
+                "acronyms, citation markers, URLs, DOIs, emails, and all numbers exactly. "
+                "Do not transliterate names. "
                 "Output only the translation, nothing else."
             )
         else:
             instruction = (
                 f"Translate the following text from {source_language} to {target_language}. "
+                "Preserve personal names, organization names, journal titles, "
+                "acronyms, citation markers, URLs, DOIs, emails, and all numbers exactly. "
+                "Do not transliterate names. "
                 "Output only the translation, nothing else."
             )
 
@@ -584,6 +605,16 @@ class TranslateGemmaTranslator:
         source_html = html_path.read_text(encoding="utf-8", errors="replace")
         self._log_line(f"[timer] translategemma.read_html: {perf_counter() - read_started_at:.2f}s")
 
+        translatable_html = source_html
+        preserved_references_tail = ""
+        if self._config.preserve_reference_section:
+            translatable_html, preserved_references_tail = _split_references_tail(source_html)
+            if preserved_references_tail:
+                self._log_line(
+                    "TranslateGemma: preserving references section without translation "
+                    f"(chars={len(preserved_references_tail)})"
+                )
+
         translate_started_at = perf_counter()
         progress_next_pct = 10
         progress_logged_first = False
@@ -663,12 +694,14 @@ class TranslateGemmaTranslator:
             )
 
         translated_html, translated_segments = translate_html_text_nodes(
-            source_html,
+            translatable_html,
             translate_text=translate_text_with_progress,
             max_chunk_chars=max(256, self._config.max_chunk_chars),
             on_segment_start=on_segment_start,
             on_progress=on_progress,
         )
+        if preserved_references_tail:
+            translated_html += preserved_references_tail
         self._log_line(
             f"[timer] translategemma.translate_html: {perf_counter() - translate_started_at:.2f}s"
         )
