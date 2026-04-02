@@ -21,12 +21,30 @@ GUI app to process PDF attachments from a local Zotero collection with multiple 
 - Python 3.10+.
 - `marker` and `marker_single` available in `PATH`.
 
+Optional for TranslateGemma HTML translation:
+- `torch` (CUDA build recommended)
+- `transformers`
+- `accelerate`
+- `huggingface_hub`
+
 ## Run
 
 From repository root:
 
 ```powershell
 python app.py
+```
+
+Run with isolated latest environment:
+
+```powershell
+.\run_gui_latest.ps1
+```
+
+Optional TranslateGemma install:
+
+```powershell
+.\setup_latest_env.ps1 -Recreate
 ```
 
 ## GUI Workflow
@@ -45,18 +63,25 @@ python app.py
    - skip existing outputs
    - CUDA env setup
    - max source base-name length for aliasing
+   - TranslateGemma for HTML output:
+     - enable translation checkbox
+     - choose target language in **Choose language** modal
+     - set model path or HF repo (default `google/translategemma-4b-it`)
+     - provide HF token for gated download when needed
 8. Click **Run**.
 
 For `zotero_single_html` mode:
 - If Zotero write lock is active, HTML results are queued in output pending file instead of failing the whole run.
 - Use **Retry pending Zotero** button later to attach queued HTML files.
 - Runtime temp files are created under `<output_dir>/_z2m_runtime_tmp` and cleaned automatically after each run.
+- If TranslateGemma is enabled, translated HTML is attached to Zotero when available.
 
 ## Output
 
 - `classic`: marker output folders like `<output_dir>/<alias_base>/<alias_base>.md`
 - `llm_bundle`: collection folder `<output_dir>/<collection_name>/` with flattened markdown + images
 - `zotero_single_html`: marker HTML used as intermediate, then a single-file HTML is attached to Zotero parent item as stored attachment
+- TranslateGemma translated HTML (when enabled): `<output_dir>/<alias_base>/<alias_base>.<lang>.html`
 - Pending queue file for locked Zotero writes: `<output_dir>/_zotero_pending_attachments.json`
 - Metadata JSON from Marker for each file
 - Filename map CSV: `<output_dir>/_source_filename_map.csv`

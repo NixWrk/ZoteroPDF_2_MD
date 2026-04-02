@@ -11,7 +11,7 @@ from .export_modes import ExportMode, get_export_mode_spec, parse_export_mode
 from .history import append_history
 from .llm_bundle import LlmBundleResult, create_llm_bundle
 from .marker_runner import MarkerRunner
-from .models import PipelineSummary, ResolvedAttachment
+from .models import PipelineSummary, ResolvedAttachment, StagedFile
 from .output_state import detect_existing_results, normalize_source_path
 from .paths import resolve_zotero_data_dir
 from .runtime_temp import cleanup_runtime_temp_root, runtime_temp_root
@@ -24,6 +24,7 @@ from .staging import (
     stage_resolved_pdfs,
     write_filename_map,
 )
+from .translategemma import DEFAULT_TRANSLATEGEMMA_MODEL
 from .zotero import ZoteroRepository
 from .zotero_html_attachment import attach_single_file_html, check_zotero_write_access
 from .zotero_pending import (
@@ -51,6 +52,11 @@ class PipelineOptions:
     # Comma-separated export modes, e.g. "classic" or "classic,llm_bundle".
     # Multiple modes sharing the same marker_output_format run with one Marker call.
     export_mode: str = ExportMode.CLASSIC.value
+    translate_html_with_gemma: bool = False
+    translation_target_language_code: str = "ru"
+    translation_source_language: str = "Auto"
+    translation_model_ref: str = DEFAULT_TRANSLATEGEMMA_MODEL
+    translation_hf_token: str | None = None
 
     @property
     def export_modes_list(self) -> list[ExportMode]:
@@ -164,6 +170,14 @@ def _clean_md_repeated_phrases(md_path: Path, log: Callable[[str], None]) -> Non
             log(f"Repetitions removed: {md_path.name} (-{len(original) - len(cleaned)} chars)")
     except Exception as exc:
         log(f"Warning: repetition cleanup failed for {md_path.name}: {exc}")
+
+
+def _artifact_signature(path: Path) -> tuple[bool, int, int]:
+    try:
+        stat = path.stat()
+    except OSError:
+        return False, 0, 0
+    return True, int(stat.st_size), int(stat.st_mtime_ns)
 
 
 def run_pipeline(
@@ -326,6 +340,13 @@ def run_pipeline(
             f"marker_output_format={marker_output_format}, "
             f"artifact_extension={artifact_extension}"
         )
+        if options.translate_html_with_gemma:
+            log(
+                "TranslateGemma config: "
+                f"target_language={options.translation_target_language_code}, "
+                f"source_language={options.translation_source_language}, "
+                f"model_ref={options.translation_model_ref}"
+            )
 
         staged_source_bytes = 0
         for staged_file in stage.staged_files:
@@ -358,6 +379,14 @@ def run_pipeline(
                 f"disable_batch_multiprocessing={options.disable_batch_multiprocessing}"
             )
             conversion_started_at = perf_counter()
+            artifact_before = {
+                staged_file.alias_base_name: _artifact_signature(
+                    expected_output_artifact_path(
+                        output_dir, staged_file.alias_base_name, artifact_extension
+                    )
+                )
+                for staged_file in stage.staged_files
+            }
 
             started_at = perf_counter()
             batch_result = runner.run_batch(
@@ -374,9 +403,20 @@ def run_pipeline(
 
             started_at = perf_counter()
             pending = []
+            unchanged_existing = 0
             for staged_file in stage.staged_files:
                 artifact_path = expected_output_artifact_path(output_dir, staged_file.alias_base_name, artifact_extension)
-                if artifact_path.exists():
+                exists_now, _, _ = _artifact_signature(artifact_path)
+                if exists_now:
+                    before_sig = artifact_before.get(staged_file.alias_base_name, (False, 0, 0))
+                    if (
+                        before_sig[0]
+                        and not batch_skip_existing
+                        and _artifact_signature(artifact_path) == before_sig
+                    ):
+                        unchanged_existing += 1
+                        pending.append(staged_file)
+                        continue
                     converted_total += 1
                     continue
                 pending.append(staged_file)
@@ -384,7 +424,8 @@ def run_pipeline(
             log(
                 "Batch output check: "
                 f"converted_after_batch={converted_total}, "
-                f"missing_after_batch={len(pending)}"
+                f"missing_after_batch={len(pending)}, "
+                f"unchanged_existing_after_batch={unchanged_existing}"
             )
 
             if pending:
@@ -416,6 +457,19 @@ def run_pipeline(
             converted_source_paths: list[Path] = []
             for staged_file in stage.staged_files:
                 artifact_path = expected_output_artifact_path(output_dir, staged_file.alias_base_name, artifact_extension)
+                if not artifact_path.exists():
+                    continue
+                before_sig = artifact_before.get(staged_file.alias_base_name, (False, 0, 0))
+                if (
+                    before_sig[0]
+                    and not batch_skip_existing
+                    and _artifact_signature(artifact_path) == before_sig
+                ):
+                    log(
+                        "Artifact unchanged after conversion attempts, treated as failed: "
+                        f"{artifact_path.name}"
+                    )
+                    continue
                 if artifact_path.exists():
                     converted_staged_files.append(staged_file)
                     converted_source_paths.append(staged_file.source_pdf_path)
@@ -426,6 +480,11 @@ def run_pipeline(
             zotero_html_failed_total = 0
             zotero_html_queued_total = 0
             zotero_pending_total = 0
+            translated_html_total = 0
+            translated_html_failed_total = 0
+            translated_html_language_code = ""
+            translated_html_language_name = ""
+            translated_html_by_source: dict[str, Path] = {}
             history_paths = list(converted_source_paths)
 
             # Level 3: clean repetition hallucinations from markdown outputs.
@@ -454,11 +513,92 @@ def run_pipeline(
                     f"(md={llm_bundle_result.markdown_files}, images={llm_bundle_result.image_files})"
                 )
 
+            if converted_source_paths and marker_output_format == "html" and options.translate_html_with_gemma:
+                started_at = perf_counter()
+                from .translategemma import (
+                    TranslateGemmaConfig,
+                    TranslateGemmaTranslator,
+                    language_name_for_code,
+                    normalize_language_code,
+                )
+
+                translated_html_language_code = normalize_language_code(
+                    options.translation_target_language_code
+                )
+                translated_html_language_name = language_name_for_code(
+                    translated_html_language_code
+                )
+                translator = TranslateGemmaTranslator(
+                    TranslateGemmaConfig(
+                        model_ref=options.translation_model_ref,
+                        target_language_code=translated_html_language_code,
+                        source_language=options.translation_source_language,
+                        hf_token=options.translation_hf_token,
+                        cache_dir=options.model_cache_dir,
+                    ),
+                    log=log,
+                )
+
+                total_translate_files = len(converted_staged_files)
+                for file_idx, staged_file in enumerate(converted_staged_files, start=1):
+                    if is_cancelled():
+                        raise RuntimeError("Cancelled during TranslateGemma translation.")
+
+                    html_path = expected_output_artifact_path(
+                        output_dir, staged_file.alias_base_name, ".html"
+                    )
+                    if not html_path.is_file():
+                        log(
+                            "TranslateGemma progress: "
+                            f"file {file_idx}/{total_translate_files} skipped (HTML missing): {html_path.name}"
+                        )
+                        continue
+
+                    file_started_at = perf_counter()
+                    log(
+                        "TranslateGemma progress: "
+                        f"file {file_idx}/{total_translate_files} start: {html_path.name}"
+                    )
+                    try:
+                        translated_artifact = translator.translate_html_file(html_path)
+                        source_norm = normalize_source_path(staged_file.source_pdf_path)
+                        translated_html_by_source[source_norm] = (
+                            translated_artifact.translated_html_path
+                        )
+                        translated_html_total += 1
+                        log(
+                            "TranslateGemma HTML ready: "
+                            f"{translated_artifact.translated_html_path.name} "
+                            f"(segments={translated_artifact.translated_segments}, "
+                            f"language={translated_artifact.language_name}, "
+                            f"elapsed={perf_counter() - file_started_at:.2f}s)"
+                        )
+                    except Exception as exc:
+                        translated_html_failed_total += 1
+                        log(
+                            "TranslateGemma failed: "
+                            f"file {file_idx}/{total_translate_files} {html_path.name}: {exc}"
+                        )
+
+                _log_elapsed(log, "pipeline.translategemma_html", started_at)
+            elif options.translate_html_with_gemma and marker_output_format != "html":
+                log(
+                    "TranslateGemma enabled, but current group output format is not HTML. "
+                    "Translation skipped for this group."
+                )
+
             if converted_source_paths and ExportMode.ZOTERO in export_modes_list:
                 started_at = perf_counter()
                 zotero_dir = zotero_dir_for_mode or resolve_zotero_data_dir(options.zotero_data_dir)
                 source_to_resolved = {normalize_source_path(r.source_pdf_path): r for r in resolved}
                 history_paths = []
+
+                def html_artifact_for(item: StagedFile) -> Path:
+                    source_norm = normalize_source_path(item.source_pdf_path)
+                    translated = translated_html_by_source.get(source_norm)
+                    if translated is not None and translated.is_file():
+                        return translated
+                    return expected_output_artifact_path(output_dir, item.alias_base_name, ".html")
 
                 def queue_entries_from(staged_items: list, error_message: str) -> None:
                     nonlocal zotero_html_queued_total, zotero_pending_total, zotero_html_failed_total
@@ -470,7 +610,7 @@ def run_pipeline(
                             zotero_html_failed_total += 1
                             log(f"Zotero queue skipped, source mapping missing: {item.source_pdf_path}")
                             continue
-                        html_path = expected_output_artifact_path(output_dir, item.alias_base_name, ".html")
+                        html_path = html_artifact_for(item)
                         if not html_path.is_file():
                             zotero_html_failed_total += 1
                             log(f"Zotero queue skipped, HTML not found: {html_path}")
@@ -508,7 +648,7 @@ def run_pipeline(
                             log(f"Zotero attach skipped, source mapping missing: {staged_file.source_pdf_path}")
                             continue
 
-                        html_path = expected_output_artifact_path(output_dir, staged_file.alias_base_name, ".html")
+                        html_path = html_artifact_for(staged_file)
                         if not html_path.is_file():
                             zotero_html_failed_total += 1
                             log(f"Zotero attach skipped, HTML not found: {html_path}")
@@ -576,6 +716,10 @@ def run_pipeline(
                 zotero_html_failed_total=zotero_html_failed_total,
                 zotero_html_queued_total=zotero_html_queued_total,
                 zotero_pending_total=zotero_pending_total,
+                translated_html_total=translated_html_total,
+                translated_html_failed_total=translated_html_failed_total,
+                translated_html_language_code=translated_html_language_code,
+                translated_html_language_name=translated_html_language_name,
             )
         finally:
             cleanup_started_at = perf_counter()

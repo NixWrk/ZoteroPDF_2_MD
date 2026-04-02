@@ -1,0 +1,599 @@
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass
+from pathlib import Path
+from time import perf_counter
+from typing import Callable
+
+from .single_file_html import polish_html_document
+
+
+OFFICIAL_TRANSLATEGEMMA_MODEL_REPO = "google/translategemma-4b-it"
+LOCAL_TRANSLATEGEMMA_MODEL_DIR = (
+    Path(__file__).resolve().parents[2] / "models" / "translategemma-4b-it"
+).resolve(strict=False)
+DEFAULT_TRANSLATEGEMMA_MODEL = (
+    str(LOCAL_TRANSLATEGEMMA_MODEL_DIR)
+    if LOCAL_TRANSLATEGEMMA_MODEL_DIR.exists()
+    else OFFICIAL_TRANSLATEGEMMA_MODEL_REPO
+)
+DEFAULT_TRANSLATEGEMMA_TARGET_LANGUAGE = "ru"
+TRANSLATEGEMMA_LANGUAGE_CHOICES: tuple[tuple[str, str], ...] = (
+    ("en", "English"),
+    ("ru", "Russian"),
+    ("de", "German"),
+    ("zh", "Chinese"),
+)
+_LANGUAGE_NAME_BY_CODE = dict(TRANSLATEGEMMA_LANGUAGE_CHOICES)
+_LANGUAGE_CODE_BY_NAME = {name.lower(): code for code, name in TRANSLATEGEMMA_LANGUAGE_CHOICES}
+
+_TAG_SPLIT_PATTERN = re.compile(r"(<[^>]+>)")
+_OPEN_TAG_PATTERN = re.compile(r"^<\s*([a-zA-Z0-9:_-]+)")
+_CLOSE_TAG_PATTERN = re.compile(r"^<\s*/\s*([a-zA-Z0-9:_-]+)")
+_TRANSLATABLE_TEXT_PATTERN = re.compile(r"[A-Za-z\u0400-\u04FF\u4E00-\u9FFF]")
+_SKIP_TRANSLATION_TAGS = {"script", "style", "code", "pre", "math", "svg"}
+
+
+@dataclass(frozen=True)
+class TranslateGemmaConfig:
+    model_ref: str = DEFAULT_TRANSLATEGEMMA_MODEL
+    target_language_code: str = DEFAULT_TRANSLATEGEMMA_TARGET_LANGUAGE
+    source_language: str = "Auto"
+    hf_token: str | None = None
+    cache_dir: str | None = None
+    # Used only as a fallback when a full-segment translation does not fit context/memory.
+    max_chunk_chars: int = 12000
+    max_new_tokens: int = 65536
+    context_safety_margin_tokens: int = 4096
+
+
+@dataclass(frozen=True)
+class TranslatedHtmlArtifact:
+    source_html_path: Path
+    translated_html_path: Path
+    language_code: str
+    language_name: str
+    translated_segments: int
+
+
+def normalize_language_code(value: str | None) -> str:
+    if value is None:
+        return DEFAULT_TRANSLATEGEMMA_TARGET_LANGUAGE
+
+    raw = value.strip()
+    if not raw:
+        return DEFAULT_TRANSLATEGEMMA_TARGET_LANGUAGE
+
+    lowered = raw.lower()
+    if lowered in _LANGUAGE_NAME_BY_CODE:
+        return lowered
+
+    by_name = _LANGUAGE_CODE_BY_NAME.get(lowered)
+    if by_name is not None:
+        return by_name
+
+    supported = ", ".join(code for code, _ in TRANSLATEGEMMA_LANGUAGE_CHOICES)
+    raise ValueError(f"Unsupported translation language '{value}'. Supported codes: {supported}")
+
+
+def language_name_for_code(language_code: str) -> str:
+    normalized = normalize_language_code(language_code)
+    return _LANGUAGE_NAME_BY_CODE.get(normalized, normalized)
+
+
+def translated_html_output_path(source_html_path: Path, language_code: str) -> Path:
+    normalized = normalize_language_code(language_code)
+    return source_html_path.with_name(f"{source_html_path.stem}.{normalized}.html")
+
+
+def _split_text_chunks(text: str, max_chunk_chars: int) -> list[str]:
+    if max_chunk_chars < 256:
+        max_chunk_chars = 256
+    if len(text) <= max_chunk_chars:
+        return [text]
+
+    chunks: list[str] = []
+    start = 0
+    total_len = len(text)
+
+    while start < total_len:
+        end = min(total_len, start + max_chunk_chars)
+        if end < total_len:
+            min_boundary = start + max_chunk_chars // 2
+            boundary = max(
+                text.rfind("\n\n", min_boundary, end),
+                text.rfind("\n", min_boundary, end),
+                text.rfind(". ", min_boundary, end),
+                text.rfind("! ", min_boundary, end),
+                text.rfind("? ", min_boundary, end),
+                text.rfind("\u3002", min_boundary, end),
+                text.rfind("\uFF01", min_boundary, end),
+                text.rfind("\uFF1F", min_boundary, end),
+                text.rfind(" ", min_boundary, end),
+            )
+            if boundary > start:
+                end = boundary + 1
+
+        if end <= start:
+            end = min(total_len, start + max_chunk_chars)
+
+        chunks.append(text[start:end])
+        start = end
+
+    return chunks
+
+
+def _update_skip_stack(tag_fragment: str, skip_stack: list[str]) -> None:
+    raw = tag_fragment.strip()
+    if not raw.startswith("<"):
+        return
+    if raw.startswith("<!--") or raw.startswith("<!"):
+        return
+
+    close_match = _CLOSE_TAG_PATTERN.match(raw)
+    if close_match is not None:
+        tag_name = close_match.group(1).lower()
+        for idx in range(len(skip_stack) - 1, -1, -1):
+            if skip_stack[idx] == tag_name:
+                del skip_stack[idx]
+                break
+        return
+
+    if raw.endswith("/>"):
+        return
+
+    open_match = _OPEN_TAG_PATTERN.match(raw)
+    if open_match is None:
+        return
+    tag_name = open_match.group(1).lower()
+    if tag_name in _SKIP_TRANSLATION_TAGS:
+        skip_stack.append(tag_name)
+
+
+def _is_context_or_memory_error(exc: Exception) -> bool:
+    lowered = str(exc).lower()
+    markers = (
+        "context window exceeded",
+        "sequence length",
+        "max position embeddings",
+        "token indices sequence length is longer",
+        "index out of range in self",
+        "cuda out of memory",
+        "outofmemoryerror",
+    )
+    return any(marker in lowered for marker in markers)
+
+
+def _translate_with_chunk_fallback(
+    text: str,
+    *,
+    translate_text: Callable[[str], str],
+    max_chunk_chars: int,
+) -> str:
+    if not text:
+        return text
+    if not _TRANSLATABLE_TEXT_PATTERN.search(text):
+        return text
+
+    try:
+        return translate_text(text)
+    except Exception as exc:
+        if not _is_context_or_memory_error(exc):
+            raise
+
+    chunk_chars = max(256, max_chunk_chars)
+    if len(text) <= chunk_chars:
+        # Nothing left to split; re-raise by trying one more time for the real traceback.
+        return translate_text(text)
+
+    def _translate_recursive(chunk_text: str, current_chunk_chars: int) -> str:
+        if not _TRANSLATABLE_TEXT_PATTERN.search(chunk_text):
+            return chunk_text
+
+        try:
+            return translate_text(chunk_text)
+        except Exception as chunk_exc:
+            if not _is_context_or_memory_error(chunk_exc):
+                raise
+            if len(chunk_text) <= 256:
+                raise
+
+        next_chunk_chars = max(256, current_chunk_chars // 2)
+        if next_chunk_chars >= len(chunk_text):
+            next_chunk_chars = max(256, len(chunk_text) // 2)
+        if next_chunk_chars >= len(chunk_text):
+            return translate_text(chunk_text)
+
+        translated_parts: list[str] = []
+        for sub_chunk in _split_text_chunks(chunk_text, max_chunk_chars=next_chunk_chars):
+            translated_parts.append(_translate_recursive(sub_chunk, next_chunk_chars))
+        return "".join(translated_parts)
+
+    translated_parts: list[str] = []
+    for chunk in _split_text_chunks(text, max_chunk_chars=chunk_chars):
+        translated_parts.append(_translate_recursive(chunk, chunk_chars))
+    return "".join(translated_parts)
+
+
+def _translate_text_segment(
+    segment: str,
+    translate_text: Callable[[str], str],
+    cache: dict[str, str],
+    max_chunk_chars: int,
+) -> str:
+    if not segment:
+        return segment
+
+    leading_len = len(segment) - len(segment.lstrip())
+    trailing_len = len(segment) - len(segment.rstrip())
+    core_end = len(segment) - trailing_len if trailing_len else len(segment)
+    core = segment[leading_len:core_end]
+    if not core.strip():
+        return segment
+
+    translated_core = cache.get(core)
+    if translated_core is None:
+        translated_core = _translate_with_chunk_fallback(
+            core,
+            translate_text=translate_text,
+            max_chunk_chars=max_chunk_chars,
+        )
+        cache[core] = translated_core
+
+    return segment[:leading_len] + translated_core + segment[core_end:]
+
+
+def translate_html_text_nodes(
+    html: str,
+    translate_text: Callable[[str], str],
+    *,
+    max_chunk_chars: int = 12000,
+    on_segment_start: Callable[[int, int], None] | None = None,
+    on_progress: Callable[[int, int], None] | None = None,
+) -> tuple[str, int]:
+    parts = _TAG_SPLIT_PATTERN.split(html)
+    out: list[str] = []
+    skip_stack: list[str] = []
+    cache: dict[str, str] = {}
+    translated_segments = 0
+    total_segments = 0
+    processed_segments = 0
+
+    pre_count_skip_stack: list[str] = []
+    for part in parts:
+        if not part:
+            continue
+        if part.startswith("<"):
+            _update_skip_stack(part, pre_count_skip_stack)
+            continue
+        if pre_count_skip_stack or not _TRANSLATABLE_TEXT_PATTERN.search(part):
+            continue
+        total_segments += 1
+
+    for part in parts:
+        if not part:
+            continue
+
+        if part.startswith("<"):
+            _update_skip_stack(part, skip_stack)
+            out.append(part)
+            continue
+
+        if skip_stack or not _TRANSLATABLE_TEXT_PATTERN.search(part):
+            out.append(part)
+            continue
+
+        current_segment = processed_segments + 1
+        if on_segment_start is not None:
+            try:
+                on_segment_start(current_segment, total_segments)
+            except Exception:
+                pass
+
+        translated = _translate_text_segment(
+            part,
+            translate_text=translate_text,
+            cache=cache,
+            max_chunk_chars=max_chunk_chars,
+        )
+        if translated != part:
+            translated_segments += 1
+        out.append(translated)
+        processed_segments += 1
+        if on_progress is not None:
+            try:
+                on_progress(processed_segments, total_segments)
+            except Exception:
+                pass
+
+    return "".join(out), translated_segments
+
+
+class TranslateGemmaTranslator:
+    def __init__(
+        self,
+        config: TranslateGemmaConfig,
+        *,
+        log: Callable[[str], None] | None = None,
+    ) -> None:
+        self._config = config
+        self._log = log
+        self._torch = None
+        self._tokenizer = None
+        self._model = None
+        self._device = "cpu"
+        self._context_window_tokens: int | None = None
+
+    def _log_line(self, message: str) -> None:
+        if self._log is not None:
+            self._log(message)
+
+    def _resolve_model_ref(self) -> str:
+        model_ref = (self._config.model_ref or "").strip() or DEFAULT_TRANSLATEGEMMA_MODEL
+        candidate = Path(model_ref).expanduser()
+        if candidate.exists():
+            return str(candidate.resolve(strict=False))
+
+        try:
+            from huggingface_hub import snapshot_download
+        except Exception as exc:
+            raise RuntimeError(
+                "TranslateGemma requires huggingface_hub. "
+                "Install dependencies: pip install transformers accelerate huggingface_hub"
+            ) from exc
+
+        token = (self._config.hf_token or "").strip() or None
+        try:
+            return snapshot_download(
+                model_ref,
+                token=token,
+                cache_dir=self._config.cache_dir,
+            )
+        except Exception as exc:
+            raise RuntimeError(
+                "Failed to download TranslateGemma model. "
+                "Accept the model license on Hugging Face and provide a valid HF token "
+                f"(HF_TOKEN / HUGGINGFACE_HUB_TOKEN), model_ref='{model_ref}', details: {exc}"
+            ) from exc
+
+    def _ensure_loaded(self) -> None:
+        if self._model is not None and self._tokenizer is not None:
+            return
+
+        try:
+            import torch
+            from transformers import AutoModelForCausalLM, AutoTokenizer
+        except Exception as exc:
+            raise RuntimeError(
+                "TranslateGemma dependencies are missing. Install: "
+                "pip install torch transformers accelerate huggingface_hub "
+                f"(details: {exc})"
+            ) from exc
+
+        self._torch = torch
+        resolved_model_ref = self._resolve_model_ref()
+        token = (self._config.hf_token or "").strip() or None
+        cache_dir = self._config.cache_dir
+
+        if torch.cuda.is_available():
+            self._device = "cuda"
+            try:
+                bf16_supported = torch.cuda.is_bf16_supported()
+            except Exception:
+                bf16_supported = False
+            torch_dtype = torch.bfloat16 if bf16_supported else torch.float16
+            device_map = "cuda"
+        else:
+            self._device = "cpu"
+            torch_dtype = torch.float32
+            device_map = "cpu"
+            self._log_line(
+                "TranslateGemma: CUDA not available, running on CPU (this will be very slow)."
+            )
+
+        model_load_started_at = perf_counter()
+        self._log_line(f"TranslateGemma: loading model '{resolved_model_ref}'")
+        self._tokenizer = AutoTokenizer.from_pretrained(
+            resolved_model_ref,
+            token=token,
+            cache_dir=cache_dir,
+        )
+        self._model = AutoModelForCausalLM.from_pretrained(
+            resolved_model_ref,
+            token=token,
+            cache_dir=cache_dir,
+            torch_dtype=torch_dtype,
+            device_map=device_map,
+            low_cpu_mem_usage=True,
+        ).eval()
+        if self._tokenizer.pad_token_id is None and self._tokenizer.eos_token_id is not None:
+            self._tokenizer.pad_token = self._tokenizer.eos_token
+
+        self._context_window_tokens = None
+        self._log_line(
+            f"[timer] translategemma.model_load: {perf_counter() - model_load_started_at:.2f}s"
+        )
+        self._log_line(
+            "TranslateGemma: model ready "
+            f"(device={self._device}, context_window={self._resolve_context_window_tokens()} tokens)"
+        )
+
+    def _resolve_context_window_tokens(self) -> int:
+        if self._context_window_tokens is not None:
+            return self._context_window_tokens
+
+        context_window: int | None = None
+        if self._model is not None:
+            config = getattr(self._model, "config", None)
+            raw_ctx = getattr(config, "max_position_embeddings", None)
+            if isinstance(raw_ctx, int) and raw_ctx > 0:
+                context_window = int(raw_ctx)
+
+        if context_window is None and self._tokenizer is not None:
+            raw_ctx = getattr(self._tokenizer, "model_max_length", None)
+            if isinstance(raw_ctx, int) and 0 < raw_ctx < 10_000_000:
+                context_window = int(raw_ctx)
+
+        if context_window is None:
+            context_window = 131072
+
+        self._context_window_tokens = context_window
+        return context_window
+
+    def translate_text(self, text: str) -> str:
+        self._ensure_loaded()
+        assert self._torch is not None
+        assert self._tokenizer is not None
+        assert self._model is not None
+
+        if not text.strip():
+            return text
+
+        source_language = (self._config.source_language or "Auto").strip()
+        target_language = language_name_for_code(self._config.target_language_code)
+        if source_language.lower() in {"auto", "auto-detect", "autodetect"}:
+            instruction = (
+                f"Translate the following text to {target_language}. "
+                "Detect the source language automatically. "
+                "Output only the translation, nothing else."
+            )
+        else:
+            instruction = (
+                f"Translate the following text from {source_language} to {target_language}. "
+                "Output only the translation, nothing else."
+            )
+
+        prompt = (
+            "<start_of_turn>user\n"
+            f"{instruction}\n\n"
+            f"{text}<end_of_turn>\n"
+            "<start_of_turn>model\n"
+        )
+        inputs = self._tokenizer(prompt, return_tensors="pt")
+        if self._device == "cuda":
+            inputs = {k: v.to("cuda") for k, v in inputs.items()}
+
+        prompt_len = int(inputs["input_ids"].shape[1])
+        context_window = self._resolve_context_window_tokens()
+        context_margin = max(256, int(self._config.context_safety_margin_tokens))
+        available_for_generation = context_window - prompt_len - context_margin
+        if available_for_generation < 256:
+            raise RuntimeError(
+                "TranslateGemma context window exceeded for this segment "
+                f"(prompt_tokens={prompt_len}, context_window={context_window})."
+            )
+
+        dynamic_cap = max(256, prompt_len * 4)
+        max_new_tokens = min(65536, dynamic_cap)
+        configured_cap = int(self._config.max_new_tokens)
+        if configured_cap > 0:
+            max_new_tokens = min(max_new_tokens, configured_cap)
+        max_new_tokens = min(max_new_tokens, available_for_generation)
+
+        with self._torch.no_grad():
+            out = self._model.generate(
+                **inputs,
+                max_new_tokens=max_new_tokens,
+                do_sample=False,
+                repetition_penalty=1.2,
+                pad_token_id=self._tokenizer.eos_token_id,
+            )
+
+        translated = self._tokenizer.decode(out[0][prompt_len:], skip_special_tokens=True).strip()
+        translated = translated.replace("<end_of_turn>", "").strip()
+        return translated or text
+
+    def translate_html_file(self, html_path: Path) -> TranslatedHtmlArtifact:
+        file_started_at = perf_counter()
+        self._log_line(f"TranslateGemma: start file '{html_path.name}'")
+
+        read_started_at = perf_counter()
+        source_html = html_path.read_text(encoding="utf-8", errors="replace")
+        self._log_line(f"[timer] translategemma.read_html: {perf_counter() - read_started_at:.2f}s")
+
+        translate_started_at = perf_counter()
+        progress_next_pct = 10
+        progress_logged_first = False
+        llm_calls = 0
+
+        def translate_text_with_progress(text: str) -> str:
+            nonlocal llm_calls
+            llm_calls += 1
+            call_started_at = perf_counter()
+            self._log_line(
+                "TranslateGemma progress: "
+                f"LLM call {llm_calls} start for {html_path.name} "
+                f"(chars={len(text)})"
+            )
+            translated = self.translate_text(text)
+            self._log_line(
+                "TranslateGemma progress: "
+                f"LLM call {llm_calls} done for {html_path.name} "
+                f"(elapsed={perf_counter() - call_started_at:.2f}s)"
+            )
+            return translated
+
+        def on_segment_start(segment_no: int, total: int) -> None:
+            self._log_line(
+                "TranslateGemma progress: "
+                f"segment {segment_no}/{max(1, total)} start for {html_path.name}"
+            )
+
+        def on_progress(done: int, total: int) -> None:
+            nonlocal progress_next_pct, progress_logged_first
+            if total <= 0:
+                return
+            pct = int((done * 100) / total)
+            should_log = False
+            if not progress_logged_first:
+                should_log = True
+                progress_logged_first = True
+            elif done >= total:
+                should_log = True
+            elif pct >= progress_next_pct:
+                should_log = True
+                while pct >= progress_next_pct:
+                    progress_next_pct += 10
+            if not should_log:
+                return
+            self._log_line(
+                "TranslateGemma progress: "
+                f"{done}/{total} segments ({pct}%) "
+                f"for {html_path.name} "
+                f"(elapsed={perf_counter() - translate_started_at:.1f}s)"
+            )
+
+        translated_html, translated_segments = translate_html_text_nodes(
+            source_html,
+            translate_text=translate_text_with_progress,
+            max_chunk_chars=max(256, self._config.max_chunk_chars),
+            on_segment_start=on_segment_start,
+            on_progress=on_progress,
+        )
+        self._log_line(
+            f"[timer] translategemma.translate_html: {perf_counter() - translate_started_at:.2f}s"
+        )
+
+        polish_started_at = perf_counter()
+        polished = polish_html_document(translated_html)
+        self._log_line(f"[timer] translategemma.polish_html: {perf_counter() - polish_started_at:.2f}s")
+
+        language_code = normalize_language_code(self._config.target_language_code)
+        language_name = language_name_for_code(language_code)
+        output_path = translated_html_output_path(html_path, language_code)
+        write_started_at = perf_counter()
+        output_path.write_text(polished, encoding="utf-8")
+        self._log_line(f"[timer] translategemma.write_html: {perf_counter() - write_started_at:.2f}s")
+        self._log_line(
+            f"[timer] translategemma.file_total: {perf_counter() - file_started_at:.2f}s ({html_path.name})"
+        )
+
+        return TranslatedHtmlArtifact(
+            source_html_path=html_path,
+            translated_html_path=output_path,
+            language_code=language_code,
+            language_name=language_name,
+            translated_segments=translated_segments,
+        )
+

@@ -1,5 +1,6 @@
 ﻿from __future__ import annotations
 
+import os
 import queue
 import threading
 import tkinter as tk
@@ -21,6 +22,13 @@ from .pipeline import (
 )
 from .runtime_temp import cleanup_runtime_temp_root, runtime_temp_root
 from .staging import DEFAULT_MAX_BASE_LEN, MIN_BASE_LEN
+from .translategemma import (
+    DEFAULT_TRANSLATEGEMMA_MODEL,
+    DEFAULT_TRANSLATEGEMMA_TARGET_LANGUAGE,
+    OFFICIAL_TRANSLATEGEMMA_MODEL_REPO,
+    TRANSLATEGEMMA_LANGUAGE_CHOICES,
+    language_name_for_code,
+)
 from .zotero import ZoteroRepository
 
 
@@ -67,6 +75,13 @@ class ZoteroPdfGui:
             spec.mode.value: tk.BooleanVar(value=(spec.mode == ExportMode.CLASSIC))
             for spec in all_export_mode_specs()
         }
+        self.translate_html_with_gemma = tk.BooleanVar(value=False)
+        self.translation_target_language_code = tk.StringVar(
+            value=DEFAULT_TRANSLATEGEMMA_TARGET_LANGUAGE
+        )
+        self.translation_label = tk.StringVar(value="")
+        self.translation_model_ref = tk.StringVar(value=DEFAULT_TRANSLATEGEMMA_MODEL)
+        self.translation_hf_token = tk.StringVar(value="")
 
         self.max_base_len = tk.StringVar(value=str(DEFAULT_MAX_BASE_LEN))
         self.marker_executable = tk.StringVar(value="marker")
@@ -82,6 +97,7 @@ class ZoteroPdfGui:
         self.runner = MarkerRunner()
 
         self._build_ui()
+        self._refresh_translation_label()
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
         self._refresh_profiles(initial=True)
         self.root.after(100, self._drain_log_queue)
@@ -189,6 +205,42 @@ class ZoteroPdfGui:
                 text=spec.label,
                 variable=self.export_mode_vars[spec.mode.value],
             ).pack(anchor="w")
+
+        translation_frame = tk.LabelFrame(options, text="TranslateGemma (HTML outputs)")
+        translation_frame.pack(anchor="w", fill="x", pady=(8, 0))
+        tk.Checkbutton(
+            translation_frame,
+            text="Translate HTML outputs before saving/attaching",
+            variable=self.translate_html_with_gemma,
+        ).pack(anchor="w")
+
+        translation_lang_row = tk.Frame(translation_frame)
+        translation_lang_row.pack(anchor="w", fill="x", pady=(4, 0))
+        tk.Label(translation_lang_row, textvariable=self.translation_label).pack(side="left")
+        tk.Button(
+            translation_lang_row,
+            text="Choose language",
+            command=self._pick_translation_language,
+        ).pack(side="left", padx=(8, 0))
+
+        translation_model_row = tk.Frame(translation_frame)
+        translation_model_row.pack(anchor="w", fill="x", pady=(4, 0))
+        tk.Label(translation_model_row, text="Model path or HF repo:").pack(side="left")
+        tk.Entry(
+            translation_model_row,
+            textvariable=self.translation_model_ref,
+            width=68,
+        ).pack(side="left", padx=(6, 0))
+
+        translation_token_row = tk.Frame(translation_frame)
+        translation_token_row.pack(anchor="w", fill="x", pady=(4, 0))
+        tk.Label(translation_token_row, text="HF token (for gated model):").pack(side="left")
+        tk.Entry(
+            translation_token_row,
+            textvariable=self.translation_hf_token,
+            width=52,
+            show="*",
+        ).pack(side="left", padx=(6, 0))
 
         limits = tk.Frame(options)
         limits.pack(anchor="w", pady=(6, 0))
@@ -315,6 +367,60 @@ class ZoteroPdfGui:
         finally:
             self.log_context_menu.grab_release()
         return "break"
+
+    def _refresh_translation_label(self) -> None:
+        try:
+            language_name = language_name_for_code(self.translation_target_language_code.get())
+        except Exception:
+            language_name = self.translation_target_language_code.get().strip() or "unknown"
+        self.translation_label.set(f"Target language: {language_name}")
+
+    def _pick_translation_language(self) -> None:
+        dialog = tk.Toplevel(self.root)
+        dialog.title("TranslateGemma language")
+        dialog.geometry("420x290")
+        dialog.transient(self.root)
+        dialog.grab_set()
+
+        selected_code = tk.StringVar(value=self.translation_target_language_code.get())
+
+        tk.Label(
+            dialog,
+            text=(
+                "Choose language for translated HTML output.\n"
+                "Translated files will be saved as '<name>.<lang>.html'."
+            ),
+            justify="left",
+            anchor="w",
+        ).pack(fill="x", padx=12, pady=(12, 8))
+
+        langs = tk.Frame(dialog)
+        langs.pack(fill="both", expand=True, padx=12, pady=(0, 6))
+        for code, name in TRANSLATEGEMMA_LANGUAGE_CHOICES:
+            tk.Radiobutton(
+                langs,
+                text=f"{name} ({code})",
+                value=code,
+                variable=selected_code,
+                anchor="w",
+                justify="left",
+            ).pack(anchor="w")
+
+        actions = tk.Frame(dialog)
+        actions.pack(fill="x", padx=12, pady=(0, 12))
+
+        def apply_selection() -> None:
+            self.translation_target_language_code.set(selected_code.get().strip().lower())
+            self._refresh_translation_label()
+            dialog.destroy()
+
+        def on_cancel() -> None:
+            dialog.destroy()
+
+        tk.Button(actions, text="Apply", command=apply_selection).pack(side="left")
+        tk.Button(actions, text="Cancel", command=on_cancel).pack(side="left", padx=(8, 0))
+        dialog.protocol("WM_DELETE_WINDOW", on_cancel)
+        dialog.wait_window()
 
     def _selected_export_modes(self) -> list[ExportMode]:
         return [
@@ -670,6 +776,51 @@ class ZoteroPdfGui:
             messagebox.showerror("Error", "Select at least one export mode.")
             return
 
+        translation_enabled = self.translate_html_with_gemma.get()
+        translation_target_code = (
+            self.translation_target_language_code.get().strip().lower()
+            or DEFAULT_TRANSLATEGEMMA_TARGET_LANGUAGE
+        )
+        translation_model_ref = self.translation_model_ref.get().strip() or DEFAULT_TRANSLATEGEMMA_MODEL
+        translation_hf_token = (
+            self.translation_hf_token.get().strip()
+            or os.environ.get("HF_TOKEN")
+            or os.environ.get("HUGGINGFACE_HUB_TOKEN")
+            or os.environ.get("HUGGINGFACE_TOKEN")
+            or None
+        )
+        if translation_enabled and not translation_model_ref:
+            messagebox.showerror("Error", "Set TranslateGemma model path or HF repo.")
+            return
+        if (
+            translation_enabled
+            and translation_model_ref == OFFICIAL_TRANSLATEGEMMA_MODEL_REPO
+            and not Path(translation_model_ref).expanduser().exists()
+            and not translation_hf_token
+        ):
+            messagebox.showerror(
+                "TranslateGemma token required",
+                f"{OFFICIAL_TRANSLATEGEMMA_MODEL_REPO} is gated on Hugging Face.\n\n"
+                "Accept the model license on HF and provide a token in the GUI,\n"
+                "or set HF_TOKEN / HUGGINGFACE_HUB_TOKEN in environment,\n"
+                "or point model path to a local downloaded folder.",
+            )
+            return
+        if (
+            translation_enabled
+            and not self.translation_hf_token.get().strip()
+            and translation_hf_token is not None
+        ):
+            self._log("TranslateGemma: HF token loaded from environment.")
+        if translation_enabled and not any(
+            get_export_mode_spec(mode).marker_output_format == "html"
+            for mode in selected_modes
+        ):
+            self._log(
+                "TranslateGemma note: selected export modes do not produce HTML; "
+                "translation will be skipped."
+            )
+
         selected_pdf_path_objs = [Path(path) for path in selected_pdf_paths]
         artifact_extension = get_export_mode_spec(selected_modes[0]).artifact_extension
 
@@ -765,10 +916,27 @@ class ZoteroPdfGui:
                 selected_source_pdf_paths=[str(path) for path in selected_pdf_path_objs],
                 skip_existing_source_pdf_paths=None if not skip_existing_override else [],
                 export_mode=export_mode_str,
+                translate_html_with_gemma=translation_enabled,
+                translation_target_language_code=translation_target_code,
+                translation_source_language="Auto",
+                translation_model_ref=translation_model_ref,
+                translation_hf_token=translation_hf_token,
             ))
         self._log(f"[timer] gui.run.build_pipeline_options: {perf_counter() - options_started_at:.2f}s")
         self._log(f"[timer] gui.run.pre_worker_total: {perf_counter() - run_prepare_started_at:.2f}s")
         self._log(f"GUI selected export modes: {', '.join(m.value for m in selected_modes)}")
+        if translation_enabled:
+            try:
+                translation_target_name = language_name_for_code(translation_target_code)
+            except Exception:
+                translation_target_name = translation_target_code
+            self._log(
+                "TranslateGemma: enabled "
+                f"(target={translation_target_name} [{translation_target_code}], "
+                f"model={translation_model_ref})"
+            )
+        else:
+            self._log("TranslateGemma: disabled")
         self._log(f"GUI pipeline groups: {len(all_options)}")
         for idx, options in enumerate(all_options, start=1):
             modes = options.export_modes_list
@@ -827,6 +995,18 @@ class ZoteroPdfGui:
                             f"{summary.llm_bundle_dir} "
                             f"(md={summary.llm_bundle_markdown_files}, "
                             f"images={summary.llm_bundle_image_files})"
+                        )
+                    if summary.translated_html_total or summary.translated_html_failed_total:
+                        language_label = (
+                            summary.translated_html_language_name
+                            or summary.translated_html_language_code
+                            or "n/a"
+                        )
+                        self._queue_log(
+                            "TranslateGemma: "
+                            f"translated={summary.translated_html_total}, "
+                            f"failed={summary.translated_html_failed_total}, "
+                            f"language={language_label}"
                         )
                     if ExportMode.ZOTERO.value in summary.export_mode:
                         self._queue_log(

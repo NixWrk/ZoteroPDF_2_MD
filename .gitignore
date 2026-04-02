@@ -4,6 +4,7 @@
 *.pyd
 .Python
 .venv/
+.venv_latest/
 venv/
 .pytest_cache/
 .ruff_cache/
@@ -12,10 +13,14 @@ venv/
 htmlcov/
 *.log
 *.tmp
+.tmp_local*/
+.tmp_*/
 *.bak
 .dist/
 build/
 dist/
+*.egg-info/
+src/*.egg-info/
 
 # Runtime artifacts
 md_output/

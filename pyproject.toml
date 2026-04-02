@@ -13,6 +13,14 @@ authors = [
 ]
 dependencies = []
 
+[project.optional-dependencies]
+translategemma = [
+  "torch",
+  "transformers",
+  "accelerate",
+  "huggingface_hub",
+]
+
 [project.scripts]
 zoteropdf2md-gui = "zoteropdf2md.gui:main"
 

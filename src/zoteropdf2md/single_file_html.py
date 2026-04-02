@@ -9,10 +9,26 @@ from pathlib import Path
 
 
 _IMG_SRC_PATTERN = re.compile(r'(<img\b[^>]*?\bsrc\s*=\s*)(["\'])([^"\']+)(\2)', re.IGNORECASE)
+_HEAD_OPEN_PATTERN = re.compile(r"<head\b[^>]*>", re.IGNORECASE)
 _HEAD_CLOSE_PATTERN = re.compile(r"</head>", re.IGNORECASE)
+_META_CHARSET_PATTERN = re.compile(r"<meta\s+charset\s*=\s*['\"]?utf-8['\"]?\s*/?>", re.IGNORECASE)
 _HTML_OPEN_PATTERN = re.compile(r"<html\b[^>]*>", re.IGNORECASE)
 _BODY_PATTERN = re.compile(r"(<body\b[^>]*>)(.*?)(</body>)", re.IGNORECASE | re.DOTALL)
+_TAG_SPLIT_PATTERN = re.compile(r"(<[^>]+>)")
+_OPEN_TAG_PATTERN = re.compile(r"^<\s*([a-zA-Z0-9:_-]+)")
+_CLOSE_TAG_PATTERN = re.compile(r"^<\s*/\s*([a-zA-Z0-9:_-]+)")
 _ESCAPED_INLINE_TAG_PATTERN = re.compile(r"&lt;(/?)(sup|sub)&gt;", re.IGNORECASE)
+_EMPTY_PARAGRAPH_PATTERN = re.compile(r"<p>\s*(?:&nbsp;|\u00a0)?\s*</p>", re.IGNORECASE)
+_EXCESSIVE_BREAKS_PATTERN = re.compile(r"(?:<br\s*/?>\s*){4,}", re.IGNORECASE)
+_URL_PATTERN = re.compile(r"(?P<url>(?:https?://|www\.)[^\s<>\"]+)", re.IGNORECASE)
+_REFERENCES_HEADING_PATTERN = re.compile(
+    r"<h([1-6])\b[^>]*>\s*(?:<[^>]+>\s*)*References\s*(?:</[^>]+>\s*)*</h\1>",
+    re.IGNORECASE | re.DOTALL,
+)
+_LI_OPEN_PATTERN = re.compile(r"<li\b([^>]*)>", re.IGNORECASE)
+_SUP_PATTERN = re.compile(r"<sup>(.*?)</sup>", re.IGNORECASE | re.DOTALL)
+_SUP_NUMBER_PATTERN = re.compile(r"\d+")
+_SKIP_AUTOLINK_TAGS = {"script", "style", "code", "pre", "math", "svg", "a"}
 
 _LATEX_LABEL_PATTERN = re.compile(r"\\label\{[^{}]*\}")
 _LATEX_TEXTBF_PATTERN = re.compile(r"\\textbf\{([^{}]*)\}")
@@ -43,30 +59,81 @@ _DEFAULT_READABILITY_STYLE = """
   :root { color-scheme: light; }
   body {
     margin: 0;
-    padding: 24px;
-    font-family: "Segoe UI", Arial, sans-serif;
-    line-height: 1.55;
+    padding: 22px;
+    font-family: "Segoe UI", "Arial", sans-serif;
+    line-height: 1.62;
     color: #1f2937;
-    background: #f4f6f8;
+    background: linear-gradient(180deg, #f5f8fb 0%, #edf2f7 100%);
   }
   #marker-doc {
-    max-width: 920px;
+    max-width: 980px;
     margin: 0 auto;
     background: #ffffff;
-    border: 1px solid #dfe5eb;
-    border-radius: 10px;
-    box-shadow: 0 2px 10px rgba(16, 24, 40, 0.06);
-    padding: 28px 34px;
+    border: 1px solid #dbe5ef;
+    border-radius: 12px;
+    box-shadow: 0 8px 22px rgba(15, 23, 42, 0.08);
+    padding: 30px 36px;
   }
-  h1, h2, h3, h4 {
+  h1, h2, h3, h4, h5, h6 {
     color: #0f172a;
-    line-height: 1.3;
+    line-height: 1.28;
     margin-top: 1.15em;
     margin-bottom: 0.5em;
   }
   p {
     margin: 0.6em 0;
     word-break: break-word;
+  }
+  a {
+    color: #0b57d0;
+    text-decoration: underline;
+    text-underline-offset: 2px;
+  }
+  a:hover {
+    color: #1d4ed8;
+  }
+  .z2m-ref-link {
+    text-decoration: none;
+  }
+  ul, ol { margin: 0.65em 0 0.75em 1.3em; }
+  li { margin: 0.28em 0; }
+  blockquote {
+    margin: 0.9em 0;
+    padding: 0.55em 0.9em;
+    border-left: 4px solid #60a5fa;
+    background: #f8fbff;
+    color: #0b355c;
+  }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 1.1em 0;
+    font-size: 0.96rem;
+  }
+  th, td {
+    border: 1px solid #dbe3ec;
+    padding: 0.45em 0.58em;
+    vertical-align: top;
+  }
+  th {
+    background: #f4f8fc;
+    font-weight: 600;
+  }
+  pre, code {
+    font-family: "Cascadia Mono", "Consolas", "Courier New", monospace;
+    font-size: 0.93em;
+  }
+  pre {
+    background: #f7fafc;
+    border: 1px solid #dbe3ec;
+    border-radius: 8px;
+    padding: 0.85em 0.95em;
+    overflow-x: auto;
+  }
+  code {
+    background: #f3f7fb;
+    border-radius: 4px;
+    padding: 0.08em 0.25em;
   }
   img {
     max-width: 100%;
@@ -79,6 +146,11 @@ _DEFAULT_READABILITY_STYLE = """
   math {
     overflow-x: auto;
     display: block;
+  }
+  @media (max-width: 960px) {
+    body { padding: 10px; }
+    #marker-doc { padding: 16px 15px; border-radius: 8px; }
+    table { display: block; overflow-x: auto; white-space: nowrap; }
   }
 </style>
 """.strip()
@@ -137,6 +209,27 @@ def _inject_default_styles(html: str) -> str:
     return f"<head>\n{_DEFAULT_READABILITY_STYLE}\n</head>\n{html}"
 
 
+def _inject_utf8_charset(html: str) -> str:
+    if _META_CHARSET_PATTERN.search(html):
+        return html
+
+    if _HEAD_OPEN_PATTERN.search(html):
+        return _HEAD_OPEN_PATTERN.sub(
+            lambda m: f'{m.group(0)}\n<meta charset="utf-8">',
+            html,
+            count=1,
+        )
+
+    if _HTML_OPEN_PATTERN.search(html):
+        return _HTML_OPEN_PATTERN.sub(
+            lambda m: f'{m.group(0)}\n<head>\n<meta charset="utf-8">\n</head>',
+            html,
+            count=1,
+        )
+
+    return f'<head>\n<meta charset="utf-8">\n</head>\n{html}'
+
+
 def _wrap_body_in_container(html: str) -> str:
     if 'id="marker-doc"' in html:
         return html
@@ -175,6 +268,8 @@ def _fix_latex_text_commands(html: str) -> str:
 def _inject_mathjax(html: str) -> str:
     if 'MathJax-script' in html:
         return html
+    if not _HEAD_CLOSE_PATTERN.search(html):
+        html = _inject_default_styles(html)
     return _HEAD_CLOSE_PATTERN.sub(f"{_MATHJAX_SCRIPT}\n</head>", html, count=1)
 
 
@@ -187,6 +282,151 @@ def _fix_common_mojibake(html: str) -> str:
     for bad, good in _MOJIBAKE_REPLACEMENTS:
         fixed = fixed.replace(bad, good)
     return fixed
+
+
+def _update_skip_stack(tag_fragment: str, skip_stack: list[str]) -> None:
+    raw = tag_fragment.strip()
+    if not raw.startswith("<") or raw.startswith("<!--") or raw.startswith("<!"):
+        return
+
+    close_match = _CLOSE_TAG_PATTERN.match(raw)
+    if close_match is not None:
+        tag_name = close_match.group(1).lower()
+        for idx in range(len(skip_stack) - 1, -1, -1):
+            if skip_stack[idx] == tag_name:
+                del skip_stack[idx]
+                break
+        return
+
+    if raw.endswith("/>"):
+        return
+
+    open_match = _OPEN_TAG_PATTERN.match(raw)
+    if open_match is None:
+        return
+    tag_name = open_match.group(1).lower()
+    if tag_name in _SKIP_AUTOLINK_TAGS:
+        skip_stack.append(tag_name)
+
+
+def _split_url_and_trailing_punct(url: str) -> tuple[str, str]:
+    core = url
+    trailing = ""
+
+    while core and core[-1] in ".,;:!?":
+        trailing = core[-1] + trailing
+        core = core[:-1]
+
+    while core.endswith(")") and core.count("(") < core.count(")"):
+        trailing = ")" + trailing
+        core = core[:-1]
+
+    return core, trailing
+
+
+def _autolink_text_urls(text: str) -> str:
+    def replace(match: re.Match[str]) -> str:
+        raw_url = match.group("url")
+        core_url, trailing = _split_url_and_trailing_punct(raw_url)
+        if not core_url:
+            return raw_url
+
+        href = core_url
+        if core_url.lower().startswith("www."):
+            href = f"https://{core_url}"
+
+        return (
+            f'<a href="{href}" target="_blank" rel="noopener noreferrer">{core_url}</a>'
+            f"{trailing}"
+        )
+
+    return _URL_PATTERN.sub(replace, text)
+
+
+def _autolink_plain_urls(html: str) -> str:
+    parts = _TAG_SPLIT_PATTERN.split(html)
+    out: list[str] = []
+    skip_stack: list[str] = []
+
+    for part in parts:
+        if not part:
+            continue
+        if part.startswith("<"):
+            _update_skip_stack(part, skip_stack)
+            out.append(part)
+            continue
+        if skip_stack:
+            out.append(part)
+            continue
+        out.append(_autolink_text_urls(part))
+
+    return "".join(out)
+
+
+def _add_reference_ids_and_citation_links(html: str) -> str:
+    heading_match = _REFERENCES_HEADING_PATTERN.search(html)
+    if heading_match is None:
+        return html
+
+    split_at = heading_match.end()
+    before_references = html[:split_at]
+    references_and_after = html[split_at:]
+
+    ref_index = 0
+
+    def add_li_id(match: re.Match[str]) -> str:
+        nonlocal ref_index
+        attrs = match.group(1) or ""
+        if re.search(r"\bid\s*=", attrs, re.IGNORECASE):
+            return match.group(0)
+        ref_index += 1
+        return f'<li{attrs} id="ref-{ref_index}">'
+
+    references_with_ids = _LI_OPEN_PATTERN.sub(add_li_id, references_and_after)
+    if ref_index == 0:
+        return html
+
+    def link_sup(match: re.Match[str]) -> str:
+        inner = match.group(1)
+        if "<a " in inner.lower():
+            return match.group(0)
+
+        def replace_number(num_match: re.Match[str]) -> str:
+            number_text = num_match.group(0)
+            try:
+                number = int(number_text)
+            except ValueError:
+                return number_text
+            if 1 <= number <= ref_index:
+                return f'<a href="#ref-{number}" class="z2m-ref-link">{number_text}</a>'
+            return number_text
+
+        linked_inner = _SUP_NUMBER_PATTERN.sub(replace_number, inner)
+        return f"<sup>{linked_inner}</sup>"
+
+    before_with_citation_links = _SUP_PATTERN.sub(link_sup, before_references)
+    return before_with_citation_links + references_with_ids
+
+
+def _cleanup_empty_html_blocks(html: str) -> str:
+    cleaned = _EMPTY_PARAGRAPH_PATTERN.sub("", html)
+    cleaned = _EXCESSIVE_BREAKS_PATTERN.sub("<br><br>", cleaned)
+    return cleaned
+
+
+def polish_html_document(html: str) -> str:
+    polished = drop_repeated_phrases(html)
+    polished = _fix_latex_text_commands(polished)
+    polished = _unescape_inline_sup_sub(polished)
+    polished = _fix_common_mojibake(polished)
+    polished = _add_reference_ids_and_citation_links(polished)
+    polished = _autolink_plain_urls(polished)
+    polished = _inject_utf8_charset(polished)
+    polished = _inject_default_styles(polished)
+    polished = _inject_mathjax(polished)
+    polished = _wrap_body_in_container(polished)
+    polished = _cleanup_empty_html_blocks(polished)
+    return polished
 
 
 def inline_images_from_html_file(html_path: Path) -> InlineHtmlResult:
@@ -218,11 +458,5 @@ def inline_images_from_html_file(html_path: Path) -> InlineHtmlResult:
         return f"{prefix}{quote}{data_url}{suffix}"
 
     inlined_html = _IMG_SRC_PATTERN.sub(replace, text)
-    inlined_html = drop_repeated_phrases(inlined_html)
-    inlined_html = _fix_latex_text_commands(inlined_html)
-    inlined_html = _unescape_inline_sup_sub(inlined_html)
-    inlined_html = _fix_common_mojibake(inlined_html)
-    inlined_html = _inject_default_styles(inlined_html)
-    inlined_html = _inject_mathjax(inlined_html)
-    inlined_html = _wrap_body_in_container(inlined_html)
+    inlined_html = polish_html_document(inlined_html)
     return InlineHtmlResult(html=inlined_html, inlined_images=inlined_count)
