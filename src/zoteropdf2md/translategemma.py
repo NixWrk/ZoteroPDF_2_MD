@@ -324,6 +324,7 @@ class TranslateGemmaTranslator:
         self._model = None
         self._device = "cpu"
         self._context_window_tokens: int | None = None
+        self._base_streamer_cls = None
 
     def _log_line(self, message: str) -> None:
         if self._log is not None:
@@ -364,6 +365,7 @@ class TranslateGemmaTranslator:
         try:
             import torch
             from transformers import AutoModelForCausalLM, AutoTokenizer
+            from transformers.generation.streamers import BaseStreamer
         except Exception as exc:
             raise RuntimeError(
                 "TranslateGemma dependencies are missing. Install: "
@@ -372,6 +374,7 @@ class TranslateGemmaTranslator:
             ) from exc
 
         self._torch = torch
+        self._base_streamer_cls = BaseStreamer
         resolved_model_ref = self._resolve_model_ref()
         token = (self._config.hf_token or "").strip() or None
         cache_dir = self._config.cache_dir
@@ -441,7 +444,12 @@ class TranslateGemmaTranslator:
         self._context_window_tokens = context_window
         return context_window
 
-    def translate_text(self, text: str) -> str:
+    def translate_text(
+        self,
+        text: str,
+        *,
+        on_token_progress: Callable[[int, int], None] | None = None,
+    ) -> str:
         self._ensure_loaded()
         assert self._torch is not None
         assert self._tokenizer is not None
@@ -491,6 +499,69 @@ class TranslateGemmaTranslator:
             max_new_tokens = min(max_new_tokens, configured_cap)
         max_new_tokens = min(max_new_tokens, available_for_generation)
 
+        streamer = None
+        if on_token_progress is not None and self._base_streamer_cls is not None:
+            base_streamer_cls = self._base_streamer_cls
+            report_step_tokens = 16
+            report_interval_sec = 0.75
+
+            class _TokenProgressStreamer(base_streamer_cls):
+                def __init__(self) -> None:
+                    self.generated_tokens = 0
+                    self._last_reported_tokens = 0
+                    self._last_reported_at = perf_counter()
+                    self._first_chunk = True
+
+                @staticmethod
+                def _token_count(value: object) -> int:
+                    shape = getattr(value, "shape", None)
+                    if shape is not None:
+                        count = 1
+                        for dim in shape:
+                            count *= int(dim)
+                        return max(0, count)
+                    if isinstance(value, (list, tuple)):
+                        return len(value)
+                    return 1
+
+                def put(self, value: object) -> None:
+                    token_count = self._token_count(value)
+                    if token_count <= 0:
+                        return
+
+                    # Some generation paths emit the prompt in one initial chunk.
+                    if self._first_chunk and token_count > 1:
+                        self._first_chunk = False
+                        return
+                    self._first_chunk = False
+
+                    self.generated_tokens += token_count
+                    now = perf_counter()
+                    should_report = False
+                    if self.generated_tokens >= max_new_tokens:
+                        should_report = True
+                    elif self.generated_tokens - self._last_reported_tokens >= report_step_tokens:
+                        should_report = True
+                    elif now - self._last_reported_at >= report_interval_sec:
+                        should_report = True
+
+                    if should_report:
+                        self._last_reported_tokens = self.generated_tokens
+                        self._last_reported_at = now
+                        try:
+                            on_token_progress(self.generated_tokens, max_new_tokens)
+                        except Exception:
+                            pass
+
+                def end(self) -> None:
+                    if self.generated_tokens != self._last_reported_tokens:
+                        try:
+                            on_token_progress(self.generated_tokens, max_new_tokens)
+                        except Exception:
+                            pass
+
+            streamer = _TokenProgressStreamer()
+
         with self._torch.no_grad():
             out = self._model.generate(
                 **inputs,
@@ -498,6 +569,7 @@ class TranslateGemmaTranslator:
                 do_sample=False,
                 repetition_penalty=1.2,
                 pad_token_id=self._tokenizer.eos_token_id,
+                streamer=streamer,
             )
 
         translated = self._tokenizer.decode(out[0][prompt_len:], skip_special_tokens=True).strip()
@@ -521,12 +593,38 @@ class TranslateGemmaTranslator:
             nonlocal llm_calls
             llm_calls += 1
             call_started_at = perf_counter()
+            token_next_pct = 5
+            token_last_logged = 0
             self._log_line(
                 "TranslateGemma progress: "
                 f"LLM call {llm_calls} start for {html_path.name} "
                 f"(chars={len(text)})"
             )
-            translated = self.translate_text(text)
+
+            def on_token_progress(generated: int, target: int) -> None:
+                nonlocal token_next_pct, token_last_logged
+                if target <= 0:
+                    return
+                pct = int((generated * 100) / target)
+                should_log = False
+                if generated >= target:
+                    should_log = True
+                elif generated - token_last_logged >= 64:
+                    should_log = True
+                elif pct >= token_next_pct:
+                    should_log = True
+                    while pct >= token_next_pct:
+                        token_next_pct += 5
+                if not should_log:
+                    return
+                token_last_logged = generated
+                self._log_line(
+                    "TranslateGemma progress: "
+                    f"LLM call {llm_calls} tokens {generated}/{target} ({pct}%) "
+                    f"for {html_path.name}"
+                )
+
+            translated = self.translate_text(text, on_token_progress=on_token_progress)
             self._log_line(
                 "TranslateGemma progress: "
                 f"LLM call {llm_calls} done for {html_path.name} "
