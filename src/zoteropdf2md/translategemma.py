@@ -39,6 +39,10 @@ _REFERENCES_SECTION_HEADING_PATTERN = re.compile(
     r"\s*(?:</[^>]+>\s*)*</h[1-6]>",
     re.IGNORECASE | re.DOTALL,
 )
+_URL_LITERAL_PATTERN = re.compile(r"(?:https?://|www\.)[^\s<>\"]+", re.IGNORECASE)
+_DOI_LITERAL_PATTERN = re.compile(r"\b10\.\d{4,9}/[^\s<>()]+", re.IGNORECASE)
+_EMAIL_LITERAL_PATTERN = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")
+_LATIN_ACRONYM_PATTERN = re.compile(r"\b[A-Z]{2,}(?:-[A-Z0-9]+)*\b")
 
 
 @dataclass(frozen=True)
@@ -257,6 +261,38 @@ def _split_references_tail(html: str) -> tuple[str, str]:
         return html, ""
     split_at = heading_match.start()
     return html[:split_at], html[split_at:]
+
+
+def _protect_literals_for_translation(text: str) -> tuple[str, dict[str, str]]:
+    protected = text
+    mapping: dict[str, str] = {}
+    counter = 0
+
+    def apply(pattern: re.Pattern[str]) -> None:
+        nonlocal protected, counter
+
+        def repl(match: re.Match[str]) -> str:
+            nonlocal counter
+            literal = match.group(0)
+            placeholder = f"[[Z2MKEEP{counter}]]"
+            counter += 1
+            mapping[placeholder] = literal
+            return placeholder
+
+        protected = pattern.sub(repl, protected)
+
+    apply(_URL_LITERAL_PATTERN)
+    apply(_DOI_LITERAL_PATTERN)
+    apply(_EMAIL_LITERAL_PATTERN)
+    apply(_LATIN_ACRONYM_PATTERN)
+    return protected, mapping
+
+
+def _restore_protected_literals(text: str, mapping: dict[str, str]) -> str:
+    restored = text
+    for placeholder, literal in mapping.items():
+        restored = restored.replace(placeholder, literal)
+    return restored
 
 
 def translate_html_text_nodes(
@@ -480,7 +516,10 @@ class TranslateGemmaTranslator:
                 f"Translate the following text to {target_language}. "
                 "Detect the source language automatically. "
                 "Preserve personal names, organization names, journal titles, "
-                "acronyms, citation markers, URLs, DOIs, emails, and all numbers exactly. "
+                "citation markers, URLs, DOIs, emails, and all numbers exactly. "
+                "If source text uses Latin-letter acronyms, keep them in Latin letters "
+                "(do not transliterate to Cyrillic). "
+                "Do not modify placeholders like [[Z2MKEEP0]]. "
                 "Do not transliterate names. "
                 "Output only the translation, nothing else."
             )
@@ -488,15 +527,20 @@ class TranslateGemmaTranslator:
             instruction = (
                 f"Translate the following text from {source_language} to {target_language}. "
                 "Preserve personal names, organization names, journal titles, "
-                "acronyms, citation markers, URLs, DOIs, emails, and all numbers exactly. "
+                "citation markers, URLs, DOIs, emails, and all numbers exactly. "
+                "If source text uses Latin-letter acronyms, keep them in Latin letters "
+                "(do not transliterate to Cyrillic). "
+                "Do not modify placeholders like [[Z2MKEEP0]]. "
                 "Do not transliterate names. "
                 "Output only the translation, nothing else."
             )
 
+        protected_text, protected_mapping = _protect_literals_for_translation(text)
+
         prompt = (
             "<start_of_turn>user\n"
             f"{instruction}\n\n"
-            f"{text}<end_of_turn>\n"
+            f"{protected_text}<end_of_turn>\n"
             "<start_of_turn>model\n"
         )
         inputs = self._tokenizer(prompt, return_tensors="pt")
@@ -595,6 +639,7 @@ class TranslateGemmaTranslator:
 
         translated = self._tokenizer.decode(out[0][prompt_len:], skip_special_tokens=True).strip()
         translated = translated.replace("<end_of_turn>", "").strip()
+        translated = _restore_protected_literals(translated, protected_mapping)
         return translated or text
 
     def translate_html_file(self, html_path: Path) -> TranslatedHtmlArtifact:

@@ -82,3 +82,26 @@ def test_polish_html_document_links_sup_citations_to_references() -> None:
         '<sup><a href="#ref-1" class="z2m-ref-link">1</a>,'
         '<a href="#ref-2" class="z2m-ref-link">2</a></sup>'
     ) in polished
+
+
+def test_polish_html_document_fixes_spaced_sup_and_backslash_artifacts() -> None:
+    html = (
+        "<html><body>"
+        "<p>Fig. 2 \\ | \\ Pipeline. \\ The \\ key steps. < sup>3</ sup></p>"
+        "</body></html>"
+    )
+    polished = polish_html_document(html)
+
+    assert " \\ | \\" not in polished
+    assert "\\ The \\" not in polished
+    assert "<sup>3</sup>" in polished
+
+
+def test_polish_html_document_repairs_split_url_before_autolink() -> None:
+    html = (
+        "<html><body>"
+        "<p>Preprint at https://doi.org/10.48550/ arXiv.2408.06292</p>"
+        "</body></html>"
+    )
+    polished = polish_html_document(html)
+    assert 'href="https://doi.org/10.48550/arXiv.2408.06292"' in polished

@@ -18,6 +18,7 @@ _TAG_SPLIT_PATTERN = re.compile(r"(<[^>]+>)")
 _OPEN_TAG_PATTERN = re.compile(r"^<\s*([a-zA-Z0-9:_-]+)")
 _CLOSE_TAG_PATTERN = re.compile(r"^<\s*/\s*([a-zA-Z0-9:_-]+)")
 _ESCAPED_INLINE_TAG_PATTERN = re.compile(r"&lt;(/?)(sup|sub)&gt;", re.IGNORECASE)
+_SPACED_INLINE_TAG_PATTERN = re.compile(r"<\s*(/?)\s*(sup|sub)\s*>", re.IGNORECASE)
 _EMPTY_PARAGRAPH_PATTERN = re.compile(r"<p>\s*(?:&nbsp;|\u00a0)?\s*</p>", re.IGNORECASE)
 _EXCESSIVE_BREAKS_PATTERN = re.compile(r"(?:<br\s*/?>\s*){4,}", re.IGNORECASE)
 _URL_PATTERN = re.compile(r"(?P<url>(?:https?://|www\.)[^\s<>\"]+)", re.IGNORECASE)
@@ -35,7 +36,12 @@ _SUP_NUMBER_PATTERN = re.compile(r"\d+")
 _SKIP_AUTOLINK_TAGS = {"script", "style", "code", "pre", "math", "svg", "a"}
 _LEADING_REF_NUMBER_PATTERN = re.compile(r"^\s*(?:<[^>]+>\s*)*\d+\.\s+", re.IGNORECASE)
 _SLASH_PIPE_ARTIFACT_PATTERN = re.compile(r"\s*\\\s*\|\s*\\\s*")
-_SPACED_BACKSLASH_ARTIFACT_PATTERN = re.compile(r"(\s)\\(\s)")
+_LEADING_SPACED_BACKSLASH_PATTERN = re.compile(r"(^|\s)\\\s+")
+_TRAILING_SPACED_BACKSLASH_PATTERN = re.compile(r"\s+\\(?=\s|$)")
+_BROKEN_URL_SPLIT_PATTERN = re.compile(
+    r"((?:https?://|www\.)[^\s<>\"]+?/)\s+([A-Za-z0-9][A-Za-z0-9._~:/?#\[\]@!$&'()*+,;=%-]*)",
+    re.IGNORECASE,
+)
 
 _LATEX_LABEL_PATTERN = re.compile(r"\\label\{[^{}]*\}")
 _LATEX_TEXTBF_PATTERN = re.compile(r"\\textbf\{([^{}]*)\}")
@@ -288,6 +294,15 @@ def _unescape_inline_sup_sub(html: str) -> str:
     return _ESCAPED_INLINE_TAG_PATTERN.sub(r"<\1\2>", html)
 
 
+def _normalize_spaced_inline_sup_sub_tags(html: str) -> str:
+    def replace(match: re.Match[str]) -> str:
+        slash = match.group(1) or ""
+        tag = (match.group(2) or "").lower()
+        return f"<{slash}{tag}>"
+
+    return _SPACED_INLINE_TAG_PATTERN.sub(replace, html)
+
+
 def _fix_common_mojibake(html: str) -> str:
     fixed = html
     for bad, good in _MOJIBAKE_REPLACEMENTS:
@@ -311,7 +326,8 @@ def _cleanup_marker_escape_artifacts(html: str) -> str:
             out.append(part)
             continue
         cleaned = _SLASH_PIPE_ARTIFACT_PATTERN.sub(" | ", part)
-        cleaned = _SPACED_BACKSLASH_ARTIFACT_PATTERN.sub(r"\1\2", cleaned)
+        cleaned = _LEADING_SPACED_BACKSLASH_PATTERN.sub(r"\1", cleaned)
+        cleaned = _TRAILING_SPACED_BACKSLASH_PATTERN.sub(" ", cleaned)
         out.append(cleaned)
 
     return "".join(out)
@@ -358,6 +374,8 @@ def _split_url_and_trailing_punct(url: str) -> tuple[str, str]:
 
 
 def _autolink_text_urls(text: str) -> str:
+    repaired_text = _BROKEN_URL_SPLIT_PATTERN.sub(r"\1\2", text)
+
     def replace(match: re.Match[str]) -> str:
         raw_url = match.group("url")
         core_url, trailing = _split_url_and_trailing_punct(raw_url)
@@ -373,7 +391,7 @@ def _autolink_text_urls(text: str) -> str:
             f"{trailing}"
         )
 
-    return _URL_PATTERN.sub(replace, text)
+    return _URL_PATTERN.sub(replace, repaired_text)
 
 
 def _autolink_plain_urls(html: str) -> str:
@@ -466,6 +484,7 @@ def polish_html_document(html: str) -> str:
     polished = drop_repeated_phrases(html)
     polished = _fix_latex_text_commands(polished)
     polished = _unescape_inline_sup_sub(polished)
+    polished = _normalize_spaced_inline_sup_sub_tags(polished)
     polished = _fix_common_mojibake(polished)
     polished = _cleanup_marker_escape_artifacts(polished)
     polished = _add_reference_ids_and_citation_links(polished)

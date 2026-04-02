@@ -3,6 +3,8 @@ from pathlib import Path
 import pytest
 
 from zoteropdf2md.translategemma import (
+    _protect_literals_for_translation,
+    _restore_protected_literals,
     _split_references_tail,
     language_name_for_code,
     normalize_language_code,
@@ -132,3 +134,15 @@ def test_split_references_tail_returns_full_html_when_absent() -> None:
     head, tail = _split_references_tail(html)
     assert head == html
     assert tail == ""
+
+
+def test_protect_and_restore_literals_for_translation() -> None:
+    text = (
+        "GAI and LLM at https://example.org/x and DOI 10.48550/arXiv.2408.06292 "
+        "email me@example.com"
+    )
+    protected, mapping = _protect_literals_for_translation(text)
+    assert "[[Z2MKEEP" in protected
+    assert mapping
+    restored = _restore_protected_literals(protected, mapping)
+    assert restored == text
