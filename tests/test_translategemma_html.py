@@ -3,6 +3,8 @@ from pathlib import Path
 import pytest
 
 from zoteropdf2md.translategemma import (
+    _is_translator_refusal,
+    _mark_author_line_notranslate,
     language_name_for_code,
     normalize_language_code,
     translate_html_text_nodes,
@@ -110,3 +112,136 @@ def test_translate_html_text_nodes_reports_progress_for_translatable_segments() 
     assert "<p>SECOND PARAGRAPH.</p>" in translated
     assert events
     assert events[-1] == (2, 2)
+
+
+# ---------------------------------------------------------------------------
+# Translator refusal detection
+# ---------------------------------------------------------------------------
+
+def test_is_translator_refusal_detects_russian_meta_commentary() -> None:
+    assert _is_translator_refusal(
+        'Невозможно перевести "LC" без дополнительного контекста.'
+    )
+    assert _is_translator_refusal("Я не могу перевести этот термин.")
+    assert _is_translator_refusal(
+        "Пожалуйста, предоставьте больше информации."
+    )
+
+
+def test_is_translator_refusal_detects_english_meta_commentary() -> None:
+    assert _is_translator_refusal("I cannot translate this abbreviation.")
+    assert _is_translator_refusal(
+        "Please provide more context to translate this correctly."
+    )
+
+
+def test_is_translator_refusal_accepts_normal_translation() -> None:
+    assert not _is_translator_refusal("Пассивный беспроводной датчик давления.")
+    assert not _is_translator_refusal("Измерение внутричерепного давления.")
+
+
+def test_translate_html_text_nodes_falls_back_to_original_on_refusal() -> None:
+    """When the model returns a refusal the original text must be preserved."""
+
+    def refusing_translate(text: str) -> str:
+        return f'Невозможно перевести "{text}" без дополнительного контекста.'
+
+    html = "<html><body><p>LC sensor</p></body></html>"
+    translated, _ = translate_html_text_nodes(
+        html,
+        translate_text=refusing_translate,
+        max_chunk_chars=512,
+    )
+
+    assert "LC sensor" in translated
+    assert "Невозможно" not in translated
+
+
+# ---------------------------------------------------------------------------
+# References section preservation
+# ---------------------------------------------------------------------------
+
+def test_translate_html_text_nodes_skips_references_section() -> None:
+    """The References section must be copied verbatim, not translated."""
+    html = (
+        "<html><body>"
+        "<p>Main text here.</p>"
+        "<h4>References</h4>"
+        "<ul>"
+        "<li>[1] Smith, J. et al. Paper title. Journal, 2020.</li>"
+        "<li>[2] Jones, A. Another paper. Conf. Proc., 2021.</li>"
+        "</ul>"
+        "</body></html>"
+    )
+
+    def fake_translate(text: str) -> str:
+        return text.upper()
+
+    translated, _ = translate_html_text_nodes(
+        html,
+        translate_text=fake_translate,
+        max_chunk_chars=512,
+    )
+
+    # Body text before references should be translated.
+    assert "MAIN TEXT HERE." in translated
+    # Author names and titles inside references must remain unchanged.
+    assert "Smith, J. et al. Paper title." in translated
+    assert "Jones, A. Another paper." in translated
+    # The heading word itself must survive unchanged too.
+    assert "References" in translated
+
+
+# ---------------------------------------------------------------------------
+# Author-line protection
+# ---------------------------------------------------------------------------
+
+def test_mark_author_line_notranslate_adds_attribute() -> None:
+    """The first <p> after <h1> should gain translate="no"."""
+    html = (
+        "<html><body>"
+        "<h1>A Novel Circuit</h1>"
+        "<p>Fa Wang, Member, IEEE, and John Webster</p>"
+        "<p><i>Abstract</i>—We present...</p>"
+        "</body></html>"
+    )
+    marked = _mark_author_line_notranslate(html)
+
+    assert 'translate="no"' in marked
+    # The Abstract paragraph must NOT be marked.
+    abstract_idx = marked.index("Abstract")
+    assert 'translate="no"' not in marked[abstract_idx - 20: abstract_idx]
+
+
+def test_mark_author_line_notranslate_skips_abstract_as_first_p() -> None:
+    """If the first <p> after <h1> IS the abstract paragraph, don't mark it."""
+    html = (
+        "<html><body>"
+        "<h1>Title</h1>"
+        "<p><i>Abstract</i>—Short abstract text here.</p>"
+        "</body></html>"
+    )
+    marked = _mark_author_line_notranslate(html)
+    assert 'translate="no"' not in marked
+
+
+def test_translate_html_text_nodes_respects_translate_no_attribute() -> None:
+    """Elements with translate="no" must be left in their original language."""
+    html = (
+        "<html><body>"
+        "<p translate=\"no\">Fa Wang, Member, IEEE</p>"
+        "<p>Normal translatable text.</p>"
+        "</body></html>"
+    )
+
+    def fake_translate(text: str) -> str:
+        return text.upper()
+
+    translated, _ = translate_html_text_nodes(
+        html,
+        translate_text=fake_translate,
+        max_chunk_chars=512,
+    )
+
+    assert "Fa Wang, Member, IEEE" in translated
+    assert "NORMAL TRANSLATABLE TEXT." in translated

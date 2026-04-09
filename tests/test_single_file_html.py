@@ -105,3 +105,45 @@ def test_polish_html_document_repairs_split_url_before_autolink() -> None:
     )
     polished = polish_html_document(html)
     assert 'href="https://doi.org/10.48550/arXiv.2408.06292"' in polished
+
+
+def test_polish_html_document_links_bracket_citations_to_references() -> None:
+    """[N] bracket-style citations (common in IEEE papers) must become anchors."""
+    html = (
+        "<html><body>"
+        "<p>Device performance [1], [3] and follow-up [2].</p>"
+        "<h4>References</h4>"
+        "<ul>"
+        "<li>Ref one.</li>"
+        "<li>Ref two.</li>"
+        "<li>Ref three.</li>"
+        "</ul>"
+        "</body></html>"
+    )
+    polished = polish_html_document(html)
+
+    assert '<a href="#ref-1" class="z2m-ref-link">[1]</a>' in polished
+    assert '<a href="#ref-2" class="z2m-ref-link">[2]</a>' in polished
+    assert '<a href="#ref-3" class="z2m-ref-link">[3]</a>' in polished
+    # References list items must carry IDs
+    assert 'id="ref-1"' in polished
+    assert 'id="ref-3"' in polished
+
+
+def test_polish_html_document_bracket_citations_not_linked_inside_references() -> None:
+    """The [N] markers inside the references list itself must NOT become double-links."""
+    html = (
+        "<html><body>"
+        "<p>See [1] for details.</p>"
+        "<h4>References</h4>"
+        "<ul><li>[1] Smith et al. 2020.</li></ul>"
+        "</body></html>"
+    )
+    polished = polish_html_document(html)
+
+    # The in-text [1] BEFORE the heading should be linked.
+    assert '<a href="#ref-1" class="z2m-ref-link">[1]</a>' in polished
+    # The [1] INSIDE the list item (after the heading) must NOT be wrapped again.
+    # It will have a z2m-ref-num span prepended, but the [1] text itself stays plain.
+    ref_section_start = polished.index("References")
+    assert '<a href="#ref-1"' not in polished[ref_section_start:]

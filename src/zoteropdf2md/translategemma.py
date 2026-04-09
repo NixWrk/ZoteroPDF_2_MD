@@ -6,7 +6,7 @@ from pathlib import Path
 from time import perf_counter
 from typing import Callable
 
-from .single_file_html import polish_html_document
+from .single_file_html import polish_html_document, _REFERENCES_HEADING_PATTERN
 
 
 OFFICIAL_TRANSLATEGEMMA_MODEL_REPO = "google/translategemma-4b-it"
@@ -33,6 +33,32 @@ _OPEN_TAG_PATTERN = re.compile(r"^<\s*([a-zA-Z0-9:_-]+)")
 _CLOSE_TAG_PATTERN = re.compile(r"^<\s*/\s*([a-zA-Z0-9:_-]+)")
 _TRANSLATABLE_TEXT_PATTERN = re.compile(r"[A-Za-z\u0400-\u04FF\u4E00-\u9FFF]")
 _SKIP_TRANSLATION_TAGS = {"script", "style", "code", "pre", "math", "svg", "a"}
+
+# Matches the translate="no" attribute (HTML spec for marking non-translatable content).
+_NO_TRANSLATE_ATTR_PATTERN = re.compile(r'\btranslate\s*=\s*["\']no["\']', re.IGNORECASE)
+
+# Patterns that indicate the model produced a meta-commentary / refusal instead of a
+# translation.  When any of these match the translated output we fall back to the
+# original source text so that no garbage leaks into the HTML.
+_TRANSLATOR_REFUSAL_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"невозможно перевести", re.IGNORECASE),
+    re.compile(r"не могу перевести", re.IGNORECASE),
+    re.compile(r"не могу точно перевести", re.IGNORECASE),
+    re.compile(r"не удаётся перевести", re.IGNORECASE),
+    re.compile(r"пожалуйста.{0,40}предоставьте", re.IGNORECASE | re.DOTALL),
+    re.compile(r"без дополнительного контекста", re.IGNORECASE),
+    re.compile(r"нет достаточного контекста", re.IGNORECASE),
+    re.compile(r"i cannot translate", re.IGNORECASE),
+    re.compile(r"i(?:'m| am) unable to translate", re.IGNORECASE),
+    re.compile(r"please provide.{0,60}context", re.IGNORECASE | re.DOTALL),
+    re.compile(r"more context.{0,60}(?:to translate|for translation)", re.IGNORECASE | re.DOTALL),
+)
+
+# Helpers for author-line detection.
+_H1_CLOSE_PATTERN = re.compile(r"</h[1-6]\s*>", re.IGNORECASE)
+_FIRST_P_OPEN_PATTERN = re.compile(r"<p(\b[^>]*)>", re.IGNORECASE)
+_P_CLOSE_PATTERN = re.compile(r"</p\s*>", re.IGNORECASE)
+_ABSTRACT_MARKER_PATTERN = re.compile(r"\bAbstract\b", re.IGNORECASE)
 
 @dataclass(frozen=True)
 class TranslateGemmaConfig:
@@ -145,8 +171,48 @@ def _update_skip_stack(tag_fragment: str, skip_stack: list[str]) -> None:
     if open_match is None:
         return
     tag_name = open_match.group(1).lower()
-    if tag_name in _SKIP_TRANSLATION_TAGS:
+    # Skip translation inside known non-translatable tags AND inside any element
+    # that carries the standard HTML translate="no" attribute.
+    if tag_name in _SKIP_TRANSLATION_TAGS or _NO_TRANSLATE_ATTR_PATTERN.search(raw):
         skip_stack.append(tag_name)
+
+
+def _is_translator_refusal(text: str) -> bool:
+    """Return True when *text* looks like a model refusal or meta-commentary."""
+    return any(p.search(text) for p in _TRANSLATOR_REFUSAL_PATTERNS)
+
+
+def _mark_author_line_notranslate(html: str) -> str:
+    """Add translate="no" to the author-line paragraph (first <p> after the title <h1>).
+
+    In scientific papers the paragraph immediately following the title heading
+    contains author names.  Marking it with translate="no" prevents the
+    translation step from mangling proper names.
+
+    The paragraph is skipped if it appears to be the Abstract rather than
+    an author line (i.e. it contains the word "Abstract").
+    """
+    h1_end = _H1_CLOSE_PATTERN.search(html)
+    if h1_end is None:
+        return html
+
+    p_match = _FIRST_P_OPEN_PATTERN.search(html, h1_end.end())
+    if p_match is None:
+        return html
+
+    # Peek at the paragraph content to make sure this is not the Abstract.
+    p_close = _P_CLOSE_PATTERN.search(html, p_match.end())
+    if p_close is not None:
+        p_content = html[p_match.end():p_close.start()]
+        if _ABSTRACT_MARKER_PATTERN.search(p_content):
+            return html
+
+    attrs = p_match.group(1)
+    if "translate" not in attrs.lower():
+        new_tag = f"<p{attrs} translate=\"no\">"
+        return html[: p_match.start()] + new_tag + html[p_match.end():]
+
+    return html
 
 
 def _is_context_or_memory_error(exc: Exception) -> bool:
@@ -237,6 +303,10 @@ def _translate_text_segment(
             translate_text=translate_text,
             max_chunk_chars=max_chunk_chars,
         )
+        # If the model produced a refusal or meta-commentary instead of a real
+        # translation, keep the original text so no garbage leaks into the HTML.
+        if _is_translator_refusal(translated_core):
+            translated_core = core
         cache[core] = translated_core
 
     return segment[:leading_len] + translated_core + segment[core_end:]
@@ -250,6 +320,15 @@ def translate_html_text_nodes(
     on_segment_start: Callable[[int, int], None] | None = None,
     on_progress: Callable[[int, int], None] | None = None,
 ) -> tuple[str, int]:
+    # The References / Bibliography section must never be translated – author names,
+    # journal titles and DOIs should stay in the original language.
+    heading_match = _REFERENCES_HEADING_PATTERN.search(html)
+    if heading_match is not None:
+        references_tail = html[heading_match.start():]
+        html = html[: heading_match.start()]
+    else:
+        references_tail = ""
+
     parts = _TAG_SPLIT_PATTERN.split(html)
     out: list[str] = []
     skip_stack: list[str] = []
@@ -305,7 +384,7 @@ def translate_html_text_nodes(
             except Exception:
                 pass
 
-    return "".join(out), translated_segments
+    return "".join(out) + references_tail, translated_segments
 
 
 class TranslateGemmaTranslator:
@@ -458,16 +537,24 @@ class TranslateGemmaTranslator:
 
         source_language = (self._config.source_language or "Auto").strip()
         target_language = language_name_for_code(self._config.target_language_code)
+        # The extra constraints prevent the model from translating proper names,
+        # technical abbreviations (LC, ADC, VNA, …) or producing meta-commentary
+        # when it cannot translate a particular token.
+        _extra = (
+            "Do not translate proper names, author names, or technical abbreviations – "
+            "keep them exactly as they appear in the source. "
+            "If you cannot translate a specific term, leave it unchanged. "
+            "Output only the translation, nothing else."
+        )
         if source_language.lower() in {"auto", "auto-detect", "autodetect"}:
             instruction = (
                 f"Translate the following text to {target_language}. "
-                "Detect the source language automatically. "
-                "Output only the translation, nothing else."
+                f"Detect the source language automatically. {_extra}"
             )
         else:
             instruction = (
                 f"Translate the following text from {source_language} to {target_language}. "
-                "Output only the translation, nothing else."
+                f"{_extra}"
             )
 
         prompt = (
@@ -580,6 +667,8 @@ class TranslateGemmaTranslator:
 
         read_started_at = perf_counter()
         source_html = html_path.read_text(encoding="utf-8", errors="replace")
+        # Protect the author-line paragraph from translation before processing.
+        source_html = _mark_author_line_notranslate(source_html)
         self._log_line(f"[timer] translategemma.read_html: {perf_counter() - read_started_at:.2f}s")
 
         translate_started_at = perf_counter()

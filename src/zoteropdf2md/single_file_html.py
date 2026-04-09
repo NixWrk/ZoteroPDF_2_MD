@@ -33,6 +33,7 @@ _LI_BLOCK_PATTERN = re.compile(r"<li\b([^>]*)>(.*?)</li>", re.IGNORECASE | re.DO
 _LI_ID_PATTERN = re.compile(r'\bid\s*=\s*["\']ref-(\d+)["\']', re.IGNORECASE)
 _SUP_PATTERN = re.compile(r"<sup>(.*?)</sup>", re.IGNORECASE | re.DOTALL)
 _SUP_NUMBER_PATTERN = re.compile(r"\d+")
+_BRACKET_CITATION_PATTERN = re.compile(r'\[(\d+)\]')
 _SKIP_AUTOLINK_TAGS = {"script", "style", "code", "pre", "math", "svg", "a"}
 _LEADING_REF_NUMBER_PATTERN = re.compile(r"^\s*(?:<[^>]+>\s*)*\d+\.\s+", re.IGNORECASE)
 _SLASH_PIPE_ARTIFACT_PATTERN = re.compile(r"\s*\\\s*\|\s*\\\s*")
@@ -414,6 +415,40 @@ def _autolink_plain_urls(html: str) -> str:
     return "".join(out)
 
 
+def _link_bracket_citations(html: str, ref_count: int) -> str:
+    """Wrap [N] citation markers with anchor links to #ref-N in text nodes.
+
+    Skips text inside tags that should not be modified (scripts, math, existing
+    anchors, etc.).  Only links numbers in the range [1, ref_count].
+    """
+    parts = _TAG_SPLIT_PATTERN.split(html)
+    out: list[str] = []
+    skip_stack: list[str] = []
+
+    def replace_bracket(match: re.Match[str]) -> str:
+        try:
+            number = int(match.group(1))
+        except ValueError:
+            return match.group(0)
+        if 1 <= number <= ref_count:
+            return f'<a href="#ref-{number}" class="z2m-ref-link">[{number}]</a>'
+        return match.group(0)
+
+    for part in parts:
+        if not part:
+            continue
+        if part.startswith("<"):
+            _update_skip_stack(part, skip_stack)
+            out.append(part)
+            continue
+        if skip_stack:
+            out.append(part)
+            continue
+        out.append(_BRACKET_CITATION_PATTERN.sub(replace_bracket, part))
+
+    return "".join(out)
+
+
 def _add_reference_ids_and_citation_links(html: str) -> str:
     heading_match = _REFERENCES_HEADING_PATTERN.search(html)
     if heading_match is None:
@@ -470,7 +505,9 @@ def _add_reference_ids_and_citation_links(html: str) -> str:
         linked_inner = _SUP_NUMBER_PATTERN.sub(replace_number, inner)
         return f"<sup>{linked_inner}</sup>"
 
+    # Link <sup>N</sup> citations first, then [N] bracket-style citations.
     before_with_citation_links = _SUP_PATTERN.sub(link_sup, before_references)
+    before_with_citation_links = _link_bracket_citations(before_with_citation_links, ref_index)
     return before_with_citation_links + references_with_ids
 
 
