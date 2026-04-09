@@ -33,17 +33,6 @@ _OPEN_TAG_PATTERN = re.compile(r"^<\s*([a-zA-Z0-9:_-]+)")
 _CLOSE_TAG_PATTERN = re.compile(r"^<\s*/\s*([a-zA-Z0-9:_-]+)")
 _TRANSLATABLE_TEXT_PATTERN = re.compile(r"[A-Za-z\u0400-\u04FF\u4E00-\u9FFF]")
 _SKIP_TRANSLATION_TAGS = {"script", "style", "code", "pre", "math", "svg", "a"}
-_REFERENCES_SECTION_HEADING_PATTERN = re.compile(
-    r"<h[1-6]\b[^>]*>\s*(?:<[^>]+>\s*)*"
-    r"(?:References|Bibliography|Литература|Список литературы|Источники|Referenzen|参考文献|参考资料)"
-    r"\s*(?:</[^>]+>\s*)*</h[1-6]>",
-    re.IGNORECASE | re.DOTALL,
-)
-_URL_LITERAL_PATTERN = re.compile(r"(?:https?://|www\.)[^\s<>\"]+", re.IGNORECASE)
-_DOI_LITERAL_PATTERN = re.compile(r"\b10\.\d{4,9}/[^\s<>()]+", re.IGNORECASE)
-_EMAIL_LITERAL_PATTERN = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")
-_LATIN_ACRONYM_PATTERN = re.compile(r"\b[A-Z]{2,}(?:-[A-Z0-9]+)*\b")
-
 
 @dataclass(frozen=True)
 class TranslateGemmaConfig:
@@ -53,10 +42,8 @@ class TranslateGemmaConfig:
     hf_token: str | None = None
     cache_dir: str | None = None
     # Used only as a fallback when a full-segment translation does not fit context/memory.
-    max_chunk_chars: int = 12000
+    max_chunk_chars: int = 1800
     max_new_tokens: int = 65536
-    context_safety_margin_tokens: int = 4096
-    preserve_reference_section: bool = True
 
 
 @dataclass(frozen=True)
@@ -255,51 +242,11 @@ def _translate_text_segment(
     return segment[:leading_len] + translated_core + segment[core_end:]
 
 
-def _split_references_tail(html: str) -> tuple[str, str]:
-    heading_match = _REFERENCES_SECTION_HEADING_PATTERN.search(html)
-    if heading_match is None:
-        return html, ""
-    split_at = heading_match.start()
-    return html[:split_at], html[split_at:]
-
-
-def _protect_literals_for_translation(text: str) -> tuple[str, dict[str, str]]:
-    protected = text
-    mapping: dict[str, str] = {}
-    counter = 0
-
-    def apply(pattern: re.Pattern[str]) -> None:
-        nonlocal protected, counter
-
-        def repl(match: re.Match[str]) -> str:
-            nonlocal counter
-            literal = match.group(0)
-            placeholder = f"[[Z2MKEEP{counter}]]"
-            counter += 1
-            mapping[placeholder] = literal
-            return placeholder
-
-        protected = pattern.sub(repl, protected)
-
-    apply(_URL_LITERAL_PATTERN)
-    apply(_DOI_LITERAL_PATTERN)
-    apply(_EMAIL_LITERAL_PATTERN)
-    apply(_LATIN_ACRONYM_PATTERN)
-    return protected, mapping
-
-
-def _restore_protected_literals(text: str, mapping: dict[str, str]) -> str:
-    restored = text
-    for placeholder, literal in mapping.items():
-        restored = restored.replace(placeholder, literal)
-    return restored
-
-
 def translate_html_text_nodes(
     html: str,
     translate_text: Callable[[str], str],
     *,
-    max_chunk_chars: int = 12000,
+    max_chunk_chars: int = 1800,
     on_segment_start: Callable[[int, int], None] | None = None,
     on_progress: Callable[[int, int], None] | None = None,
 ) -> tuple[str, int]:
@@ -515,32 +462,18 @@ class TranslateGemmaTranslator:
             instruction = (
                 f"Translate the following text to {target_language}. "
                 "Detect the source language automatically. "
-                "Preserve personal names, organization names, journal titles, "
-                "citation markers, URLs, DOIs, emails, and all numbers exactly. "
-                "If source text uses Latin-letter acronyms, keep them in Latin letters "
-                "(do not transliterate to Cyrillic). "
-                "Do not modify placeholders like [[Z2MKEEP0]]. "
-                "Do not transliterate names. "
                 "Output only the translation, nothing else."
             )
         else:
             instruction = (
                 f"Translate the following text from {source_language} to {target_language}. "
-                "Preserve personal names, organization names, journal titles, "
-                "citation markers, URLs, DOIs, emails, and all numbers exactly. "
-                "If source text uses Latin-letter acronyms, keep them in Latin letters "
-                "(do not transliterate to Cyrillic). "
-                "Do not modify placeholders like [[Z2MKEEP0]]. "
-                "Do not transliterate names. "
                 "Output only the translation, nothing else."
             )
-
-        protected_text, protected_mapping = _protect_literals_for_translation(text)
 
         prompt = (
             "<start_of_turn>user\n"
             f"{instruction}\n\n"
-            f"{protected_text}<end_of_turn>\n"
+            f"{text}<end_of_turn>\n"
             "<start_of_turn>model\n"
         )
         inputs = self._tokenizer(prompt, return_tensors="pt")
@@ -549,7 +482,7 @@ class TranslateGemmaTranslator:
 
         prompt_len = int(inputs["input_ids"].shape[1])
         context_window = self._resolve_context_window_tokens()
-        context_margin = max(256, int(self._config.context_safety_margin_tokens))
+        context_margin = 4096
         available_for_generation = context_window - prompt_len - context_margin
         if available_for_generation < 256:
             raise RuntimeError(
@@ -639,7 +572,6 @@ class TranslateGemmaTranslator:
 
         translated = self._tokenizer.decode(out[0][prompt_len:], skip_special_tokens=True).strip()
         translated = translated.replace("<end_of_turn>", "").strip()
-        translated = _restore_protected_literals(translated, protected_mapping)
         return translated or text
 
     def translate_html_file(self, html_path: Path) -> TranslatedHtmlArtifact:
@@ -649,16 +581,6 @@ class TranslateGemmaTranslator:
         read_started_at = perf_counter()
         source_html = html_path.read_text(encoding="utf-8", errors="replace")
         self._log_line(f"[timer] translategemma.read_html: {perf_counter() - read_started_at:.2f}s")
-
-        translatable_html = source_html
-        preserved_references_tail = ""
-        if self._config.preserve_reference_section:
-            translatable_html, preserved_references_tail = _split_references_tail(source_html)
-            if preserved_references_tail:
-                self._log_line(
-                    "TranslateGemma: preserving references section without translation "
-                    f"(chars={len(preserved_references_tail)})"
-                )
 
         translate_started_at = perf_counter()
         progress_next_pct = 10
@@ -739,14 +661,12 @@ class TranslateGemmaTranslator:
             )
 
         translated_html, translated_segments = translate_html_text_nodes(
-            translatable_html,
+            source_html,
             translate_text=translate_text_with_progress,
             max_chunk_chars=max(256, self._config.max_chunk_chars),
             on_segment_start=on_segment_start,
             on_progress=on_progress,
         )
-        if preserved_references_tail:
-            translated_html += preserved_references_tail
         self._log_line(
             f"[timer] translategemma.translate_html: {perf_counter() - translate_started_at:.2f}s"
         )
@@ -772,4 +692,5 @@ class TranslateGemmaTranslator:
             language_name=language_name,
             translated_segments=translated_segments,
         )
+
 

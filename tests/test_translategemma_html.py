@@ -3,9 +3,6 @@ from pathlib import Path
 import pytest
 
 from zoteropdf2md.translategemma import (
-    _protect_literals_for_translation,
-    _restore_protected_literals,
-    _split_references_tail,
     language_name_for_code,
     normalize_language_code,
     translate_html_text_nodes,
@@ -113,36 +110,3 @@ def test_translate_html_text_nodes_reports_progress_for_translatable_segments() 
     assert "<p>SECOND PARAGRAPH.</p>" in translated
     assert events
     assert events[-1] == (2, 2)
-
-
-def test_split_references_tail_detects_and_splits_references_section() -> None:
-    html = (
-        "<html><body>"
-        "<p>Body text.</p>"
-        "<h4>References</h4>"
-        "<ul><li>One</li></ul>"
-        "</body></html>"
-    )
-    head, tail = _split_references_tail(html)
-    assert "<p>Body text.</p>" in head
-    assert "<h4>References</h4>" not in head
-    assert tail.startswith("<h4>References</h4>")
-
-
-def test_split_references_tail_returns_full_html_when_absent() -> None:
-    html = "<html><body><p>No refs here.</p></body></html>"
-    head, tail = _split_references_tail(html)
-    assert head == html
-    assert tail == ""
-
-
-def test_protect_and_restore_literals_for_translation() -> None:
-    text = (
-        "GAI and LLM at https://example.org/x and DOI 10.48550/arXiv.2408.06292 "
-        "email me@example.com"
-    )
-    protected, mapping = _protect_literals_for_translation(text)
-    assert "[[Z2MKEEP" in protected
-    assert mapping
-    restored = _restore_protected_literals(protected, mapping)
-    assert restored == text
