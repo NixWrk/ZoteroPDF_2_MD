@@ -43,6 +43,7 @@ class PipelineOptions:
     output_dir: str
     skip_existing: bool = True
     use_cuda: bool = True
+    cuda_device_index: int | None = 0
     model_cache_dir: str | None = None
     max_base_len: int = DEFAULT_MAX_BASE_LEN
     disable_batch_multiprocessing: bool = False
@@ -88,7 +89,8 @@ def _build_env(options: PipelineOptions) -> dict[str, str]:
     env = os.environ.copy()
     if options.use_cuda:
         env["TORCH_DEVICE"] = "cuda"
-        env["CUDA_VISIBLE_DEVICES"] = "0"
+        if options.cuda_device_index is not None:
+            env["CUDA_VISIBLE_DEVICES"] = str(options.cuda_device_index)
 
     if options.model_cache_dir:
         cache_dir = Path(options.model_cache_dir)
@@ -334,6 +336,8 @@ def run_pipeline(
             log(f"MODEL_CACHE_DIR={env['MODEL_CACHE_DIR']}")
         if env.get("TORCH_DEVICE"):
             log(f"TORCH_DEVICE={env['TORCH_DEVICE']}")
+        if env.get("CUDA_VISIBLE_DEVICES"):
+            log(f"CUDA_VISIBLE_DEVICES={env['CUDA_VISIBLE_DEVICES']}")
         log(
             "Pipeline mode details: "
             f"modes={', '.join(m.value for m in export_modes_list)}, "

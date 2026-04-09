@@ -85,6 +85,8 @@ class ZoteroPdfGui:
 
         self.max_base_len = tk.StringVar(value=str(DEFAULT_MAX_BASE_LEN))
         self.marker_executable = tk.StringVar(value="marker")
+        self.cuda_device_display = tk.StringVar(value="")
+        self.cuda_device_lookup: dict[str, str] = {}
 
         self.collection_lookup: dict[str, str] = {}
         self.profile_lookup: dict[str, str] = {}
@@ -98,6 +100,7 @@ class ZoteroPdfGui:
 
         self._build_ui()
         self._refresh_translation_label()
+        self._refresh_cuda_devices(initial=True)
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
         self._refresh_profiles(initial=True)
         self.root.after(100, self._drain_log_queue)
@@ -194,6 +197,21 @@ class ZoteroPdfGui:
         tk.Checkbutton(options, text="Include subcollections", variable=self.include_subcollections).pack(anchor="w")
         tk.Checkbutton(options, text="Skip existing outputs", variable=self.skip_existing).pack(anchor="w")
         tk.Checkbutton(options, text="Use CUDA (TORCH_DEVICE=cuda)", variable=self.use_cuda).pack(anchor="w")
+        cuda_device_row = tk.Frame(options)
+        cuda_device_row.pack(anchor="w", fill="x", pady=(2, 0))
+        tk.Label(cuda_device_row, text="CUDA device:").pack(side="left")
+        self.cuda_device_combo = ttk.Combobox(
+            cuda_device_row,
+            textvariable=self.cuda_device_display,
+            state="readonly",
+            width=72,
+        )
+        self.cuda_device_combo.pack(side="left", padx=(6, 0))
+        tk.Button(
+            cuda_device_row,
+            text="Refresh GPUs",
+            command=self._refresh_cuda_devices,
+        ).pack(side="left", padx=(6, 0))
         tk.Checkbutton(options, text="Disable marker batch multiprocessing", variable=self.disable_batch_multiprocessing).pack(anchor="w")
 
         mode_frame = tk.Frame(options)
@@ -374,6 +392,57 @@ class ZoteroPdfGui:
         except Exception:
             language_name = self.translation_target_language_code.get().strip() or "unknown"
         self.translation_label.set(f"Target language: {language_name}")
+
+    def _refresh_cuda_devices(self, initial: bool = False) -> None:
+        displays: list[str] = []
+        lookup: dict[str, str] = {}
+
+        auto_display = "Auto (no CUDA_VISIBLE_DEVICES)"
+        displays.append(auto_display)
+        lookup[auto_display] = "auto"
+
+        detected_count = 0
+        detect_error: str | None = None
+        try:
+            import torch
+
+            if torch.cuda.is_available():
+                detected_count = int(torch.cuda.device_count())
+                for idx in range(detected_count):
+                    try:
+                        name = torch.cuda.get_device_name(idx)
+                    except Exception:
+                        name = "Unknown GPU"
+                    display = f"{idx}: {name}"
+                    displays.append(display)
+                    lookup[display] = str(idx)
+        except Exception as exc:
+            detect_error = str(exc)
+
+        if detected_count == 0:
+            manual_display = "0: CUDA device 0 (manual)"
+            displays.append(manual_display)
+            lookup[manual_display] = "0"
+
+        previous = self.cuda_device_display.get().strip()
+        self.cuda_device_lookup = lookup
+        self.cuda_device_combo.configure(values=displays)
+
+        if previous in lookup:
+            chosen = previous
+        else:
+            chosen = displays[1] if len(displays) > 1 else displays[0]
+        self.cuda_device_display.set(chosen)
+
+        if initial:
+            return
+
+        if detected_count > 0:
+            self._log(f"CUDA devices detected: {detected_count}. Selected: {chosen}")
+        elif detect_error:
+            self._log(f"CUDA device detection failed: {detect_error}. Using: {chosen}")
+        else:
+            self._log(f"No CUDA devices detected by torch. Using: {chosen}")
 
     def _pick_translation_language(self) -> None:
         dialog = tk.Toplevel(self.root)
@@ -821,6 +890,21 @@ class ZoteroPdfGui:
                 "translation will be skipped."
             )
 
+        cuda_device_index: int | None = None
+        if self.use_cuda.get():
+            selected_cuda_display = self.cuda_device_display.get().strip()
+            selected_cuda_value = self.cuda_device_lookup.get(selected_cuda_display, "").strip().lower()
+            if selected_cuda_value and selected_cuda_value not in {"auto", "none"}:
+                try:
+                    parsed_cuda_index = int(selected_cuda_value)
+                except ValueError:
+                    messagebox.showerror("Error", "CUDA device index must be an integer or Auto.")
+                    return
+                if parsed_cuda_index < 0:
+                    messagebox.showerror("Error", "CUDA device index must be >= 0.")
+                    return
+                cuda_device_index = parsed_cuda_index
+
         selected_pdf_path_objs = [Path(path) for path in selected_pdf_paths]
         artifact_extension = get_export_mode_spec(selected_modes[0]).artifact_extension
 
@@ -909,6 +993,7 @@ class ZoteroPdfGui:
                 output_dir=str(output_dir_path),
                 skip_existing=run_skip_existing,
                 use_cuda=self.use_cuda.get(),
+                cuda_device_index=cuda_device_index,
                 model_cache_dir=self.model_cache_dir.get().strip() or None,
                 max_base_len=max_base_len,
                 disable_batch_multiprocessing=self.disable_batch_multiprocessing.get(),
@@ -925,6 +1010,8 @@ class ZoteroPdfGui:
         self._log(f"[timer] gui.run.build_pipeline_options: {perf_counter() - options_started_at:.2f}s")
         self._log(f"[timer] gui.run.pre_worker_total: {perf_counter() - run_prepare_started_at:.2f}s")
         self._log(f"GUI selected export modes: {', '.join(m.value for m in selected_modes)}")
+        if self.use_cuda.get():
+            self._log(f"GUI CUDA device: {self.cuda_device_display.get().strip() or 'Auto'}")
         if translation_enabled:
             try:
                 translation_target_name = language_name_for_code(translation_target_code)
