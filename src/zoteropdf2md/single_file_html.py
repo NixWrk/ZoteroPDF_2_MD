@@ -291,10 +291,24 @@ def _fix_latex_text_commands(html: str) -> str:
 
 def _inject_mathjax(html: str) -> str:
     if 'MathJax-script' in html:
-        return html
+        # Replace whatever MathJax was injected (e.g. by Marker with wrong delimiters)
+        # with our correctly-configured version.
+        html = re.sub(
+            r'<script[^>]*id="MathJax-script"[^>]*/?>.*?(?:</script>)?',
+            "",
+            html,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+        html = re.sub(
+            r'<script[^>]*>[^<]*MathJax\s*=[^<]*</script>',
+            "",
+            html,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
     if not _HEAD_CLOSE_PATTERN.search(html):
         html = _inject_default_styles(html)
-    return _HEAD_CLOSE_PATTERN.sub(f"{_MATHJAX_SCRIPT}\n</head>", html, count=1)
+    # Use a lambda so re.sub does NOT process backslashes in the replacement string.
+    return _HEAD_CLOSE_PATTERN.sub(lambda _: f"{_MATHJAX_SCRIPT}\n</head>", html, count=1)
 
 
 def _unescape_inline_sup_sub(html: str) -> str:
