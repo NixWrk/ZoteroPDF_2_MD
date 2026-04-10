@@ -32,7 +32,7 @@ _TAG_SPLIT_PATTERN = re.compile(r"(<[^>]+>)")
 _OPEN_TAG_PATTERN = re.compile(r"^<\s*([a-zA-Z0-9:_-]+)")
 _CLOSE_TAG_PATTERN = re.compile(r"^<\s*/\s*([a-zA-Z0-9:_-]+)")
 _TRANSLATABLE_TEXT_PATTERN = re.compile(r"[A-Za-z\u0400-\u04FF\u4E00-\u9FFF]")
-_SKIP_TRANSLATION_TAGS = {"script", "style", "code", "pre", "math", "svg", "a"}
+_SKIP_TRANSLATION_TAGS = {"script", "style", "code", "pre", "math", "svg", "a", "sup", "sub"}
 
 # Matches the translate="no" attribute (HTML spec for marking non-translatable content).
 _NO_TRANSLATE_ATTR_PATTERN = re.compile(r'\btranslate\s*=\s*["\']no["\']', re.IGNORECASE)

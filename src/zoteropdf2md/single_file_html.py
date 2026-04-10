@@ -496,16 +496,22 @@ def _add_reference_ids_and_citation_links(html: str) -> str:
         def ensure_visible_ref_number(match: re.Match[str]) -> str:
             attrs = match.group(1) or ""
             body = match.group(2) or ""
-            # Already has explicit "N. " style numbering — leave as-is.
-            if _LEADING_REF_NUMBER_PATTERN.search(body):
-                return match.group(0)
             id_match = _LI_ID_PATTERN.search(attrs)
             if id_match is None:
                 return match.group(0)
-            number = id_match.group(1)
             # Strip leading "[N]" bracket number (IEEE/Vancouver style) to avoid
             # "1. [1] Author..." double-numbering.
             body = _BRACKET_REF_NUM_STRIP_PATTERN.sub("", body)
+            # If Marker already wrote "N. Author..." wrap that N. in the span for
+            # consistent bold styling instead of leaving it unstyled.
+            if _LEADING_REF_NUMBER_PATTERN.search(body):
+                body = re.sub(
+                    r'^(\s*(?:<[^>]+>\s*)*?)(\d+\.)\s+',
+                    lambda m: f'{m.group(1)}<span class="z2m-ref-num">{m.group(2)}</span> ',
+                    body,
+                )
+                return f"<li{attrs}>{body}</li>"
+            number = id_match.group(1)
             numbered_body = f'<span class="z2m-ref-num">{number}.</span> {body.lstrip()}'
             return f"<li{attrs}>{numbered_body}</li>"
 

@@ -175,6 +175,25 @@ def test_polish_html_document_converts_inline_math_to_tex_delimiters() -> None:
     assert "<math" not in polished
 
 
+def test_polish_html_document_wraps_existing_ref_number_in_span() -> None:
+    """References already numbered 'N. Author' by Marker must get z2m-ref-num span."""
+    html = (
+        "<html><body>"
+        "<p>See [1] for details.</p>"
+        "<h4>References</h4>"
+        "<ul>"
+        "<li>1. Smith et al., Nature 2020.</li>"
+        "<li>2. Jones et al., Science 2021.</li>"
+        "</ul>"
+        "</body></html>"
+    )
+    polished = polish_html_document(html)
+
+    ref_section = polished[polished.index("References"):]
+    assert '<span class="z2m-ref-num">1.</span>' in ref_section
+    assert '<span class="z2m-ref-num">2.</span>' in ref_section
+
+
 def test_polish_html_document_strips_bracket_ref_prefix_from_references() -> None:
     """References that start with [N] must not produce '1. [1] Author' double-numbering."""
     html = (
