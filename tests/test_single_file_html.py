@@ -147,3 +147,53 @@ def test_polish_html_document_bracket_citations_not_linked_inside_references() -
     # It will have a z2m-ref-num span prepended, but the [1] text itself stays plain.
     ref_section_start = polished.index("References")
     assert '<a href="#ref-1"' not in polished[ref_section_start:]
+
+
+def test_polish_html_document_converts_block_math_to_tex_delimiters() -> None:
+    r"""<math display="block"> with LaTeX content must become \[...\]."""
+    html = (
+        "<html><body>"
+        r'<p><math display="block">Z_{1} = \frac{V_1}{I_1}</math></p>'
+        "</body></html>"
+    )
+    polished = polish_html_document(html)
+
+    assert r"\[Z_{1} = \frac{V_1}{I_1}\]" in polished
+    assert "<math" not in polished
+
+
+def test_polish_html_document_converts_inline_math_to_tex_delimiters() -> None:
+    r"""<math display="inline"> with LaTeX content must become \(...\)."""
+    html = (
+        "<html><body>"
+        r'<p>The value <math display="inline">x^2</math> is positive.</p>'
+        "</body></html>"
+    )
+    polished = polish_html_document(html)
+
+    assert r"\(x^2\)" in polished
+    assert "<math" not in polished
+
+
+def test_polish_html_document_strips_bracket_ref_prefix_from_references() -> None:
+    """References that start with [N] must not produce '1. [1] Author' double-numbering."""
+    html = (
+        "<html><body>"
+        "<p>See [1] for more.</p>"
+        "<h4>References</h4>"
+        "<ul>"
+        "<li>[1] Smith et al., Nature 2020.</li>"
+        "<li>[2] Jones et al., Science 2021.</li>"
+        "</ul>"
+        "</body></html>"
+    )
+    polished = polish_html_document(html)
+
+    # z2m-ref-num span must be present
+    assert 'class="z2m-ref-num"' in polished
+    # The literal "[1]" must NOT appear inside a list item after the heading
+    # (it was stripped and replaced by the z2m-ref-num span).
+    ref_section = polished[polished.index("References"):]
+    # Check no "1. [1]" double numbering
+    assert "1.</span> [1]" not in ref_section
+    assert "1.</span> [2]" not in ref_section

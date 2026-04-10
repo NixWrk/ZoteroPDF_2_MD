@@ -828,9 +828,16 @@ class TranslateGemmaTranslator:
         self._log_line(f"TranslateGemma: start file '{html_path.name}'")
 
         read_started_at = perf_counter()
-        source_html = html_path.read_text(encoding="utf-8", errors="replace")
+        source_html_raw = html_path.read_text(encoding="utf-8", errors="replace")
+        # Polish the source (EN) HTML and overwrite the file so it gets the same
+        # citation links, reference IDs, math conversion, and styles as the RU file.
+        polished_source = polish_html_document(source_html_raw)
+        html_path.write_text(polished_source, encoding="utf-8")
+        self._log_line(
+            f"[timer] translategemma.polish_source_html: {perf_counter() - read_started_at:.2f}s"
+        )
         # Protect the author-line paragraph from translation before processing.
-        source_html = _mark_author_line_notranslate(source_html)
+        source_html = _mark_author_line_notranslate(source_html_raw)
         self._log_line(f"[timer] translategemma.read_html: {perf_counter() - read_started_at:.2f}s")
 
         translate_started_at = perf_counter()

@@ -33,9 +33,11 @@ _LI_BLOCK_PATTERN = re.compile(r"<li\b([^>]*)>(.*?)</li>", re.IGNORECASE | re.DO
 _LI_ID_PATTERN = re.compile(r'\bid\s*=\s*["\']ref-(\d+)["\']', re.IGNORECASE)
 _SUP_PATTERN = re.compile(r"<sup>(.*?)</sup>", re.IGNORECASE | re.DOTALL)
 _SUP_NUMBER_PATTERN = re.compile(r"\d+")
-_BRACKET_CITATION_PATTERN = re.compile(r'\[(\d+)\]')
+_BRACKET_CITATION_PATTERN = re.compile(r'(?<!\\)\[(\d+)\]')
 _SKIP_AUTOLINK_TAGS = {"script", "style", "code", "pre", "math", "svg", "a"}
 _LEADING_REF_NUMBER_PATTERN = re.compile(r"^\s*(?:<[^>]+>\s*)*\d+\.\s+", re.IGNORECASE)
+_BRACKET_REF_NUM_STRIP_PATTERN = re.compile(r'^\s*\[(\d+)\]\s*')
+_MATH_TAG_PATTERN = re.compile(r"<math(\b[^>]*)>(.*?)</math>", re.IGNORECASE | re.DOTALL)
 _SLASH_PIPE_ARTIFACT_PATTERN = re.compile(r"\s*\\\s*\|\s*\\\s*")
 _LEADING_SPACED_BACKSLASH_PATTERN = re.compile(r"(^|\s)\\\s+")
 _TRAILING_SPACED_BACKSLASH_PATTERN = re.compile(r"\s+\\(?=\s|$)")
@@ -161,9 +163,13 @@ _DEFAULT_READABILITY_STYLE = """
     border: 1px solid #d9e0e7;
     border-radius: 6px;
   }
-  math {
+  math[display="block"] {
     overflow-x: auto;
     display: block;
+    margin: 0.6em 0;
+  }
+  math {
+    overflow-x: auto;
   }
   @media (max-width: 960px) {
     body { padding: 10px; }
@@ -476,12 +482,16 @@ def _add_reference_ids_and_citation_links(html: str) -> str:
         def ensure_visible_ref_number(match: re.Match[str]) -> str:
             attrs = match.group(1) or ""
             body = match.group(2) or ""
+            # Already has explicit "N. " style numbering — leave as-is.
             if _LEADING_REF_NUMBER_PATTERN.search(body):
                 return match.group(0)
             id_match = _LI_ID_PATTERN.search(attrs)
             if id_match is None:
                 return match.group(0)
             number = id_match.group(1)
+            # Strip leading "[N]" bracket number (IEEE/Vancouver style) to avoid
+            # "1. [1] Author..." double-numbering.
+            body = _BRACKET_REF_NUM_STRIP_PATTERN.sub("", body)
             numbered_body = f'<span class="z2m-ref-num">{number}.</span> {body.lstrip()}'
             return f"<li{attrs}>{numbered_body}</li>"
 
@@ -517,6 +527,31 @@ def _cleanup_empty_html_blocks(html: str) -> str:
     return cleaned
 
 
+def _convert_math_tags_to_tex(html: str) -> str:
+    """Convert <math> HTML elements that contain raw LaTeX into MathJax-renderable
+    delimiters: ``\\[...\\]`` for block and ``\\(...\\)`` for inline math.
+
+    Real MathML (content with child XML elements) is left untouched.
+    """
+
+    def replace_math(match: re.Match[str]) -> str:
+        attrs = match.group(1)
+        content = match.group(2).strip()
+        if not content:
+            return ""  # empty math element — drop it
+        # Content that contains XML child tags is real MathML — leave as-is.
+        if re.search(r"<[a-zA-Z]", content):
+            return match.group(0)
+        is_block = bool(
+            re.search(r'\bdisplay\s*=\s*["\']block["\']', attrs, re.IGNORECASE)
+        )
+        if is_block:
+            return f"\\[{content}\\]"
+        return f"\\({content}\\)"
+
+    return _MATH_TAG_PATTERN.sub(replace_math, html)
+
+
 def polish_html_document(html: str) -> str:
     polished = drop_repeated_phrases(html)
     polished = _fix_latex_text_commands(polished)
@@ -524,6 +559,7 @@ def polish_html_document(html: str) -> str:
     polished = _normalize_spaced_inline_sup_sub_tags(polished)
     polished = _fix_common_mojibake(polished)
     polished = _cleanup_marker_escape_artifacts(polished)
+    polished = _convert_math_tags_to_tex(polished)
     polished = _add_reference_ids_and_citation_links(polished)
     polished = _autolink_plain_urls(polished)
     polished = _inject_utf8_charset(polished)
