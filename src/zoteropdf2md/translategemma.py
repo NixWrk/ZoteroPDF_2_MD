@@ -54,6 +54,37 @@ _TRANSLATOR_REFUSAL_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"more context.{0,60}(?:to translate|for translation)", re.IGNORECASE | re.DOTALL),
 )
 
+_TRANSLATION_PREFIX_PATTERN = re.compile(
+    r"^\s*(?:translation|translated text|перевод)\s*:\s*",
+    re.IGNORECASE,
+)
+_ORIGINAL_SECTION_PATTERN = re.compile(
+    r"(?:\r?\n){1,2}\s*(?:original(?: text)?|source(?: text)?|исходн(?:ый|ого)\s+текст)\s*:\s*",
+    re.IGNORECASE,
+)
+
+_FORMULA_PATTERNS: tuple[re.Pattern[str], ...] = (
+    # Inline math delimiters.
+    re.compile(r"\$[^$\n]{1,600}\$"),
+    re.compile(r"\\\([^\n]{1,600}?\\\)"),
+    re.compile(r"\\\[[\s\S]{1,600}?\\\]"),
+    # LaTeX commands with optional brace arguments.
+    re.compile(r"\\[A-Za-z]+(?:\s*\{[^{}]{0,160}\}){0,3}"),
+    # Subscript / superscript expressions (e.g., I_1, L_{m}^{2}).
+    re.compile(
+        r"[A-Za-z](?:\s*_\{[^{}]{1,80}\}|\s*_[A-Za-z0-9]{1,20}|\s*\^\{[^{}]{1,80}\}|\s*\^[A-Za-z0-9]{1,20})+"
+    ),
+    # Single-letter coefficient directly before a LaTeX symbol (e.g., j\omega).
+    re.compile(r"(?<!\w)[A-Za-z]\s*(?=\\[A-Za-z])"),
+    # Dense equation chunks carrying operators with LaTeX/subscript markers.
+    re.compile(
+        r"(?<!\w)(?=[^,\n]{0,240}[=+\-*/])(?=[^,\n]{0,240}(?:\\|_|\^))"
+        r"[A-Za-z0-9\\{}_^().]+(?:\s+[A-Za-z0-9\\{}_^().]+){0,40}(?!\w)"
+    ),
+    # Compact dimension style (e.g., 72 \times 48 \times 20 mm).
+    re.compile(r"(?<!\w)\d+(?:\s*\\times\s*\d+){1,4}(?:\s*[A-Za-z]{1,8})?(?!\w)", re.IGNORECASE),
+)
+
 # Helpers for author-line detection.
 _H1_CLOSE_PATTERN = re.compile(r"</h[1-6]\s*>", re.IGNORECASE)
 _FIRST_P_OPEN_PATTERN = re.compile(r"<p(\b[^>]*)>", re.IGNORECASE)
@@ -182,6 +213,114 @@ def _is_translator_refusal(text: str) -> bool:
     return any(p.search(text) for p in _TRANSLATOR_REFUSAL_PATTERNS)
 
 
+def _normalize_ws(text: str) -> str:
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _strip_source_echo(translated: str, source: str) -> str:
+    """Trim common "translation + original source" echoes from model output."""
+    cleaned = translated.strip()
+    if not cleaned:
+        return translated
+
+    cleaned = _TRANSLATION_PREFIX_PATTERN.sub("", cleaned)
+
+    source_clean = source.strip()
+    if not source_clean:
+        return cleaned
+
+    labeled_original = _ORIGINAL_SECTION_PATTERN.search(cleaned)
+    if labeled_original is not None:
+        head = cleaned[:labeled_original.start()].rstrip()
+        if head:
+            return head
+
+    exact_pos = cleaned.rfind(source_clean)
+    if exact_pos > 0:
+        prefix = cleaned[:exact_pos].rstrip()
+        suffix = cleaned[exact_pos + len(source_clean):].strip()
+        if prefix and (not suffix or len(suffix) <= 12):
+            return prefix
+
+    source_norm = _normalize_ws(source_clean).lower()
+    if not source_norm:
+        return cleaned
+
+    blocks = [block.strip() for block in re.split(r"(?:\r?\n){2,}", cleaned) if block.strip()]
+    if len(blocks) > 1:
+        kept: list[str] = []
+        removed = False
+        for block in blocks:
+            block_norm = _normalize_ws(block).lower()
+            if block_norm == source_norm:
+                removed = True
+                continue
+            kept.append(block)
+        if removed and kept:
+            return "\n\n".join(kept)
+
+    return cleaned
+
+
+def _merge_spans(spans: list[tuple[int, int]]) -> list[tuple[int, int]]:
+    if not spans:
+        return []
+    spans.sort(key=lambda item: (item[0], item[1]))
+    merged: list[tuple[int, int]] = [spans[0]]
+    for start, end in spans[1:]:
+        last_start, last_end = merged[-1]
+        if start <= last_end:
+            merged[-1] = (last_start, max(last_end, end))
+        else:
+            merged.append((start, end))
+    return merged
+
+
+def _formula_spans(text: str) -> list[tuple[int, int]]:
+    spans: list[tuple[int, int]] = []
+    for pattern in _FORMULA_PATTERNS:
+        for match in pattern.finditer(text):
+            start, end = match.span()
+            if end > start:
+                spans.append((start, end))
+    return _merge_spans(spans)
+
+
+def _translate_plain_fragment(
+    text: str,
+    *,
+    translate_text: Callable[[str], str],
+    cache: dict[str, str],
+    max_chunk_chars: int,
+) -> str:
+    if not text or not text.strip():
+        return text
+    if not _TRANSLATABLE_TEXT_PATTERN.search(text):
+        return text
+
+    leading_len = len(text) - len(text.lstrip())
+    trailing_len = len(text) - len(text.rstrip())
+    core_end = len(text) - trailing_len if trailing_len else len(text)
+    core = text[leading_len:core_end]
+    if not core or not core.strip():
+        return text
+
+    translated = cache.get(core)
+    if translated is None:
+        translated = _translate_with_chunk_fallback(
+            core,
+            translate_text=translate_text,
+            max_chunk_chars=max_chunk_chars,
+        )
+        if _is_translator_refusal(translated):
+            translated = core
+        else:
+            translated = _strip_source_echo(translated, core)
+        cache[core] = translated
+
+    return text[:leading_len] + translated + text[core_end:]
+
+
 def _mark_author_line_notranslate(html: str) -> str:
     """Add translate="no" to the author-line paragraph (first <p> after the title <h1>).
 
@@ -296,19 +435,42 @@ def _translate_text_segment(
     if not core.strip():
         return segment
 
-    translated_core = cache.get(core)
-    if translated_core is None:
-        translated_core = _translate_with_chunk_fallback(
+    spans = _formula_spans(core)
+    if not spans:
+        translated_core = _translate_plain_fragment(
             core,
             translate_text=translate_text,
+            cache=cache,
             max_chunk_chars=max_chunk_chars,
         )
-        # If the model produced a refusal or meta-commentary instead of a real
-        # translation, keep the original text so no garbage leaks into the HTML.
-        if _is_translator_refusal(translated_core):
-            translated_core = core
-        cache[core] = translated_core
+        return segment[:leading_len] + translated_core + segment[core_end:]
 
+    translated_parts: list[str] = []
+    cursor = 0
+    for start, end in spans:
+        if start > cursor:
+            translated_parts.append(
+                _translate_plain_fragment(
+                    core[cursor:start],
+                    translate_text=translate_text,
+                    cache=cache,
+                    max_chunk_chars=max_chunk_chars,
+                )
+            )
+        translated_parts.append(core[start:end])
+        cursor = end
+
+    if cursor < len(core):
+        translated_parts.append(
+            _translate_plain_fragment(
+                core[cursor:],
+                translate_text=translate_text,
+                cache=cache,
+                max_chunk_chars=max_chunk_chars,
+            )
+        )
+
+    translated_core = "".join(translated_parts)
     return segment[:leading_len] + translated_core + segment[core_end:]
 
 
@@ -781,5 +943,3 @@ class TranslateGemmaTranslator:
             language_name=language_name,
             translated_segments=translated_segments,
         )
-
-

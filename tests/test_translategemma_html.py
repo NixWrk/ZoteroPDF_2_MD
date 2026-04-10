@@ -245,3 +245,52 @@ def test_translate_html_text_nodes_respects_translate_no_attribute() -> None:
 
     assert "Fa Wang, Member, IEEE" in translated
     assert "NORMAL TRANSLATABLE TEXT." in translated
+
+
+def test_translate_html_text_nodes_strips_appended_source_echo() -> None:
+    html = "<html><body><p>Hello world.</p></body></html>"
+
+    def fake_translate(text: str) -> str:
+        return f"Привет мир.\n\n{text}"
+
+    translated, translated_segments = translate_html_text_nodes(
+        html,
+        translate_text=fake_translate,
+        max_chunk_chars=512,
+    )
+
+    assert translated_segments == 1
+    assert "Привет мир." in translated
+    assert "Hello world." not in translated
+
+
+def test_translate_html_text_nodes_preserves_formula_fragments() -> None:
+    html = (
+        "<html><body>"
+        "<p>Inductive coupling factor is L_{\\rm m}, and a current I_1 flows.</p>"
+        "<p>Z_{1} = \\frac{V_{1}}{I_{1}} = j\\omega L_{1}</p>"
+        "</body></html>"
+    )
+
+    def fake_translate(text: str) -> str:
+        return (
+            text
+            .replace("Inductive coupling factor is", "Коэффициент связи")
+            .replace("and a current", "и ток")
+            .replace("flows", "протекает")
+            .replace("\\", "BROKEN_SLASH")
+            .replace("_", "BROKEN_UNDERSCORE")
+            .replace("j", "JJ")
+        )
+
+    translated, _ = translate_html_text_nodes(
+        html,
+        translate_text=fake_translate,
+        max_chunk_chars=512,
+    )
+
+    assert "L_{\\rm m}" in translated
+    assert "I_1" in translated
+    assert "Z_{1} = \\frac{V_{1}}{I_{1}} = j\\omega L_{1}" in translated
+    assert "BROKEN_SLASH" not in translated
+    assert "BROKEN_UNDERSCORE" not in translated
