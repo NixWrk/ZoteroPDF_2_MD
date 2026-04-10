@@ -104,7 +104,9 @@
     table { display: block; overflow-x: auto; white-space: nowrap; }
   }
 </style>
-<script>MathJax={tex:{inlineMath:[["$","$"],["\(","\)"]],displayMath:[["$$","$$"],["\[","\]"]]},svg:{fontCache:"global"}};</script>
+
+
+<script>MathJax={tex:{inlineMath:[["$","$"],["\\(","\\)"]],displayMath:[["$$","$$"],["\\[","\\]"]]},svg:{fontCache:"global"}};</script>
 <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-svg.js"></script>
 </head>
  <body>
@@ -237,13 +239,9 @@
   </h2>
   <p block-type="Text">
    A passive pressure sensor, which is implanted under the dura mater, consists of two spiral inductors. Fig. 1 shows that increasing ICP bends the plates and increases the capacitance between the two inductors. These components form a resonant tank, and the self-resonant frequency shifts corresponding to the ICP change. Fig. 2 shows that an external reader placed outside the head utilizes an antenna to inductively couple with the sensor, and excites a sweep frequency signal to the sensor. The reader is light (48 g excluding the package box) and small size (72
-   <math display="inline">
-    \times
-   </math>
+   \(\times\)
    48
-   <math display="inline">
-    \times
-   </math>
+   \(\times\)
    20 mm) that could be built into a helmet for patients' continuous ICP monitoring and could be handheld for hourly or daily measurement. Fig. 3 shows the equivalent circuit model of antenna and sensor system.
   </p>
   <p>
@@ -257,58 +255,38 @@
   </p>
   <p>
    Fig. 3. Antenna coupling with sensor circuit model. Inductive coupling factor is
-   <math display="inline">
-    L_{\rm m}
-   </math>
+   \(L_{\rm m}\)
    , and a current
-   <math display="inline">
-    I_1
-   </math>
+   \(I_1\)
    flows through into the antenna, and excites the current in sensor
-   <math display="inline">
-    I_2
-   </math>
+   \(I_2\)
    .
   </p>
   <p block-type="Text">
    Nopper has shown that the impedance of reader's antenna could be expressed as [15]:
   </p>
   <p block-type="Equation">
-   <math display="block">
-    Z_{1} = \frac{V_{1}}{I_{1}} = j\omega L_{1} - \frac{j\omega^{2}L_{m}^{2}}{j\omega L_{2} + R + \frac{1}{i\omega C}}
-   </math>
+   \[Z_{1} = \frac{V_{1}}{I_{1}} = j\omega L_{1} - \frac{j\omega^{2}L_{m}^{2}}{j\omega L_{2} + R + \frac{1}{i\omega C}}\]
    (1)
   </p>
   <p block-type="Text">
    To make (1) more clear, we define
-   <math display="inline">
-    \omega_0=\frac{1}{\sqrt{L_2C}}
-   </math>
+   \(\omega_0=\frac{1}{\sqrt{L_2C}}\)
    , coupling factor
-   <math display="inline">
-    k=\frac{L_m}{\sqrt{L_1L_2}}
-   </math>
+   \(k=\frac{L_m}{\sqrt{L_1L_2}}\)
    , and quality factor
-   <math display="inline">
-    Q=\frac{\omega_0L}{R}
-   </math>
+   \(Q=\frac{\omega_0L}{R}\)
    and substitute into (1), which results in:
   </p>
   <p block-type="Equation">
-   <math display="block">
-    Z_1 = j\omega L_1 \left( 1 + \frac{k^2 \left(\frac{\omega}{\omega_0}\right)^2}{j\frac{1}{Q}\frac{\omega}{\omega_0} + 1 - \left(\frac{\omega}{\omega_0}\right)^2} \right)
-   </math>
+   \[Z_1 = j\omega L_1 \left( 1 + \frac{k^2 \left(\frac{\omega}{\omega_0}\right)^2}{j\frac{1}{Q}\frac{\omega}{\omega_0} + 1 - \left(\frac{\omega}{\omega_0}\right)^2} \right)\]
    (2)
   </p>
   <p block-type="Equation">
    Fig. 4 shows
-   <math display="block">
-    Z_1
-   </math>
+   \[Z_1\]
    is a function of
-   <math>
-    \frac{\omega}{\omega_0} f(\frac{\omega}{\omega_0}) = 1 + \frac{k^2(\frac{\omega}{\omega_0})^2}{j\frac{1}{Q}\frac{\omega}{\omega_0}+1-(\frac{\omega}{\omega_0})^2}
-   </math>
+   \(\frac{\omega}{\omega_0} f(\frac{\omega}{\omega_0}) = 1 + \frac{k^2(\frac{\omega}{\omega_0})^2}{j\frac{1}{Q}\frac{\omega}{\omega_0}+1-(\frac{\omega}{\omega_0})^2}\)
    .
   </p>
   <p block-type="Text">
@@ -318,20 +296,14 @@
    At resonant frequency,
   </p>
   <p block-type="Equation">
-   <math display="block">
-    Z_1|_{\frac{\omega}{2m}=1} = j\omega_0 L_1 + \omega_0 L_1 k^2 Q
-   </math>
+   \[Z_1|_{\frac{\omega}{2m}=1} = j\omega_0 L_1 + \omega_0 L_1 k^2 Q\]
    (3)
   </p>
   <p block-type="Text">
    Equation (3) and Fig. 4 show the impact of the sensor at resonant frequency to the whole system is equivalent to a series
-   <math display="inline">
-    R_{\rm sensor}
-   </math>
+   \(R_{\rm sensor}\)
    value of
-   <math display="inline">
-    \omega_0 L_1 k^2 Q
-   </math>
+   \(\omega_0 L_1 k^2 Q\)
    to the antenna's inductor. This
   </p>
   <p>
@@ -360,21 +332,13 @@
   </h4>
   <p block-type="Text">
    Fig. 6 demonstrates a novel measurement principle to detect the sensor's resonant frequency.
-   <math display="inline">
-    R_1 = 58 \Omega
-   </math>
+   \(R_1 = 58 \Omega\)
    and
-   <math display="inline">
-    C_1 = 1000 \,\mathrm{pF}
-   </math>
+   \(C_1 = 1000 \,\mathrm{pF}\)
    form the impedance matching circuit to ensure
-   <math display="inline">
-    |Z_{load}|
-   </math>
+   \(|Z_{load}|\)
    is close to
-   <math display="inline">
-    50 \Omega
-   </math>
+   \(50 \Omega\)
    at a wide frequency range when the sensor is not placed near the antenna. Based on our measurement result, this pair of resistor and capacitor works well in the range of 400 MHz to 1 GHz. For higher or lower frequency, we could easily try other resistor and capacitor value, or there L type or Pi type impedance matching circuit in the future. Fig. 6 shows that
   </p>
   <p>
@@ -382,122 +346,66 @@
   </p>
   <p>
    Fig. 7. The maximal output signal amplitude drop corresponding to the
-   <math display="inline">
-    k^2 Q
-   </math>
+   \(k^2 Q\)
    , assuming
-   <math display="inline">
-    V_{match} = 1  V
-   </math>
+   \(V_{match} = 1  V\)
    ,
-   <math display="inline">
-    \omega_0 = 600  MHz
-   </math>
+   \(\omega_0 = 600  MHz\)
    (resonant frequency of sample PCB sensor in the prototype) and
-   <math display="inline">
-    L_1 = 230  nH
-   </math>
+   \(L_1 = 230  nH\)
    . As
-   <math display="inline">
-    k^2 Q
-   </math>
+   \(k^2 Q\)
    increase,
-   <math display="inline">
-    R_{sensor}
-   </math>
+   \(R_{sensor}\)
    , increase at the same time, which leads to deeper impedance mismatching. That corresponds to higher amplitude of signal drop.
   </p>
   <p block-type="Text">
    adding a series resistor to the antenna inductor will break this impedance matching and change the RF amplifier's output. To avoid using expensive high speed ADC, the envelope of the output signal is recovered by bypassing the output signal to a typical half-wave rectifier, which consists of D,
-   <math display="inline">
-    C_2 = 3.3\,\mathrm{pF}
-   </math>
-   <math display="inline">
-    R_2 = 2000\,\Omega
-   </math>
+   \(C_2 = 3.3\,\mathrm{pF}\)
+   \(R_2 = 2000\,\Omega\)
    . Thus the RF signal amplitude becomes quasistatic and could be easily measured by the microcontroller ADC.
   </p>
   <p block-type="Text">
    The impact of
-   <math display="inline">
-    R_{sensor}
-   </math>
+   \(R_{sensor}\)
    to the whole system's impedance
-   <math display="inline">
-    Z_{load}
-   </math>
+   \(Z_{load}\)
    is sensitive to the values of
-   <math display="inline">
-    R_1
-   </math>
+   \(R_1\)
    ,
-   <math display="inline">
-    C_1
-   </math>
+   \(C_1\)
    ,
-   <math display="inline">
-    R_2
-   </math>
+   \(R_2\)
    , and
-   <math display="inline">
-    C_2
-   </math>
+   \(C_2\)
    . Given the above stated value chosen in this prototype and assuming antenna inductance equal to 230 nH (the inductance of smaller antenna in the prototype, which is discussed in (Section III-D), we solved the complicated series-parallel circuit equations. Fig. 6 shows that adding equivalent resistor
-   <math display="inline">
-    R_{sensor}
-   </math>
+   \(R_{sensor}\)
    which has been shown in Fig. 4, in series always decreases the
-   <math display="inline">
-    Z_{load}
-   </math>
+   \(Z_{load}\)
    when the resonant frequency range is from 35 MHz to 2.7 GHz. We define the
-   <math display="inline">
-    V_{match}
-   </math>
+   \(V_{match}\)
    is the amplitude of RF amplifier output, when load impedance
-   <math display="inline">
-    Z_{load}
-   </math>
+   \(Z_{load}\)
    is equal to the RF amplifier inner resistance
-   <math display="inline">
-    R_{in}
-   </math>
+   \(R_{in}\)
    . After adding the
-   <math display="inline">
-    R_{sensor}
-   </math>
+   \(R_{sensor}\)
    , the output amplitude sent to the ADC decreases to
-   <math display="inline">
-    \frac{2|Z_{load}|}{|R_{in}+Z_{load}|}V_{match}
-   </math>
+   \(\frac{2|Z_{load}|}{|R_{in}+Z_{load}|}V_{match}\)
    . The amplitude difference between before and after adding
-   <math display="inline">
-    R_{\rm sensor}
-   </math>
+   \(R_{\rm sensor}\)
    is
-   <math display="inline">
-    (1 - \frac{2|Z_{\rm load}|}{|R_{\rm in} + Z_{\rm load}|})V_{\rm match}
-   </math>
+   \((1 - \frac{2|Z_{\rm load}|}{|R_{\rm in} + Z_{\rm load}|})V_{\rm match}\)
    . This amplitude difference could also be defined by
-   <math display="inline">
-    \omega_0 L_1 k^2 Q
-   </math>
+   \(\omega_0 L_1 k^2 Q\)
    . By solving the series-parallel circuit equations, Fig. 7 shows the relationship between the amplitude of signal drop
-   <math display="inline">
-    (1 - \frac{2|Z_{load}|}{|R_{in} + Z_{load}|})V_{match}
-   </math>
+   \((1 - \frac{2|Z_{load}|}{|R_{in} + Z_{load}|})V_{match}\)
    and
-   <math display="inline">
-    R_{sensor}
-   </math>
+   \(R_{sensor}\)
    (
-   <math display="inline">
-    \omega_0 L_1 k^2 Q
-   </math>
+   \(\omega_0 L_1 k^2 Q\)
    ). In the above analysis the assumption value of
-   <math display="inline">
-    L_1
-   </math>
+   \(L_1\)
    is defined by the antenna's size and number of turns, which has been employed in the prototype. However this outcome remains the same if other antenna designs were employed.
   </p>
   <h2>
@@ -721,14 +629,10 @@
       Trace thickness
      </td>
      <td>
-      <math>
-       35 \mu m
-      </math>
+      \(35 \mu m\)
      </td>
      <td>
-      <math>
-       35 \mu m
-      </math>
+      \(35 \mu m\)
      </td>
     </tr>
     <tr>
@@ -750,9 +654,7 @@
       5 mm
      </td>
      <td>
-      <math>
-       35 \mu m
-      </math>
+      \(35 \mu m\)
      </td>
     </tr>
     <tr>
@@ -814,29 +716,17 @@
   </p>
   <p block-type="Text">
    time with the sensor coupling. When the sensor is absent, the antenna's impedance which is defined as
-   <math display="inline">
-    Z_{\rm antenna} = j\omega L_1
-   </math>
+   \(Z_{\rm antenna} = j\omega L_1\)
    forms the only load. When the sensor is present, the whole system's impedance
-   <math display="inline">
-    Z_1
-   </math>
+   \(Z_1\)
    :
-   <math display="inline">
-    Z_1 = j\omega L_1(1+\frac{k^2(\frac{\omega}{\omega_0})^2}{j\frac{1}{2}\frac{\omega}{\omega_0}+1-(\frac{\omega}{\omega_0})^2})
-   </math>
+   \(Z_1 = j\omega L_1(1+\frac{k^2(\frac{\omega}{\omega_0})^2}{j\frac{1}{2}\frac{\omega}{\omega_0}+1-(\frac{\omega}{\omega_0})^2})\)
    forms the output load of the RF amplifier. The difference between the two signals, is the sensor's impedance:
-   <math display="inline">
-    Z_{\rm sensor} = Z_1 - Z_{\rm antenna} = j\omega L_1(\frac{k^2(\frac{\omega}{\omega_0})^2}{j\frac{1}{2}\frac{\omega}{\omega_0}+1-(\frac{\omega}{\omega_0})^2})
-   </math>
+   \(Z_{\rm sensor} = Z_1 - Z_{\rm antenna} = j\omega L_1(\frac{k^2(\frac{\omega}{\omega_0})^2}{j\frac{1}{2}\frac{\omega}{\omega_0}+1-(\frac{\omega}{\omega_0})^2})\)
    . The sensor's impedance
-   <math display="inline">
-    Z_{\rm sensor}
-   </math>
+   \(Z_{\rm sensor}\)
    (at resonant frequency, transferred to pure resistance
-   <math display="inline">
-    R_{\rm sensor}
-   </math>
+   \(R_{\rm sensor}\)
    ) yields the output voltage drop at resonant frequency of the sensor (discussed in Section II-B of Methodology). Figs. 12 and 13 shows data collected by LabVIEW DAQ, and processed then displayed in MATLAB, for the two sensors. The device's microcontroller also collects data using its own built-in ADC (discussed in Section III-B). For real time ICP monitoring, the first sweep (without sensor) only needs to be done once then stored when the reader initializes.
   </p>
   <p block-type="Text">
@@ -850,9 +740,7 @@
   </p>
   <p block-type="Text">
    First, the time required for the Serial Peripheral Interface (SPI) communication between microcontroller and RF generator for one step (changing output frequency once) consists of:
-   <math display="inline">
-    0.04~\mu s
-   </math>
+   \(0.04~\mu s\)
    for each machine cycle (25 MHz crystal) times 4 cycles for one bit SPI communication bytes times 34 bytes per regis-
   </p>
   <p>
@@ -869,38 +757,26 @@
   </p>
   <p block-type="Text">
    ter (32 bytes data per register add start and stop bytes) times 6 registers for changing output frequency which totals to 32.64
-   <math display="inline">
-    \mu
-   </math>
+   \(\mu\)
    s. Second, the RF generator phase lock time delay is 60
-   <math display="inline">
-    \mu
-   </math>
+   \(\mu\)
    s.
   </p>
   <p block-type="Text">
    Third, because the value of the capacitor and the resistor in the LT5505 half-wave rectifier is relatively small (
-   <math display="inline">
-    R=2\,\mathrm{k}\Omega
-   </math>
+   \(R=2\,\mathrm{k}\Omega\)
    ,
-   <math display="inline">
-    C=3.3\,\mathrm{pF}
-   </math>
+   \(C=3.3\,\mathrm{pF}\)
    , the time constant is 6.6 ns), thus this part of time consumption is neglectable.
   </p>
   <p block-type="Text">
    Last is the ADC conversion time. The dsPIC33FJ32GP202 features an automatic ADC conversion speed up to 1.1 Msps (0.99
-   <math display="inline">
-    \mu
-   </math>
+   \(\mu\)
    s for one sample). For each step, 10 samples are measured and taken average.
   </p>
   <p block-type="Text">
    Thus the total time consumed for one step is
-   <math display="inline">
-    102 \mu s
-   </math>
+   \(102 \mu s\)
    . For a typical 10 MHz sweep range and a 10 kHz sweep resolution, a total sweep time is around 0.102 s. In practice, we take the component's setup time and signal processing time into consideration, causing the measurement time to be more than 0.15 s. If we could narrow the frequency range, or decrease the frequency
   </p>
   <p>
@@ -908,9 +784,7 @@
   </p>
   <p>
    Fig. 14. Signal strength vs distance. Coupling factor k between antenna and sensor will decrease when measurement distance increases. As shown in Fig. 4,
-   <math display="inline">
-    R_{\rm sensor}
-   </math>
+   \(R_{\rm sensor}\)
    will decrease at the same time. Thus signal strength decrease.
   </p>
   <p>
@@ -945,63 +819,43 @@
   </h4>
   <p block-type="Text">
    Fig. 5 shows maximal amplitude of signal drop at resonant frequency, is positively correlated to
-   <math display="inline">
-    k^2Q
-   </math>
+   \(k^2Q\)
    . Antenna geometry influences the k factor, which was implemented in the design.
   </p>
   <p block-type="Text">
    The mutual inductance between the telemetry device antenna and spiral coil on the sensor is specified by
   </p>
   <p block-type="Equation">
-   <math display="block">
-    k = \frac{L_m}{\sqrt{L_1 L_2}} \tag{4}
-   </math>
+   \[k = \frac{L_m}{\sqrt{L_1 L_2}} \tag{4}\]
   </p>
   <p block-type="Text">
-   <math display="inline">
-    L_{\rm m}
-   </math>
+   \(L_{\rm m}\)
    is calculated as [23]:
   </p>
   <p block-type="Equation">
-   <math display="block">
-    L_{\rm m} = \left(\frac{4}{\pi}\right)^2 \sum_{i=1}^{i=n_a} \sum_{j=1}^{j=n_b} M_{ij}
-   </math>
+   \[L_{\rm m} = \left(\frac{4}{\pi}\right)^2 \sum_{i=1}^{i=n_a} \sum_{j=1}^{j=n_b} M_{ij}\]
    (5)
   </p>
   <p block-type="Equation">
-   <math display="block">
-    M_{ij} = \frac{\mu_0 \pi a_i^2 b_j^2}{2(a_i^2 + b_i^2 + z^2)^{\frac{3}{2}}} \left( 1 + \frac{15}{32} \gamma_{ij}^2 + \frac{315}{1024} \gamma_{ij}^4 \right)
-   </math>
+   \[M_{ij} = \frac{\mu_0 \pi a_i^2 b_j^2}{2(a_i^2 + b_i^2 + z^2)^{\frac{3}{2}}} \left( 1 + \frac{15}{32} \gamma_{ij}^2 + \frac{315}{1024} \gamma_{ij}^4 \right)\]
    (6)
   </p>
   <p block-type="Equation">
-   <math display="block">
-    \gamma_{ij=\frac{2a_ib_j}{a_i^2+b_j^2}}\tag{7}
-   </math>
+   \[\gamma_{ij=\frac{2a_ib_j}{a_i^2+b_j^2}}\tag{7}\]
   </p>
   <p block-type="Text">
    where
-   <math display="inline">
-    \mu
-   </math>
+   \(\mu\)
    is the vacuum magnetic permeability:
-   <math display="inline">
-    \mu_0 = 4\pi \times 10^{-7}
-   </math>
+   \(\mu_0 = 4\pi \times 10^{-7}\)
    .
-   <math display="inline">
-    a_i
-   </math>
+   \(a_i\)
    is the
    <i>
     i
    </i>
    th turn radius of antenna, and
-   <math display="inline">
-    b_j
-   </math>
+   \(b_j\)
    is the
    <i>
     j
@@ -1016,34 +870,22 @@
    described that, for the square shape planar spiral inductor, the inductance is expressed as [24]
   </p>
   <p block-type="Equation">
-   <math display="block">
-    L = \frac{2\mu_0}{\pi} n^2 d_{avg} \left( \ln \left( \frac{2.07}{\varphi} \right) + 0.18\varphi + 0.13\varphi^2 \right)
-   </math>
+   \[L = \frac{2\mu_0}{\pi} n^2 d_{avg} \left( \ln \left( \frac{2.07}{\varphi} \right) + 0.18\varphi + 0.13\varphi^2 \right)\]
    (8)
   </p>
   <p block-type="Text">
-   <math display="inline">
-    d_{avg}
-   </math>
+   \(d_{avg}\)
    is the average diameter of the square, which is
-   <math display="inline">
-    \frac{D+D_{in}}{2}
-   </math>
+   \(\frac{D+D_{in}}{2}\)
    .
-   <math display="inline">
-    \varphi = \frac{1-\alpha}{1+\alpha}
-   </math>
+   \(\varphi = \frac{1-\alpha}{1+\alpha}\)
    ,
-   <math display="inline">
-    \alpha
-   </math>
+   \(\alpha\)
    is the ratio of outer diameter to inner diameter.
   </p>
   <p block-type="Text">
    Fig. 16 shows the k factor for two antenna with distance varying based on
-   <math display="inline">
-    (4)\sim(8)
-   </math>
+   \((4)\sim(8)\)
    , given the antennas' and sensor's
   </p>
   <h4>
@@ -1071,9 +913,7 @@
       Trace conductivity
      </td>
      <td>
-      <math>
-       5.96 \times 10^7  S/m
-      </math>
+      \(5.96 \times 10^7  S/m\)
      </td>
     </tr>
     <tr>
@@ -1089,9 +929,7 @@
       Trace outer size
      </td>
      <td>
-      <math>
-       10 \times 10  mm
-      </math>
+      \(10 \times 10  mm\)
      </td>
     </tr>
     <tr>
@@ -1123,9 +961,7 @@
       PCB size
      </td>
      <td>
-      <math>
-       30 \times 30  mm
-      </math>
+      \(30 \times 30  mm\)
      </td>
     </tr>
     <tr>
@@ -1188,9 +1024,7 @@
       Tissue density
      </td>
      <td>
-      <math>
-       1030  kg/m^3
-      </math>
+      \(1030  kg/m^3\)
      </td>
     </tr>
     <tr>
@@ -1198,9 +1032,7 @@
       Permittivity rate parameter
      </td>
      <td>
-      <math>
-       2 \times 10^{-4}
-      </math>
+      \(2 \times 10^{-4}\)
      </td>
     </tr>
     <tr>
@@ -1208,9 +1040,7 @@
       Permittivity offset parameter
      </td>
      <td>
-      <math>
-       4 \times 10^{-4}
-      </math>
+      \(4 \times 10^{-4}\)
      </td>
     </tr>
     <tr>
@@ -1242,9 +1072,7 @@
       •
      </td>
      <td>
-      <math>
-       (1 + f_{brain}) \times Permittivity rate +
-      </math>
+      \((1 + f_{brain}) \times Permittivity rate +\)
      </td>
     </tr>
     <tr>
@@ -1267,9 +1095,7 @@
       •
      </td>
      <td>
-      <math>
-       (1 + f_{brain}) \times conductivity rate +
-      </math>
+      \((1 + f_{brain}) \times conductivity rate +\)
      </td>
     </tr>
     <tr>
@@ -1290,9 +1116,7 @@
    </tbody>
   </table>
   <p block-type="Text">
-   <math display="inline">
-    f_{\mathrm{brain}}
-   </math>
+   \(f_{\mathrm{brain}}\)
    is the function which describes localized tissue permittivity and conductivity of the human head
   </p>
   <p block-type="Text">
@@ -1601,9 +1425,7 @@
    and the signal were located in a low frequency range. A moving average, which works as a low pass filter removed the noise:
   </p>
   <p block-type="Equation">
-   <math display="block">
-    Ly_s(i) = \frac{1}{2N+1}(y(i+N) + y(i+N-1) + \dots + y(i-N))
-   </math>
+   \[Ly_s(i) = \frac{1}{2N+1}(y(i+N) + y(i+N-1) + \dots + y(i-N))\]
    (9)
   </p>
   <p block-type="Text">
@@ -1613,15 +1435,11 @@
    However the signal from the moving average was not satisfactory. A further signal processing method is based on the moving average, known as Local Regression [31]. This algorithm assigned regression weights to the value within a dynamic range with a length chosen to be 5:
   </p>
   <p block-type="Equation">
-   <math display="block">
-    w_i = \left(1 - \left| \frac{x - x_i}{d(x)} \right|^3 \right)^3 \tag{10}
-   </math>
+   \[w_i = \left(1 - \left| \frac{x - x_i}{d(x)} \right|^3 \right)^3 \tag{10}\]
   </p>
   <p block-type="Text">
    where x is the predicted value associated with the original signal data to be smoothed,
-   <math display="inline">
-    x_i
-   </math>
+   \(x_i\)
    is the neighbor of x in the dynamic range, and d(x) is half of the dynamic range length at the x-axis. Based on these weights, we performed a weighted linear least-squares regression. The regression used a second degree polynomial. Fig. 18 shows the final denoised result.
   </p>
   <h4>

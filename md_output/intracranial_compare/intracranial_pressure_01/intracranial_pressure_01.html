@@ -2,8 +2,118 @@
 <html>
  <head>
   <meta charset="utf-8"/>
- </head>
+ <style data-z2m-style="readable">
+  :root { color-scheme: light; }
+  body {
+    margin: 0;
+    padding: 22px;
+    font-family: "Segoe UI", "Arial", sans-serif;
+    line-height: 1.62;
+    color: #1f2937;
+    background: linear-gradient(180deg, #f5f8fb 0%, #edf2f7 100%);
+  }
+  #marker-doc {
+    max-width: 980px;
+    margin: 0 auto;
+    background: #ffffff;
+    border: 1px solid #dbe5ef;
+    border-radius: 12px;
+    box-shadow: 0 8px 22px rgba(15, 23, 42, 0.08);
+    padding: 30px 36px;
+  }
+  h1, h2, h3, h4, h5, h6 {
+    color: #0f172a;
+    line-height: 1.28;
+    margin-top: 1.15em;
+    margin-bottom: 0.5em;
+  }
+  p {
+    margin: 0.6em 0;
+    word-break: break-word;
+  }
+  a {
+    color: #0b57d0;
+    text-decoration: underline;
+    text-underline-offset: 2px;
+  }
+  a:hover {
+    color: #1d4ed8;
+  }
+  .z2m-ref-link {
+    text-decoration: none;
+  }
+  .z2m-ref-num {
+    font-weight: 600;
+    margin-right: 0.3em;
+  }
+  ul, ol { margin: 0.65em 0 0.75em 1.3em; }
+  li { margin: 0.28em 0; }
+  blockquote {
+    margin: 0.9em 0;
+    padding: 0.55em 0.9em;
+    border-left: 4px solid #60a5fa;
+    background: #f8fbff;
+    color: #0b355c;
+  }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 1.1em 0;
+    font-size: 0.96rem;
+  }
+  th, td {
+    border: 1px solid #dbe3ec;
+    padding: 0.45em 0.58em;
+    vertical-align: top;
+  }
+  th {
+    background: #f4f8fc;
+    font-weight: 600;
+  }
+  pre, code {
+    font-family: "Cascadia Mono", "Consolas", "Courier New", monospace;
+    font-size: 0.93em;
+  }
+  pre {
+    background: #f7fafc;
+    border: 1px solid #dbe3ec;
+    border-radius: 8px;
+    padding: 0.85em 0.95em;
+    overflow-x: auto;
+  }
+  code {
+    background: #f3f7fb;
+    border-radius: 4px;
+    padding: 0.08em 0.25em;
+  }
+  img {
+    max-width: 100%;
+    height: auto;
+    display: block;
+    margin: 0.9em auto;
+    border: 1px solid #d9e0e7;
+    border-radius: 6px;
+  }
+  math[display="block"] {
+    overflow-x: auto;
+    display: block;
+    margin: 0.6em 0;
+  }
+  math {
+    overflow-x: auto;
+  }
+  @media (max-width: 960px) {
+    body { padding: 10px; }
+    #marker-doc { padding: 16px 15px; border-radius: 8px; }
+    table { display: block; overflow-x: auto; white-space: nowrap; }
+  }
+</style>
+<script>MathJax={tex:{inlineMath:[["$","$"],["\\(","\\)"]],displayMath:[["$$","$$"],["\\[","\\]"]]},svg:{fontCache:"global"}};</script>
+<script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-svg.js"></script>
+</head>
  <body>
+  <main id="marker-doc">
+
   <h1>
    A Novel Intracranial Pressure Readout Circuit for Passive Wireless
    <i>
@@ -63,7 +173,7 @@
    NCREASED pressure within the brain from fluid accumulation, known as hydrocephalus, affects one to two in every 1000 live births, making it one of the most common birth defects, more common than Down syndrome or deafness. The National Institutes of Health (NIH) website estimates 700,000 children and adults living with hydrocephalus, and it is by far the leading cause of brain surgery for children in the US.
   </p>
   <p block-type="Text">
-   Use of a catheter to link the intracranial pressure (ICP) sensor across the skin increases the risk of complications, such as infection, traumatic hemorrhage, and malfunction of the device [1], motivating our interests to wirelessly measure ICP.
+   Use of a catheter to link the intracranial pressure (ICP) sensor across the skin increases the risk of complications, such as infection, traumatic hemorrhage, and malfunction of the device <a href="#ref-1" class="z2m-ref-link">[1]</a>, motivating our interests to wirelessly measure ICP.
   </p>
   <p block-type="Text">
    Manuscript received April 8, 2017; revised June 8, 2017; accepted July 8, 2017. This paper was recommended by Associate Editor H. Jiang.
@@ -85,20 +195,20 @@
    </ul>
   </p>
   <p block-type="Text">
-   Color versions of one or more of the figures in this paper are available online at http://ieeexplore.ieee.org.
+   Color versions of one or more of the figures in this paper are available online at <a href="http://ieeexplore.ieee.org" target="_blank" rel="noopener noreferrer">http://ieeexplore.ieee.org</a>.
   </p>
   <p block-type="Text">
    Digital Object Identifier 10.1109/TBCAS.2017.2731370
   </p>
   <p block-type="Text">
-   Telemetric monitors used for ICP monitoring was firstly described in 1990s [2]. Then fully implantable MEMs-based/ Microtelemetry ICP sensor, portable read out monitor and wireless communication method to read out data were developed [3]–[7]. A wireless ICP sensor could be passive or active. An active sensor combines the pressure sensor and a small on-chip communication module like Bluetooth [8], [9]. The active sensor allows a longer communication distance between the sensor and external reader, and could achieve better signal to noise ratio (SNR). However, an active sensor needs a power supply, which leads to larger size, larger weight, and periodic battery replacement. Thus an active sensor prohibits long term continuous ICP monitoring. Our passive resonant sensor is based on a tank circuit. Pressure can be measured using the sensor by measuring the resonant frequency of the tank. Micro-Electro-Mechanical Systems (MEMS) technology has helped build the ultrasmall passive resonant sensors. The device could be easily implanted into the human brain, with minimal disturbance to nearby tissues. Chen
+   Telemetric monitors used for ICP monitoring was firstly described in 1990s <a href="#ref-2" class="z2m-ref-link">[2]</a>. Then fully implantable MEMs-based/ Microtelemetry ICP sensor, portable read out monitor and wireless communication method to read out data were developed <a href="#ref-3" class="z2m-ref-link">[3]</a>–<a href="#ref-7" class="z2m-ref-link">[7]</a>. A wireless ICP sensor could be passive or active. An active sensor combines the pressure sensor and a small on-chip communication module like Bluetooth <a href="#ref-8" class="z2m-ref-link">[8]</a>, <a href="#ref-9" class="z2m-ref-link">[9]</a>. The active sensor allows a longer communication distance between the sensor and external reader, and could achieve better signal to noise ratio (SNR). However, an active sensor needs a power supply, which leads to larger size, larger weight, and periodic battery replacement. Thus an active sensor prohibits long term continuous ICP monitoring. Our passive resonant sensor is based on a tank circuit. Pressure can be measured using the sensor by measuring the resonant frequency of the tank. Micro-Electro-Mechanical Systems (MEMS) technology has helped build the ultrasmall passive resonant sensors. The device could be easily implanted into the human brain, with minimal disturbance to nearby tissues. Chen
    <i>
     et al
    </i>
-   . reported a flexible passive pressure sensor resonant at 2 GHz with dimensions of 1 × 1 × 0.1 mm [6]. Other studies reported ultrasmall sensors ranging from 350 MHz [10] to 2.4 GHz [5], [11]. These passive sensors measured ICP using an impedance analyzer [12]–[14] or Vector Network Analyzer (VNA) [3], [5], [6], which is heavy, expensive, nonportable, and requires a separate power supply. In addition, these measurements could only be done in a laboratory manually, which prohibits continuous daily ICP monitoring.
+   . reported a flexible passive pressure sensor resonant at 2 GHz with dimensions of 1 × 1 × 0.1 mm <a href="#ref-6" class="z2m-ref-link">[6]</a>. Other studies reported ultrasmall sensors ranging from 350 MHz <a href="#ref-10" class="z2m-ref-link">[10]</a> to 2.4 GHz <a href="#ref-5" class="z2m-ref-link">[5]</a>, <a href="#ref-11" class="z2m-ref-link">[11]</a>. These passive sensors measured ICP using an impedance analyzer <a href="#ref-12" class="z2m-ref-link">[12]</a>–<a href="#ref-14" class="z2m-ref-link">[14]</a> or Vector Network Analyzer (VNA) <a href="#ref-3" class="z2m-ref-link">[3]</a>, <a href="#ref-5" class="z2m-ref-link">[5]</a>, <a href="#ref-6" class="z2m-ref-link">[6]</a>, which is heavy, expensive, nonportable, and requires a separate power supply. In addition, these measurements could only be done in a laboratory manually, which prohibits continuous daily ICP monitoring.
   </p>
   <p block-type="Text">
-   Previous studies [15]–[17] developed similar telemetry devices based on traditional grid dip oscillator technology. But grid dip oscillator technology has some constraints which prevent it from being applied to ultrasmall sensors, which always resonate at GHz frequencies: First, its sweeping frequency range is limited by the tuner capacitor, thus the frequency range is usually around 20 MHz (10 MHz to 30 MHz in [15]; 22–41 MHz [16]; 12.76 and 13.01 MHz in [17]), which is narrow. Second, the center and highest frequency of the oscillator is limited by the oscillator's parasitic capacitance, which won't reach up to the GHz range. Third, the oscillator's resonant frequency is determined by the imaginary portion of the system, including the antenna and the sensor. Especially when the sweeping frequency approaches the sensor resonant frequency, the capacitance components of the sensor influence the oscillator's resonant frequency to form a "frequency drift". This phenomenon inhibits us from getting accurate measurement results when trying to detect the tiny pressure change of the sensor. Also, this is an analog
+   Previous studies <a href="#ref-15" class="z2m-ref-link">[15]</a>–<a href="#ref-17" class="z2m-ref-link">[17]</a> developed similar telemetry devices based on traditional grid dip oscillator technology. But grid dip oscillator technology has some constraints which prevent it from being applied to ultrasmall sensors, which always resonate at GHz frequencies: First, its sweeping frequency range is limited by the tuner capacitor, thus the frequency range is usually around 20 MHz (10 MHz to 30 MHz in <a href="#ref-15" class="z2m-ref-link">[15]</a>; 22–41 MHz <a href="#ref-16" class="z2m-ref-link">[16]</a>; 12.76 and 13.01 MHz in <a href="#ref-17" class="z2m-ref-link">[17]</a>), which is narrow. Second, the center and highest frequency of the oscillator is limited by the oscillator's parasitic capacitance, which won't reach up to the GHz range. Third, the oscillator's resonant frequency is determined by the imaginary portion of the system, including the antenna and the sensor. Especially when the sweeping frequency approaches the sensor resonant frequency, the capacitance components of the sensor influence the oscillator's resonant frequency to form a "frequency drift". This phenomenon inhibits us from getting accurate measurement results when trying to detect the tiny pressure change of the sensor. Also, this is an analog
   </p>
   <p>
    <img src="_page_1_Picture_3.jpeg"/>
@@ -114,11 +224,11 @@
    <i>
     et al.
    </i>
-   proposed a reader that could achieve a measurement distance of 8.5 mm [15]. Coosemans
+   proposed a reader that could achieve a measurement distance of 8.5 mm <a href="#ref-15" class="z2m-ref-link">[15]</a>. Coosemans
    <i>
     et al.
    </i>
-   proposed a similar reader for intraocular pressure measurement with maximum distance of 7.5 mm [16]. In real practice, the male adult scalp thickness ranges from 2 to 3.5 mm [18], and skull thickness average ranges from 6.08 mm to 8.09 mm, differs with location, and standard deviations range from 1.15 to 1.88 mm [19]. The dura is a thick membrane surrounding the brain, which has an average thickness of 0.27 mm [20]. So the minimal measurement distance should be at least 10 mm and desirably larger than 15 mm.
+   proposed a similar reader for intraocular pressure measurement with maximum distance of 7.5 mm <a href="#ref-16" class="z2m-ref-link">[16]</a>. In real practice, the male adult scalp thickness ranges from 2 to 3.5 mm <a href="#ref-18" class="z2m-ref-link">[18]</a>, and skull thickness average ranges from 6.08 mm to 8.09 mm, differs with location, and standard deviations range from 1.15 to 1.88 mm <a href="#ref-19" class="z2m-ref-link">[19]</a>. The dura is a thick membrane surrounding the brain, which has an average thickness of 0.27 mm <a href="#ref-20" class="z2m-ref-link">[20]</a>. So the minimal measurement distance should be at least 10 mm and desirably larger than 15 mm.
   </p>
   <p block-type="Text">
    Section II proposes a novel measurement principle. Section III shows the flowchart and fabrication progress of the prototype. Section IV shows the measurement result. Section V discusses considerations which might help to improve the prototype's performance. Section VI provides the conclusion.
@@ -131,13 +241,9 @@
   </h2>
   <p block-type="Text">
    A passive pressure sensor, which is implanted under the dura mater, consists of two spiral inductors. Fig. 1 shows that increasing ICP bends the plates and increases the capacitance between the two inductors. These components form a resonant tank, and the self-resonant frequency shifts corresponding to the ICP change. Fig. 2 shows that an external reader placed outside the head utilizes an antenna to inductively couple with the sensor, and excites a sweep frequency signal to the sensor. The reader is light (48 g excluding the package box) and small size (72
-   <math display="inline">
-    \times
-   </math>
+   \(\times\)
    48
-   <math display="inline">
-    \times
-   </math>
+   \(\times\)
    20 mm) that could be built into a helmet for patients' continuous ICP monitoring and could be handheld for hourly or daily measurement. Fig. 3 shows the equivalent circuit model of antenna and sensor system.
   </p>
   <p>
@@ -151,58 +257,38 @@
   </p>
   <p>
    Fig. 3. Antenna coupling with sensor circuit model. Inductive coupling factor is
-   <math display="inline">
-    L_{\rm m}
-   </math>
+   \(L_{\rm m}\)
    , and a current
-   <math display="inline">
-    I_1
-   </math>
+   \(I_1\)
    flows through into the antenna, and excites the current in sensor
-   <math display="inline">
-    I_2
-   </math>
+   \(I_2\)
    .
   </p>
   <p block-type="Text">
-   Nopper has shown that the impedance of reader's antenna could be expressed as [15]:
+   Nopper has shown that the impedance of reader's antenna could be expressed as <a href="#ref-15" class="z2m-ref-link">[15]</a>:
   </p>
   <p block-type="Equation">
-   <math display="block">
-    Z_{1} = \frac{V_{1}}{I_{1}} = j\omega L_{1} - \frac{j\omega^{2}L_{m}^{2}}{j\omega L_{2} + R + \frac{1}{i\omega C}}
-   </math>
+   \[Z_{1} = \frac{V_{1}}{I_{1}} = j\omega L_{1} - \frac{j\omega^{2}L_{m}^{2}}{j\omega L_{2} + R + \frac{1}{i\omega C}}\]
    (1)
   </p>
   <p block-type="Text">
    To make (1) more clear, we define
-   <math display="inline">
-    \omega_0=\frac{1}{\sqrt{L_2C}}
-   </math>
+   \(\omega_0=\frac{1}{\sqrt{L_2C}}\)
    , coupling factor
-   <math display="inline">
-    k=\frac{L_m}{\sqrt{L_1L_2}}
-   </math>
+   \(k=\frac{L_m}{\sqrt{L_1L_2}}\)
    , and quality factor
-   <math display="inline">
-    Q=\frac{\omega_0L}{R}
-   </math>
+   \(Q=\frac{\omega_0L}{R}\)
    and substitute into (1), which results in:
   </p>
   <p block-type="Equation">
-   <math display="block">
-    Z_1 = j\omega L_1 \left( 1 + \frac{k^2 \left(\frac{\omega}{\omega_0}\right)^2}{j\frac{1}{Q}\frac{\omega}{\omega_0} + 1 - \left(\frac{\omega}{\omega_0}\right)^2} \right)
-   </math>
+   \[Z_1 = j\omega L_1 \left( 1 + \frac{k^2 \left(\frac{\omega}{\omega_0}\right)^2}{j\frac{1}{Q}\frac{\omega}{\omega_0} + 1 - \left(\frac{\omega}{\omega_0}\right)^2} \right)\]
    (2)
   </p>
   <p block-type="Equation">
    Fig. 4 shows
-   <math display="block">
-    Z_1
-   </math>
+   \[Z_1\]
    is a function of
-   <math>
-    \frac{\omega}{\omega_0} f(\frac{\omega}{\omega_0}) = 1 + \frac{k^2(\frac{\omega}{\omega_0})^2}{j\frac{1}{Q}\frac{\omega}{\omega_0}+1-(\frac{\omega}{\omega_0})^2}
-   </math>
+   \(\frac{\omega}{\omega_0} f(\frac{\omega}{\omega_0}) = 1 + \frac{k^2(\frac{\omega}{\omega_0})^2}{j\frac{1}{Q}\frac{\omega}{\omega_0}+1-(\frac{\omega}{\omega_0})^2}\)
    .
   </p>
   <p block-type="Text">
@@ -212,20 +298,14 @@
    At resonant frequency,
   </p>
   <p block-type="Equation">
-   <math display="block">
-    Z_1|_{\frac{\omega}{2m}=1} = j\omega_0 L_1 + \omega_0 L_1 k^2 Q
-   </math>
+   \[Z_1|_{\frac{\omega}{2m}=1} = j\omega_0 L_1 + \omega_0 L_1 k^2 Q\]
    (3)
   </p>
   <p block-type="Text">
    Equation (3) and Fig. 4 show the impact of the sensor at resonant frequency to the whole system is equivalent to a series
-   <math display="inline">
-    R_{\rm sensor}
-   </math>
+   \(R_{\rm sensor}\)
    value of
-   <math display="inline">
-    \omega_0 L_1 k^2 Q
-   </math>
+   \(\omega_0 L_1 k^2 Q\)
    to the antenna's inductor. This
   </p>
   <p>
@@ -254,21 +334,13 @@
   </h4>
   <p block-type="Text">
    Fig. 6 demonstrates a novel measurement principle to detect the sensor's resonant frequency.
-   <math display="inline">
-    R_1 = 58 \Omega
-   </math>
+   \(R_1 = 58 \Omega\)
    and
-   <math display="inline">
-    C_1 = 1000 \,\mathrm{pF}
-   </math>
+   \(C_1 = 1000 \,\mathrm{pF}\)
    form the impedance matching circuit to ensure
-   <math display="inline">
-    |Z_{load}|
-   </math>
+   \(|Z_{load}|\)
    is close to
-   <math display="inline">
-    50 \Omega
-   </math>
+   \(50 \Omega\)
    at a wide frequency range when the sensor is not placed near the antenna. Based on our measurement result, this pair of resistor and capacitor works well in the range of 400 MHz to 1 GHz. For higher or lower frequency, we could easily try other resistor and capacitor value, or there L type or Pi type impedance matching circuit in the future. Fig. 6 shows that
   </p>
   <p>
@@ -276,122 +348,66 @@
   </p>
   <p>
    Fig. 7. The maximal output signal amplitude drop corresponding to the
-   <math display="inline">
-    k^2 Q
-   </math>
+   \(k^2 Q\)
    , assuming
-   <math display="inline">
-    V_{\text{match}} = 1 \text{ V}
-   </math>
+   \(V_{match} = 1  V\)
    ,
-   <math display="inline">
-    \omega_0 = 600 \text{ MHz}
-   </math>
+   \(\omega_0 = 600  MHz\)
    (resonant frequency of sample PCB sensor in the prototype) and
-   <math display="inline">
-    L_1 = 230 \text{ nH}
-   </math>
+   \(L_1 = 230  nH\)
    . As
-   <math display="inline">
-    k^2 Q
-   </math>
+   \(k^2 Q\)
    increase,
-   <math display="inline">
-    R_{\text{sensor}}
-   </math>
+   \(R_{sensor}\)
    , increase at the same time, which leads to deeper impedance mismatching. That corresponds to higher amplitude of signal drop.
   </p>
   <p block-type="Text">
    adding a series resistor to the antenna inductor will break this impedance matching and change the RF amplifier's output. To avoid using expensive high speed ADC, the envelope of the output signal is recovered by bypassing the output signal to a typical half-wave rectifier, which consists of D,
-   <math display="inline">
-    C_2 = 3.3\,\mathrm{pF}
-   </math>
-   <math display="inline">
-    R_2 = 2000\,\Omega
-   </math>
+   \(C_2 = 3.3\,\mathrm{pF}\)
+   \(R_2 = 2000\,\Omega\)
    . Thus the RF signal amplitude becomes quasistatic and could be easily measured by the microcontroller ADC.
   </p>
   <p block-type="Text">
    The impact of
-   <math display="inline">
-    R_{\text{sensor}}
-   </math>
+   \(R_{sensor}\)
    to the whole system's impedance
-   <math display="inline">
-    Z_{\text{load}}
-   </math>
+   \(Z_{load}\)
    is sensitive to the values of
-   <math display="inline">
-    R_1
-   </math>
+   \(R_1\)
    ,
-   <math display="inline">
-    C_1
-   </math>
+   \(C_1\)
    ,
-   <math display="inline">
-    R_2
-   </math>
+   \(R_2\)
    , and
-   <math display="inline">
-    C_2
-   </math>
+   \(C_2\)
    . Given the above stated value chosen in this prototype and assuming antenna inductance equal to 230 nH (the inductance of smaller antenna in the prototype, which is discussed in (Section III-D), we solved the complicated series-parallel circuit equations. Fig. 6 shows that adding equivalent resistor
-   <math display="inline">
-    R_{\text{sensor}}
-   </math>
+   \(R_{sensor}\)
    which has been shown in Fig. 4, in series always decreases the
-   <math display="inline">
-    Z_{load}
-   </math>
+   \(Z_{load}\)
    when the resonant frequency range is from 35 MHz to 2.7 GHz. We define the
-   <math display="inline">
-    V_{\text{match}}
-   </math>
+   \(V_{match}\)
    is the amplitude of RF amplifier output, when load impedance
-   <math display="inline">
-    Z_{\text{load}}
-   </math>
+   \(Z_{load}\)
    is equal to the RF amplifier inner resistance
-   <math display="inline">
-    R_{\text{in}}
-   </math>
+   \(R_{in}\)
    . After adding the
-   <math display="inline">
-    R_{\text{sensor}}
-   </math>
+   \(R_{sensor}\)
    , the output amplitude sent to the ADC decreases to
-   <math display="inline">
-    \frac{2|Z_{\text{load}}|}{|R_{\text{in}}+Z_{\text{load}}|}V_{\text{match}}
-   </math>
+   \(\frac{2|Z_{load}|}{|R_{in}+Z_{load}|}V_{match}\)
    . The amplitude difference between before and after adding
-   <math display="inline">
-    R_{\rm sensor}
-   </math>
+   \(R_{\rm sensor}\)
    is
-   <math display="inline">
-    (1 - \frac{2|Z_{\rm load}|}{|R_{\rm in} + Z_{\rm load}|})V_{\rm match}
-   </math>
+   \((1 - \frac{2|Z_{\rm load}|}{|R_{\rm in} + Z_{\rm load}|})V_{\rm match}\)
    . This amplitude difference could also be defined by
-   <math display="inline">
-    \omega_0 L_1 k^2 Q
-   </math>
+   \(\omega_0 L_1 k^2 Q\)
    . By solving the series-parallel circuit equations, Fig. 7 shows the relationship between the amplitude of signal drop
-   <math display="inline">
-    (1 - \frac{2|Z_{load}|}{|R_{in} + Z_{load}|})V_{match}
-   </math>
+   \((1 - \frac{2|Z_{load}|}{|R_{in} + Z_{load}|})V_{match}\)
    and
-   <math display="inline">
-    R_{\text{sensor}}
-   </math>
+   \(R_{sensor}\)
    (
-   <math display="inline">
-    \omega_0 L_1 k^2 Q
-   </math>
+   \(\omega_0 L_1 k^2 Q\)
    ). In the above analysis the assumption value of
-   <math display="inline">
-    L_1
-   </math>
+   \(L_1\)
    is defined by the antenna's size and number of turns, which has been employed in the prototype. However this outcome remains the same if other antenna designs were employed.
   </p>
   <h2>
@@ -418,7 +434,7 @@
    </i>
   </h2>
   <p block-type="Text">
-   Currently, diaphragm based pressure sensors for ICP or intraocular pressure (IOP) measurement resonate from 63 MHz to 2.45 GHz [5], [6], [21], [22]. A slight difference of coil pattern design on the chip or distance between coils results in a huge difference in resonant frequency. Thus this telemetry device is adapted to an ultra-wide frequency range.
+   Currently, diaphragm based pressure sensors for ICP or intraocular pressure (IOP) measurement resonate from 63 MHz to 2.45 GHz <a href="#ref-5" class="z2m-ref-link">[5]</a>, <a href="#ref-6" class="z2m-ref-link">[6]</a>, <a href="#ref-21" class="z2m-ref-link">[21]</a>, <a href="#ref-22" class="z2m-ref-link">[22]</a>. A slight difference of coil pattern design on the chip or distance between coils results in a huge difference in resonant frequency. Thus this telemetry device is adapted to an ultra-wide frequency range.
   </p>
   <p block-type="Text">
    An ADF4351 chip (Analog Devices) is the main component for the RF signal generator. The ADF4351 has an integrated voltage-controlled oscillator (VCO) with an output frequency ranging from 2200 MHz to 4400 MHz. In addition, divide-by-1/-2/-4/-8/-16/-32/-64 circuits allow the user to generate RF output frequencies as low as 35 MHz. The output frequency is set by six inner registers through an SPI interface. A Microcontroller dsPIC33FJ32GP202 writes these registers to make the ADF4351 generate a sweeping RF signal in a specified range. The dsPIC33FJ32GP202 chip is a low cost microcontroller with an advanced built in ADC. This ADC measures the amplitude of the envelope of the RF amplifier output signal.
@@ -615,14 +631,10 @@
       Trace thickness
      </td>
      <td>
-      <math>
-       35 \mu m
-      </math>
+      \(35 \mu m\)
      </td>
      <td>
-      <math>
-       35 \mu m
-      </math>
+      \(35 \mu m\)
      </td>
     </tr>
     <tr>
@@ -644,9 +656,7 @@
       5 mm
      </td>
      <td>
-      <math>
-       35 \mu m
-      </math>
+      \(35 \mu m\)
      </td>
     </tr>
     <tr>
@@ -689,7 +699,7 @@
    A. Experiment Setup
   </h2>
   <p block-type="Text">
-   Fig. 10 shows the measurement set up. A transparent plastic graduated cylinder supports a column of fluid to simulate intracranial pressure. The 55 cm height of this cylinder simulates pressure ranges from 0 mmHg (0 cmH&lt;sub&gt;2&lt;/sub&gt;O) to 40 mmHg (54.38 cmH&lt;sub&gt;2&lt;/sub&gt;O). The sensor is placed at the bottom of cylinder, aligned with the antenna. The position of cylinder is fixed and the position of antenna is adjustable by a screw, to control the distance between sensor and antenna.
+   Fig. 10 shows the measurement set up. A transparent plastic graduated cylinder supports a column of fluid to simulate intracranial pressure. The 55 cm height of this cylinder simulates pressure ranges from 0 mmHg (0 cmH<sub>2</sub>O) to 40 mmHg (54.38 cmH<sub>2</sub>O). The sensor is placed at the bottom of cylinder, aligned with the antenna. The position of cylinder is fixed and the position of antenna is adjustable by a screw, to control the distance between sensor and antenna.
   </p>
   <h1>
    B. Measurement Result
@@ -708,29 +718,17 @@
   </p>
   <p block-type="Text">
    time with the sensor coupling. When the sensor is absent, the antenna's impedance which is defined as
-   <math display="inline">
-    Z_{\rm antenna} = j\omega L_1
-   </math>
+   \(Z_{\rm antenna} = j\omega L_1\)
    forms the only load. When the sensor is present, the whole system's impedance
-   <math display="inline">
-    Z_1
-   </math>
+   \(Z_1\)
    :
-   <math display="inline">
-    Z_1 = j\omega L_1(1+\frac{k^2(\frac{\omega}{\omega_0})^2}{j\frac{1}{2}\frac{\omega}{\omega_0}+1-(\frac{\omega}{\omega_0})^2})
-   </math>
+   \(Z_1 = j\omega L_1(1+\frac{k^2(\frac{\omega}{\omega_0})^2}{j\frac{1}{2}\frac{\omega}{\omega_0}+1-(\frac{\omega}{\omega_0})^2})\)
    forms the output load of the RF amplifier. The difference between the two signals, is the sensor's impedance:
-   <math display="inline">
-    Z_{\rm sensor} = Z_1 - Z_{\rm antenna} = j\omega L_1(\frac{k^2(\frac{\omega}{\omega_0})^2}{j\frac{1}{2}\frac{\omega}{\omega_0}+1-(\frac{\omega}{\omega_0})^2})
-   </math>
+   \(Z_{\rm sensor} = Z_1 - Z_{\rm antenna} = j\omega L_1(\frac{k^2(\frac{\omega}{\omega_0})^2}{j\frac{1}{2}\frac{\omega}{\omega_0}+1-(\frac{\omega}{\omega_0})^2})\)
    . The sensor's impedance
-   <math display="inline">
-    Z_{\rm sensor}
-   </math>
+   \(Z_{\rm sensor}\)
    (at resonant frequency, transferred to pure resistance
-   <math display="inline">
-    R_{\rm sensor}
-   </math>
+   \(R_{\rm sensor}\)
    ) yields the output voltage drop at resonant frequency of the sensor (discussed in Section II-B of Methodology). Figs. 12 and 13 shows data collected by LabVIEW DAQ, and processed then displayed in MATLAB, for the two sensors. The device's microcontroller also collects data using its own built-in ADC (discussed in Section III-B). For real time ICP monitoring, the first sweep (without sensor) only needs to be done once then stored when the reader initializes.
   </p>
   <p block-type="Text">
@@ -744,9 +742,7 @@
   </p>
   <p block-type="Text">
    First, the time required for the Serial Peripheral Interface (SPI) communication between microcontroller and RF generator for one step (changing output frequency once) consists of:
-   <math display="inline">
-    0.04~\mu s
-   </math>
+   \(0.04~\mu s\)
    for each machine cycle (25 MHz crystal) times 4 cycles for one bit SPI communication bytes times 34 bytes per regis-
   </p>
   <p>
@@ -763,38 +759,26 @@
   </p>
   <p block-type="Text">
    ter (32 bytes data per register add start and stop bytes) times 6 registers for changing output frequency which totals to 32.64
-   <math display="inline">
-    \mu
-   </math>
+   \(\mu\)
    s. Second, the RF generator phase lock time delay is 60
-   <math display="inline">
-    \mu
-   </math>
+   \(\mu\)
    s.
   </p>
   <p block-type="Text">
    Third, because the value of the capacitor and the resistor in the LT5505 half-wave rectifier is relatively small (
-   <math display="inline">
-    R=2\,\mathrm{k}\Omega
-   </math>
+   \(R=2\,\mathrm{k}\Omega\)
    ,
-   <math display="inline">
-    C=3.3\,\mathrm{pF}
-   </math>
+   \(C=3.3\,\mathrm{pF}\)
    , the time constant is 6.6 ns), thus this part of time consumption is neglectable.
   </p>
   <p block-type="Text">
    Last is the ADC conversion time. The dsPIC33FJ32GP202 features an automatic ADC conversion speed up to 1.1 Msps (0.99
-   <math display="inline">
-    \mu
-   </math>
+   \(\mu\)
    s for one sample). For each step, 10 samples are measured and taken average.
   </p>
   <p block-type="Text">
    Thus the total time consumed for one step is
-   <math display="inline">
-    102 \mu s
-   </math>
+   \(102 \mu s\)
    . For a typical 10 MHz sweep range and a 10 kHz sweep resolution, a total sweep time is around 0.102 s. In practice, we take the component's setup time and signal processing time into consideration, causing the measurement time to be more than 0.15 s. If we could narrow the frequency range, or decrease the frequency
   </p>
   <p>
@@ -802,9 +786,7 @@
   </p>
   <p>
    Fig. 14. Signal strength vs distance. Coupling factor k between antenna and sensor will decrease when measurement distance increases. As shown in Fig. 4,
-   <math display="inline">
-    R_{\rm sensor}
-   </math>
+   \(R_{\rm sensor}\)
    will decrease at the same time. Thus signal strength decrease.
   </p>
   <p>
@@ -820,7 +802,7 @@
    D. Measurement Resolution and Measurement Accuracy
   </h3>
   <p block-type="Text">
-   The frequency-to-pressure responsivity of this sample PCB sensor is 0.92 MHz/mmHg. The MEMS sensor usually has lower responsivity because of the high Young's modulus of silicon, for example: 120 kHz/mmHg [12]; 160 kHz/mmHg [10]. As shown in Fig. 15, the bandwidth of telemetry device at 600 MHz is 24 kHz. To achieve maximal resolution, we could design the sweep step as 24 kHz (minimal step length form ADF4351 is 0 kHz). As shown in Fig. 13 for our current PCB sensor, average frequency drop is around 11.75 MHz for every 10 mmHg pressure increase. Based on this limitation, the minimal resolution could be 0.028 mmHg.
+   The frequency-to-pressure responsivity of this sample PCB sensor is 0.92 MHz/mmHg. The MEMS sensor usually has lower responsivity because of the high Young's modulus of silicon, for example: 120 kHz/mmHg <a href="#ref-12" class="z2m-ref-link">[12]</a>; 160 kHz/mmHg <a href="#ref-10" class="z2m-ref-link">[10]</a>. As shown in Fig. 15, the bandwidth of telemetry device at 600 MHz is 24 kHz. To achieve maximal resolution, we could design the sweep step as 24 kHz (minimal step length form ADF4351 is 0 kHz). As shown in Fig. 13 for our current PCB sensor, average frequency drop is around 11.75 MHz for every 10 mmHg pressure increase. Based on this limitation, the minimal resolution could be 0.028 mmHg.
   </p>
   <p>
    <img src="_page_6_Figure_3.jpeg"/>
@@ -839,63 +821,43 @@
   </h4>
   <p block-type="Text">
    Fig. 5 shows maximal amplitude of signal drop at resonant frequency, is positively correlated to
-   <math display="inline">
-    k^2Q
-   </math>
+   \(k^2Q\)
    . Antenna geometry influences the k factor, which was implemented in the design.
   </p>
   <p block-type="Text">
    The mutual inductance between the telemetry device antenna and spiral coil on the sensor is specified by
   </p>
   <p block-type="Equation">
-   <math display="block">
-    k = \frac{L_m}{\sqrt{L_1 L_2}} \tag{4}
-   </math>
+   \[k = \frac{L_m}{\sqrt{L_1 L_2}} \tag{4}\]
   </p>
   <p block-type="Text">
-   <math display="inline">
-    L_{\rm m}
-   </math>
-   is calculated as [23]:
+   \(L_{\rm m}\)
+   is calculated as <a href="#ref-23" class="z2m-ref-link">[23]</a>:
   </p>
   <p block-type="Equation">
-   <math display="block">
-    L_{\rm m} = \left(\frac{4}{\pi}\right)^2 \sum_{i=1}^{i=n_a} \sum_{j=1}^{j=n_b} M_{ij}
-   </math>
+   \[L_{\rm m} = \left(\frac{4}{\pi}\right)^2 \sum_{i=1}^{i=n_a} \sum_{j=1}^{j=n_b} M_{ij}\]
    (5)
   </p>
   <p block-type="Equation">
-   <math display="block">
-    M_{ij} = \frac{\mu_0 \pi a_i^2 b_j^2}{2(a_i^2 + b_i^2 + z^2)^{\frac{3}{2}}} \left( 1 + \frac{15}{32} \gamma_{ij}^2 + \frac{315}{1024} \gamma_{ij}^4 \right)
-   </math>
+   \[M_{ij} = \frac{\mu_0 \pi a_i^2 b_j^2}{2(a_i^2 + b_i^2 + z^2)^{\frac{3}{2}}} \left( 1 + \frac{15}{32} \gamma_{ij}^2 + \frac{315}{1024} \gamma_{ij}^4 \right)\]
    (6)
   </p>
   <p block-type="Equation">
-   <math display="block">
-    \gamma_{ij=\frac{2a_ib_j}{a_i^2+b_j^2}}\tag{7}
-   </math>
+   \[\gamma_{ij=\frac{2a_ib_j}{a_i^2+b_j^2}}\tag{7}\]
   </p>
   <p block-type="Text">
    where
-   <math display="inline">
-    \mu
-   </math>
+   \(\mu\)
    is the vacuum magnetic permeability:
-   <math display="inline">
-    \mu_0 = 4\pi \times 10^{-7}
-   </math>
+   \(\mu_0 = 4\pi \times 10^{-7}\)
    .
-   <math display="inline">
-    a_i
-   </math>
+   \(a_i\)
    is the
    <i>
     i
    </i>
    th turn radius of antenna, and
-   <math display="inline">
-    b_j
-   </math>
+   \(b_j\)
    is the
    <i>
     j
@@ -907,37 +869,25 @@
    <i>
     et al.
    </i>
-   described that, for the square shape planar spiral inductor, the inductance is expressed as [24]
+   described that, for the square shape planar spiral inductor, the inductance is expressed as <a href="#ref-24" class="z2m-ref-link">[24]</a>
   </p>
   <p block-type="Equation">
-   <math display="block">
-    L = \frac{2\mu_0}{\pi} n^2 d_{\text{avg}} \left( \ln \left( \frac{2.07}{\varphi} \right) + 0.18\varphi + 0.13\varphi^2 \right)
-   </math>
+   \[L = \frac{2\mu_0}{\pi} n^2 d_{avg} \left( \ln \left( \frac{2.07}{\varphi} \right) + 0.18\varphi + 0.13\varphi^2 \right)\]
    (8)
   </p>
   <p block-type="Text">
-   <math display="inline">
-    d_{\text{avg}}
-   </math>
+   \(d_{avg}\)
    is the average diameter of the square, which is
-   <math display="inline">
-    \frac{D+D_{in}}{2}
-   </math>
+   \(\frac{D+D_{in}}{2}\)
    .
-   <math display="inline">
-    \varphi = \frac{1-\alpha}{1+\alpha}
-   </math>
+   \(\varphi = \frac{1-\alpha}{1+\alpha}\)
    ,
-   <math display="inline">
-    \alpha
-   </math>
+   \(\alpha\)
    is the ratio of outer diameter to inner diameter.
   </p>
   <p block-type="Text">
    Fig. 16 shows the k factor for two antenna with distance varying based on
-   <math display="inline">
-    (4)\sim(8)
-   </math>
+   \((4)\sim(8)\)
    , given the antennas' and sensor's
   </p>
   <h4>
@@ -965,9 +915,7 @@
       Trace conductivity
      </td>
      <td>
-      <math>
-       5.96 \times 10^7 \text{ S/m}
-      </math>
+      \(5.96 \times 10^7  S/m\)
      </td>
     </tr>
     <tr>
@@ -983,9 +931,7 @@
       Trace outer size
      </td>
      <td>
-      <math>
-       10 \times 10 \text{ mm}
-      </math>
+      \(10 \times 10  mm\)
      </td>
     </tr>
     <tr>
@@ -1017,9 +963,7 @@
       PCB size
      </td>
      <td>
-      <math>
-       30 \times 30 \text{ mm}
-      </math>
+      \(30 \times 30  mm\)
      </td>
     </tr>
     <tr>
@@ -1082,9 +1026,7 @@
       Tissue density
      </td>
      <td>
-      <math>
-       1030 \text{ kg/m}^3
-      </math>
+      \(1030  kg/m^3\)
      </td>
     </tr>
     <tr>
@@ -1092,9 +1034,7 @@
       Permittivity rate parameter
      </td>
      <td>
-      <math>
-       2 \times 10^{-4}
-      </math>
+      \(2 \times 10^{-4}\)
      </td>
     </tr>
     <tr>
@@ -1102,9 +1042,7 @@
       Permittivity offset parameter
      </td>
      <td>
-      <math>
-       4 \times 10^{-4}
-      </math>
+      \(4 \times 10^{-4}\)
      </td>
     </tr>
     <tr>
@@ -1136,9 +1074,7 @@
       •
      </td>
      <td>
-      <math>
-       (1 + f_{\text{brain}}) \times \text{Permittivity rate} +
-      </math>
+      \((1 + f_{brain}) \times Permittivity rate +\)
      </td>
     </tr>
     <tr>
@@ -1161,9 +1097,7 @@
       •
      </td>
      <td>
-      <math>
-       (1 + f_{\text{brain}}) \times \text{conductivity rate} +
-      </math>
+      \((1 + f_{brain}) \times conductivity rate +\)
      </td>
     </tr>
     <tr>
@@ -1184,9 +1118,7 @@
    </tbody>
   </table>
   <p block-type="Text">
-   <math display="inline">
-    f_{\mathrm{brain}}
-   </math>
+   \(f_{\mathrm{brain}}\)
    is the function which describes localized tissue permittivity and conductivity of the human head
   </p>
   <p block-type="Text">
@@ -1196,14 +1128,14 @@
    B. More Radiation Power and RF Safety
   </h1>
   <p block-type="Text">
-   The maximum power the telemetry device radiates is 9 dBm when impedance is perfectly matched. Higher output power could obviously improve the signal strength and distance range measurement. The main constraint which limits increasing radiation power is the specific absorption rate (SAR). We developed a COMSOL stimulation to test our prototype's SAR simulation, which is based on COMSOL application 2190 [25], [26]. The brain's geometry was built based on "The Stanford volume data archive" [27], and Schmid
+   The maximum power the telemetry device radiates is 9 dBm when impedance is perfectly matched. Higher output power could obviously improve the signal strength and distance range measurement. The main constraint which limits increasing radiation power is the specific absorption rate (SAR). We developed a COMSOL stimulation to test our prototype's SAR simulation, which is based on COMSOL application 2190 <a href="#ref-25" class="z2m-ref-link">[25]</a>, <a href="#ref-26" class="z2m-ref-link">[26]</a>. The brain's geometry was built based on "The Stanford volume data archive" <a href="#ref-27" class="z2m-ref-link">[27]</a>, and Schmid
    <i>
     et al.
    </i>
-   's work on dielectric properties of human brain tissue [28]. The antenna was placed 1 mm away from the left side of the head. Table III lists parameters.
+   's work on dielectric properties of human brain tissue <a href="#ref-28" class="z2m-ref-link">[28]</a>. The antenna was placed 1 mm away from the left side of the head. Table III lists parameters.
   </p>
   <p block-type="Text">
-   Fig. 17 demonstrates that spatial peak SAR is less than 0.03 W/kg as averaged over 1 g of tissue, which is far below the IEEE regulations [29]: maximal 8 W/kg as averaged over 1 g of tissue and 0.4 W/kg as averaged over the whole body. We tried to increase the current and found that when the radiation power increased to 30 dBm (current is 0.14 A), spatial peak SAR reached the IEEE limit. We predict that this maximal radiation power could be 141 times higher SNR at the same measurement distance, or a 5.2 times further measurement distance (coupling factor deceases as the distance 1/R³).
+   Fig. 17 demonstrates that spatial peak SAR is less than 0.03 W/kg as averaged over 1 g of tissue, which is far below the IEEE regulations <a href="#ref-29" class="z2m-ref-link">[29]</a>: maximal 8 W/kg as averaged over 1 g of tissue and 0.4 W/kg as averaged over the whole body. We tried to increase the current and found that when the radiation power increased to 30 dBm (current is 0.14 A), spatial peak SAR reached the IEEE limit. We predict that this maximal radiation power could be 141 times higher SNR at the same measurement distance, or a 5.2 times further measurement distance (coupling factor deceases as the distance 1/R³).
   </p>
   <p>
    <img src="_page_7_Picture_3.jpeg"/>
@@ -1230,7 +1162,7 @@
    D. Signal Processing
   </h2>
   <p block-type="Text">
-   Fig. 18 shows that the signal directly from the ADC is noisy. The source of noise could be: 1) To perform sweeping frequency, RF signal generator would changing output frequency multiple times, it would generate high frequency noise which is similar to the step function signal. 2) Since the time constant of inner resistor and inner capacitor of rectifier is 7 ns (142.85 MHz), when telemetry device working at lower frequency range, it suffers from the noise which looks like sawtooth wave. This noise is due to the half wave rectifier can't "catch" this slow input signal. 3) other noise from the environmental interference [30]. We applied a digital filter to the original signal to increase the SNR. Using the Fourier transform, we determined that the noise power spectrum distributed over a wide frequency range
+   Fig. 18 shows that the signal directly from the ADC is noisy. The source of noise could be: 1) To perform sweeping frequency, RF signal generator would changing output frequency multiple times, it would generate high frequency noise which is similar to the step function signal. 2) Since the time constant of inner resistor and inner capacitor of rectifier is 7 ns (142.85 MHz), when telemetry device working at lower frequency range, it suffers from the noise which looks like sawtooth wave. This noise is due to the half wave rectifier can't "catch" this slow input signal. 3) other noise from the environmental interference <a href="#ref-30" class="z2m-ref-link">[30]</a>. We applied a digital filter to the original signal to increase the SNR. Using the Fourier transform, we determined that the noise power spectrum distributed over a wide frequency range
   </p>
   <p>
    TABLE IV COMPARISON OF STATE OF ARTS
@@ -1258,7 +1190,7 @@
     </tr>
     <tr>
      <td>
-      [16]
+      <a href="#ref-16" class="z2m-ref-link">[16]</a>
       <br/>
       IOP
      </td>
@@ -1286,7 +1218,7 @@
     </tr>
     <tr>
      <td>
-      [6]
+      <a href="#ref-6" class="z2m-ref-link">[6]</a>
       <br/>
       IOP
      </td>
@@ -1324,7 +1256,7 @@
     </tr>
     <tr>
      <td>
-      [22]
+      <a href="#ref-22" class="z2m-ref-link">[22]</a>
      </td>
      <td>
       50-60
@@ -1362,7 +1294,7 @@
     </tr>
     <tr>
      <td>
-      [32]
+      <a href="#ref-32" class="z2m-ref-link">[32]</a>
       <br/>
       IOP
      </td>
@@ -1407,7 +1339,7 @@
     </tr>
     <tr>
      <td>
-      [33]
+      <a href="#ref-33" class="z2m-ref-link">[33]</a>
       <br/>
       ICP
      </td>
@@ -1495,27 +1427,21 @@
    and the signal were located in a low frequency range. A moving average, which works as a low pass filter removed the noise:
   </p>
   <p block-type="Equation">
-   <math display="block">
-    Ly_s(i) = \frac{1}{2N+1}(y(i+N) + y(i+N-1) + \dots + y(i-N))
-   </math>
+   \[Ly_s(i) = \frac{1}{2N+1}(y(i+N) + y(i+N-1) + \dots + y(i-N))\]
    (9)
   </p>
   <p block-type="Text">
    We chose N = 5.
   </p>
   <p block-type="Text">
-   However the signal from the moving average was not satisfactory. A further signal processing method is based on the moving average, known as Local Regression [31]. This algorithm assigned regression weights to the value within a dynamic range with a length chosen to be 5:
+   However the signal from the moving average was not satisfactory. A further signal processing method is based on the moving average, known as Local Regression <a href="#ref-31" class="z2m-ref-link">[31]</a>. This algorithm assigned regression weights to the value within a dynamic range with a length chosen to be 5:
   </p>
   <p block-type="Equation">
-   <math display="block">
-    w_i = \left(1 - \left| \frac{x - x_i}{d(x)} \right|^3 \right)^3 \tag{10}
-   </math>
+   \[w_i = \left(1 - \left| \frac{x - x_i}{d(x)} \right|^3 \right)^3 \tag{10}\]
   </p>
   <p block-type="Text">
    where x is the predicted value associated with the original signal data to be smoothed,
-   <math display="inline">
-    x_i
-   </math>
+   \(x_i\)
    is the neighbor of x in the dynamic range, and d(x) is half of the dynamic range length at the x-axis. Based on these weights, we performed a weighted linear least-squares regression. The regression used a second degree polynomial. Fig. 18 shows the final denoised result.
   </p>
   <h4>
@@ -1532,29 +1458,25 @@
   </h1>
   <p block-type="ListGroup" class="has-continuation">
    <ul>
-    <li block-type="ListItem">
-     [1] M. Gelabert-Gonzalez, V. Ginesta-Galan, R. Sernamito-Garcia, A. Allut, J. Bandin-Dieguez, and R. Rumbo, "The Camino intracranial pressure device in clinical practice. Assessment in a 1000 cases,"
+    <li block-type="ListItem" id="ref-1"><span class="z2m-ref-num">1.</span> M. Gelabert-Gonzalez, V. Ginesta-Galan, R. Sernamito-Garcia, A. Allut, J. Bandin-Dieguez, and R. Rumbo, "The Camino intracranial pressure device in clinical practice. Assessment in a 1000 cases,"
      <i>
       Acta Neurochirurgica
      </i>
      , vol. 148, pp. 435–441, 2006.
     </li>
-    <li block-type="ListItem">
-     [2] H. Miyake, T. Ohta, Y. Kajimoto, and M. Matsukawa, "A new ventriculoperitoneal shunt with a telemetric intracranial pressure sensor: Clinical experience in 94 patients with hydrocephalus,"
+    <li block-type="ListItem" id="ref-2"><span class="z2m-ref-num">2.</span> H. Miyake, T. Ohta, Y. Kajimoto, and M. Matsukawa, "A new ventriculoperitoneal shunt with a telemetric intracranial pressure sensor: Clinical experience in 94 patients with hydrocephalus,"
      <i>
       Neurosurgery
      </i>
      , vol. 40, pp. 931–935, 1997.
     </li>
-    <li block-type="ListItem">
-     [3] H. J. Yoon, J. M. Jung, J. S. Jeong, and S. S. Yang, "Micro devices for a cerebrospinal fluid (CSF) shunt system,"
+    <li block-type="ListItem" id="ref-3"><span class="z2m-ref-num">3.</span> H. J. Yoon, J. M. Jung, J. S. Jeong, and S. S. Yang, "Micro devices for a cerebrospinal fluid (CSF) shunt system,"
      <i>
       Sensors Actuators A, Phys.
      </i>
      , vol. 110, pp. 68–76, 2004.
     </li>
-    <li block-type="ListItem">
-     [4] S. Welschehold
+    <li block-type="ListItem" id="ref-4"><span class="z2m-ref-num">4.</span> S. Welschehold
      <i>
       et al.
      </i>
@@ -1564,15 +1486,13 @@
      </i>
      , vol. 70, pp. 44–49, 2012.
     </li>
-    <li block-type="ListItem">
-     [5] U. Kawoos, G. Mugalodi, M. Tofighi, S. Neff, and A. Rosen, "A permanently implantable intracranial pressure monitor," in
+    <li block-type="ListItem" id="ref-5"><span class="z2m-ref-num">5.</span> U. Kawoos, G. Mugalodi, M. Tofighi, S. Neff, and A. Rosen, "A permanently implantable intracranial pressure monitor," in
      <i>
       Proc. IEEE 31st Annu. Northeast Bioeng. Conf.
      </i>
      , 2005, pp. 17–19.
     </li>
-    <li block-type="ListItem">
-     [6] L. Y. Chen
+    <li block-type="ListItem" id="ref-6"><span class="z2m-ref-num">6.</span> L. Y. Chen
      <i>
       et al.
      </i>
@@ -1582,8 +1502,7 @@
      </i>
      , vol. 5, 2014, Art. no. 5028.
     </li>
-    <li block-type="ListItem">
-     [7] X. Zhang
+    <li block-type="ListItem" id="ref-7"><span class="z2m-ref-num">7.</span> X. Zhang
      <i>
       et al.
      </i>
@@ -1593,8 +1512,7 @@
      </i>
      , vol 38, no. 8, pp. 143–182, 2017.
     </li>
-    <li block-type="ListItem">
-     [8] X. Meng
+    <li block-type="ListItem" id="ref-8"><span class="z2m-ref-num">8.</span> X. Meng
      <i>
       et al.
      </i>
@@ -1604,8 +1522,7 @@
      </i>
      , vol. 61, no. 1, pp. 316–325, Jan. 2013.
     </li>
-    <li block-type="ListItem">
-     [9] M. Shokoueinejad
+    <li block-type="ListItem" id="ref-9"><span class="z2m-ref-num">9.</span> M. Shokoueinejad
      <i>
       et al.
      </i>
@@ -1615,36 +1532,31 @@
      </i>
      , to be published.
     </li>
-    <li block-type="ListItem">
-     [10] P.-J. Chen, S. Saati, R. Varma, M. S. Humayun, and Y.-C. Tai, "Wireless intraocular pressure sensing using microfabricated minimally invasive flexible-coiled LC sensor implant,"
+    <li block-type="ListItem" id="ref-10"><span class="z2m-ref-num">10.</span> P.-J. Chen, S. Saati, R. Varma, M. S. Humayun, and Y.-C. Tai, "Wireless intraocular pressure sensing using microfabricated minimally invasive flexible-coiled LC sensor implant,"
      <i>
       J. Microelectromech. Syst.
      </i>
      , vol. 19, pp. 721–734, 2010.
     </li>
-    <li block-type="ListItem">
-     [11] E. F. Stehlin, D. McCormick, S. C. Malpas, B. P. Pontre, P. A. Heppner, ´ and D. M. Budgett, "MRI interactions of a fully implantable pressure monitoring device,"
+    <li block-type="ListItem" id="ref-11"><span class="z2m-ref-num">11.</span> E. F. Stehlin, D. McCormick, S. C. Malpas, B. P. Pontre, P. A. Heppner, ´ and D. M. Budgett, "MRI interactions of a fully implantable pressure monitoring device,"
      <i>
       J. Magn. Reson. Imag.
      </i>
      , vol. 42, pp. 1441–1449, 2015.
     </li>
-    <li block-type="ListItem">
-     [12] O. Akar, T. Akin, and K. Najafi, "A wireless batch sealed absolute capacitive pressure sensor,"
+    <li block-type="ListItem" id="ref-12"><span class="z2m-ref-num">12.</span> O. Akar, T. Akin, and K. Najafi, "A wireless batch sealed absolute capacitive pressure sensor,"
      <i>
       Sensors Actuators A, Phys.
      </i>
      , vol. 95, pp. 29–38, 2001.
     </li>
-    <li block-type="ListItem">
-     [13] J. M. English and M. G. Allen, "Wireless micromachined ceramic pressure sensors," in
+    <li block-type="ListItem" id="ref-13"><span class="z2m-ref-num">13.</span> J. M. English and M. G. Allen, "Wireless micromachined ceramic pressure sensors," in
      <i>
       Proc. 12th IEEE Int. Conf. Micro Electro Mech. Syst.
      </i>
      , 1999, pp. 511–516.
     </li>
-    <li block-type="ListItem">
-     [14] S. Kim, H. J. Kim, J. S. Park, and S. S. Yang, "Telemetry silicon pressure sensor of
+    <li block-type="ListItem" id="ref-14"><span class="z2m-ref-num">14.</span> S. Kim, H. J. Kim, J. S. Park, and S. S. Yang, "Telemetry silicon pressure sensor of
      <i>
       LC
      </i>
@@ -1654,29 +1566,25 @@
      </i>
      , 2001, pp. 452–462.
     </li>
-    <li block-type="ListItem">
-     [15] R. Nopper, R. Niekrawietz, and L. Reindl, "Wireless readout of passive LC sensors,"
+    <li block-type="ListItem" id="ref-15"><span class="z2m-ref-num">15.</span> R. Nopper, R. Niekrawietz, and L. Reindl, "Wireless readout of passive LC sensors,"
      <i>
       IEEE Trans. Instrum. Meas.
      </i>
      , vol. 59, no. 9, pp. 2450–2457, Sep. 2010.
     </li>
-    <li block-type="ListItem">
-     [16] J. Coosemans, M. Catrysse, and R. Puers, "A readout circuit for an intraocular pressure sensor,"
+    <li block-type="ListItem" id="ref-16"><span class="z2m-ref-num">16.</span> J. Coosemans, M. Catrysse, and R. Puers, "A readout circuit for an intraocular pressure sensor,"
      <i>
       Sensors Actuators A, Phys.
      </i>
      , vol. 110, pp. 432–438, 2004.
     </li>
-    <li block-type="ListItem">
-     [17] J. C. Butler, A. J. Vigliotti, F. W. Verdi, and S. M. Walsh, "Wireless, passive, resonant-circuit, inductively coupled, inductive strain sensor,"
+    <li block-type="ListItem" id="ref-17"><span class="z2m-ref-num">17.</span> J. C. Butler, A. J. Vigliotti, F. W. Verdi, and S. M. Walsh, "Wireless, passive, resonant-circuit, inductively coupled, inductive strain sensor,"
      <i>
       Sensors Actuators A, Phys.
      </i>
      , vol. 102, pp. 61–66, 2002.
     </li>
-    <li block-type="ListItem">
-     [18] H. Hori, G. Moretti, A. Rebora, and F. Crovato, "The thickness of human scalp: normal and bald,"
+    <li block-type="ListItem" id="ref-18"><span class="z2m-ref-num">18.</span> H. Hori, G. Moretti, A. Rebora, and F. Crovato, "The thickness of human scalp: normal and bald,"
      <i>
       J. Investigative Dermatol.
      </i>
@@ -1686,53 +1594,45 @@
   </p>
   <p block-type="ListGroup">
    <ul>
-    <li block-type="ListItem">
-     [19] S. K. Law, "Thickness and resistivity variations over the upper surface of the human skull,"
+    <li block-type="ListItem" id="ref-19"><span class="z2m-ref-num">19.</span> S. K. Law, "Thickness and resistivity variations over the upper surface of the human skull,"
      <i>
       Brain Topogr.
      </i>
      , vol. 6, pp. 99–109, 1993.
     </li>
-    <li block-type="ListItem">
-     [20] M. Reina, A. Lopez-Garcia, M. Dittmann, and J. De Andres, " ´ [Structural analysis of the thickness of human dura mater with scanning electron microscopy],"
+    <li block-type="ListItem" id="ref-20"><span class="z2m-ref-num">20.</span> M. Reina, A. Lopez-Garcia, M. Dittmann, and J. De Andres, " ´ [Structural analysis of the thickness of human dura mater with scanning electron microscopy],"
      <i>
       Revista espanola de anestesiologia y reanimacion
      </i>
      , vol. 43, pp. 135–137, 1996.
     </li>
-    <li block-type="ListItem">
-     [21] E.-C. Park, J.-B. Yoon, and E. Yoon, "Hermetically sealed inductorcapacitor (LC) resonator for remote pressure monitoring,"
+    <li block-type="ListItem" id="ref-21"><span class="z2m-ref-num">21.</span> E.-C. Park, J.-B. Yoon, and E. Yoon, "Hermetically sealed inductorcapacitor (LC) resonator for remote pressure monitoring,"
      <i>
       Jpn. J. Appl. Phys.
      </i>
      , vol. 37, pp. 7124–7128, 1998.
     </li>
-    <li block-type="ListItem">
-     [22] G. Chitnis, T. Maleki, B. Samuels, L. B. Cantor, and B. Ziaie, "A minimally invasive implantable wireless pressure sensor for continuous IOP monitoring,"
+    <li block-type="ListItem" id="ref-22"><span class="z2m-ref-num">22.</span> G. Chitnis, T. Maleki, B. Samuels, L. B. Cantor, and B. Ziaie, "A minimally invasive implantable wireless pressure sensor for continuous IOP monitoring,"
      <i>
       IEEE Trans. Biomed. Eng.
      </i>
      , vol. 60, no. 1, pp. 250–256, Jan. 2013.
     </li>
-    <li block-type="ListItem">
-     [23] S. Raju, R. Wu, M. Chan, and C. P. Yue, "Modeling of mutual coupling between planar inductors in wireless power applications,"
+    <li block-type="ListItem" id="ref-23"><span class="z2m-ref-num">23.</span> S. Raju, R. Wu, M. Chan, and C. P. Yue, "Modeling of mutual coupling between planar inductors in wireless power applications,"
      <i>
       IEEE Trans. Power Electron.
      </i>
      , vol. 29, no. 1, pp. 481–490, Jan. 2014.
     </li>
-    <li block-type="ListItem">
-     [24] S. S. Mohan, M. del Mar Hershenson, S. P. Boyd, and T. H. Lee, "Simple accurate expressions for planar spiral inductances,"
+    <li block-type="ListItem" id="ref-24"><span class="z2m-ref-num">24.</span> S. S. Mohan, M. del Mar Hershenson, S. P. Boyd, and T. H. Lee, "Simple accurate expressions for planar spiral inductances,"
      <i>
       IEEE J. Solid-State Circuits
      </i>
      , vol. 34, no. 10, pp. 1419–1424, Oct. 1999.
     </li>
-    <li block-type="ListItem">
-     [25] Comsol, Stockholm, Sweden, COMSOL Multiphysics: Version 4.2: Comsol, 2011.
+    <li block-type="ListItem" id="ref-25"><span class="z2m-ref-num">25.</span> Comsol, Stockholm, Sweden, COMSOL Multiphysics: Version 4.2: Comsol, 2011.
     </li>
-    <li block-type="ListItem">
-     [26] M. Shokoueinejad
+    <li block-type="ListItem" id="ref-26"><span class="z2m-ref-num">26.</span> M. Shokoueinejad
      <i>
       et al.
      </i>
@@ -1742,46 +1642,39 @@
      </i>
      , vol. 37, pp. 288–297, 2017//2017.
     </li>
-    <li block-type="ListItem">
-     [27] M. Levoy, "The Stanford volume data archive," Aug. 2014. [Online]. Available: http://graphics.stanford.edu/data/voldata/
+    <li block-type="ListItem" id="ref-27"><span class="z2m-ref-num">27.</span> M. Levoy, "The Stanford volume data archive," Aug. 2014. [Online]. Available: <a href="http://graphics.stanford.edu/data/voldata/" target="_blank" rel="noopener noreferrer">http://graphics.stanford.edu/data/voldata/</a>
     </li>
-    <li block-type="ListItem">
-     [28] G. Schmid, G. Neubauer, and P. R. Mazal, "Dielectric properties of human brain tissue measured less than 10 h postmortem at frequencies from 800 to 2450 MHz,"
+    <li block-type="ListItem" id="ref-28"><span class="z2m-ref-num">28.</span> G. Schmid, G. Neubauer, and P. R. Mazal, "Dielectric properties of human brain tissue measured less than 10 h postmortem at frequencies from 800 to 2450 MHz,"
      <i>
       Bioelectromagnetics
      </i>
      , vol. 24, pp. 423–430, 2003.
     </li>
-    <li block-type="ListItem">
-     [29] J. C. Lin, "A new IEEE standard for safety levels with respect to human exposure to radio-frequency radiation,"
+    <li block-type="ListItem" id="ref-29"><span class="z2m-ref-num">29.</span> J. C. Lin, "A new IEEE standard for safety levels with respect to human exposure to radio-frequency radiation,"
      <i>
       IEEE Antennas Propag. Mag.
      </i>
      , vol. 48, pp. 157–159, 2006.
     </li>
-    <li block-type="ListItem">
-     [30] N. Meziane, S. Yang, M. Shokoueinejad, J. Webster, M. Attari, and H. Eren, "Simultaneous comparison of 1 gel with 4 dry electrode types for electrocardiography,"
+    <li block-type="ListItem" id="ref-30"><span class="z2m-ref-num">30.</span> N. Meziane, S. Yang, M. Shokoueinejad, J. Webster, M. Attari, and H. Eren, "Simultaneous comparison of 1 gel with 4 dry electrode types for electrocardiography,"
      <i>
       Physiol. Meas.
      </i>
      , vol. 36, pp. 513–529, 2015.
     </li>
-    <li block-type="ListItem">
-     [31] W. S. Cleveland and C. Loader, "Smoothing by local regression: Principles and methods," in
+    <li block-type="ListItem" id="ref-31"><span class="z2m-ref-num">31.</span> W. S. Cleveland and C. Loader, "Smoothing by local regression: Principles and methods," in
      <i>
       Statistical Theory and Computational Aspects of Smoothing
      </i>
      , Berlin, Germany: Springer, 1996, pp. 10–49.
     </li>
-    <li block-type="ListItem">
-     [32] C¸ . Varel, Y.-C. Shih, B. P. Otis, T. S. Shen, and K. F. Bohringer, "A wireless ¨ intraocular pressure monitoring device with a solder-filled microchannel antenna,"
+    <li block-type="ListItem" id="ref-32"><span class="z2m-ref-num">32.</span> C¸ . Varel, Y.-C. Shih, B. P. Otis, T. S. Shen, and K. F. Bohringer, "A wireless ¨ intraocular pressure monitoring device with a solder-filled microchannel antenna,"
      <i>
       J. Micromech. Microeng.
      </i>
      , vol. 24, 2014, Art. no. 045012.
     </li>
-    <li block-type="ListItem">
-     [33] M. W. A. Khan, T. Bjorninen, L. Syd ¨ anheimo, and L. Ukkonen, "Remotely ¨ powered piezoresistive pressure sensor: Toward wireless monitoring of intracranial pressure,"
+    <li block-type="ListItem" id="ref-33"><span class="z2m-ref-num">33.</span> M. W. A. Khan, T. Bjorninen, L. Syd ¨ anheimo, and L. Ukkonen, "Remotely ¨ powered piezoresistive pressure sensor: Toward wireless monitoring of intracranial pressure,"
      <i>
       IEEE Microw. Wireless Compon. Lett.
      </i>
@@ -1892,5 +1785,7 @@
   <p block-type="Text">
    Dr. Webster is the Fellow of the Instrument Society of America, American Institute of Medical and Biological Engineering, and Institute of Physics. He is a member of the IEEE-EMBS Administrative Committee and the NIH Surgery and Bioengineering Study Section. He received the 2001 IEEE-EMBS Career Achievement Award.
   </p>
- </body>
+ 
+  </main>
+</body>
 </html>
