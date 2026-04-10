@@ -38,6 +38,12 @@ _SKIP_AUTOLINK_TAGS = {"script", "style", "code", "pre", "math", "svg", "a"}
 _LEADING_REF_NUMBER_PATTERN = re.compile(r"^\s*(?:<[^>]+>\s*)*\d+\.\s+", re.IGNORECASE)
 _BRACKET_REF_NUM_STRIP_PATTERN = re.compile(r'^\s*\[(\d+)\]\s*')
 _MATH_TAG_PATTERN = re.compile(r"<math(\b[^>]*)>(.*?)</math>", re.IGNORECASE | re.DOTALL)
+_EQUATION_PARA_PATTERN = re.compile(
+    r'(<p\b[^>]*block-type="Equation"[^>]*>)(.*?)(</p>)',
+    re.IGNORECASE | re.DOTALL,
+)
+_DISPLAY_MATH_IN_PARA_PATTERN = re.compile(r'\\\[(.*?)\\\]', re.DOTALL)
+_TRAILING_EQ_NUM_PATTERN = re.compile(r'\(\d+\)\s*$')
 _SLASH_PIPE_ARTIFACT_PATTERN = re.compile(r"\s*\\\s*\|\s*\\\s*")
 _LEADING_SPACED_BACKSLASH_PATTERN = re.compile(r"(^|\s)\\\s+")
 _TRAILING_SPACED_BACKSLASH_PATTERN = re.compile(r"\s+\\(?=\s|$)")
@@ -170,6 +176,20 @@ _DEFAULT_READABILITY_STYLE = """
   }
   math {
     overflow-x: auto;
+  }
+  p[block-type="Equation"] {
+    position: relative;
+    text-align: center;
+    padding-right: 3.5em;
+    margin: 0.8em 0;
+  }
+  .z2m-eq-num {
+    position: absolute;
+    right: 0;
+    top: 50%;
+    transform: translateY(-50%);
+    font-size: 0.92em;
+    color: #374151;
   }
   @media (max-width: 960px) {
     body { padding: 10px; }
@@ -547,6 +567,46 @@ def _cleanup_empty_html_blocks(html: str) -> str:
     return cleaned
 
 
+def _fix_equation_display(html: str) -> str:
+    """Fix two Marker equation-paragraph rendering issues in ``<p block-type="Equation">``.
+
+    1. Equation numbers like ``(1)`` that are plain text nodes after ``\\[...\\]``
+       inside the paragraph are wrapped in ``<span class="z2m-eq-num">`` so CSS
+       can position them flush-right while the formula stays centred.
+
+    2. ``\\[...\\]`` that appears mid-sentence (paragraph has surrounding text
+       beyond the equation number) is demoted to inline ``\\(...\\)`` so MathJax
+       does not force a block-level line break in the middle of prose.
+    """
+    def fix_para(m: re.Match[str]) -> str:
+        open_tag, body, close_tag = m.group(1), m.group(2), m.group(3)
+
+        # Check if there is real prose text around the display math.
+        # Strip all \[...\] and any equation numbers; if text remains this is
+        # "text-with-math" and the display math should become inline.
+        stripped = _DISPLAY_MATH_IN_PARA_PATTERN.sub("", body)
+        stripped = re.sub(r"\(\d+\)", "", stripped)
+        stripped = stripped.strip()
+        if stripped:
+            # Demote block math to inline so it flows with the prose.
+            body = _DISPLAY_MATH_IN_PARA_PATTERN.sub(
+                lambda bm: f"\\({bm.group(1)}\\)", body
+            )
+            return f"{open_tag}{body}{close_tag}"
+
+        # Pure equation paragraph: wrap trailing (N) in a positioned span.
+        new_body = _TRAILING_EQ_NUM_PATTERN.sub(
+            lambda nm: f'<span class="z2m-eq-num">{nm.group(0).strip()}</span>',
+            body.rstrip(),
+        )
+        if new_body != body.rstrip():
+            return f"{open_tag}{new_body}{close_tag}"
+
+        return m.group(0)
+
+    return _EQUATION_PARA_PATTERN.sub(fix_para, html)
+
+
 def _convert_math_tags_to_tex(html: str) -> str:
     """Convert <math> HTML elements that contain raw LaTeX into MathJax-renderable
     delimiters: ``\\[...\\]`` for block and ``\\(...\\)`` for inline math.
@@ -579,6 +639,7 @@ def polish_html_document(html: str) -> str:
     polished = _normalize_spaced_inline_sup_sub_tags(polished)
     polished = _fix_common_mojibake(polished)
     polished = _cleanup_marker_escape_artifacts(polished)
+    polished = _fix_equation_display(polished)
     polished = _convert_math_tags_to_tex(polished)
     polished = _add_reference_ids_and_citation_links(polished)
     polished = _autolink_plain_urls(polished)

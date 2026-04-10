@@ -175,6 +175,33 @@ def test_polish_html_document_converts_inline_math_to_tex_delimiters() -> None:
     assert "<math" not in polished
 
 
+def test_polish_html_document_positions_equation_number_right() -> None:
+    """Equation numbers like (1) inside <p block-type='Equation'> must get z2m-eq-num span."""
+    html = (
+        '<html><body>'
+        '<p block-type="Equation">\\[Z_1 = j\\omega L_1\\]\n   (1)</p>'
+        '</body></html>'
+    )
+    polished = polish_html_document(html)
+
+    assert '<span class="z2m-eq-num">(1)</span>' in polished
+    assert '\\[Z_1 = j\\omega L_1\\]' in polished
+
+
+def test_polish_html_document_demotes_block_math_in_text_paragraph() -> None:
+    """\\[...\\] inside a Marker Equation paragraph that has surrounding prose text
+    must be converted to inline \\(...\\) so it does not force a line break."""
+    html = (
+        '<html><body>'
+        '<p block-type="Equation">Fig. 4 shows \\[Z_1\\] is a function of x.</p>'
+        '</body></html>'
+    )
+    polished = polish_html_document(html)
+
+    assert '\\(Z_1\\)' in polished
+    assert '\\[Z_1\\]' not in polished
+
+
 def test_polish_html_document_wraps_existing_ref_number_in_span() -> None:
     """References already numbered 'N. Author' by Marker must get z2m-ref-num span."""
     html = (
