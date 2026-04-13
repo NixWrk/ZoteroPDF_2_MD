@@ -37,6 +37,11 @@ _SKIP_TRANSLATION_TAGS = {"script", "style", "code", "pre", "math", "svg", "a", 
 # Matches the translate="no" attribute (HTML spec for marking non-translatable content).
 _NO_TRANSLATE_ATTR_PATTERN = re.compile(r'\btranslate\s*=\s*["\']no["\']', re.IGNORECASE)
 
+# SentencePiece byte-fallback tokens that Gemma sometimes emits when it encounters
+# Unicode characters near the translation boundary.  They appear as literal ASCII
+# sequences like <0xE2><0x82><0xA9> in the output and must be stripped.
+_BYTE_TOKEN_ARTIFACT_PATTERN = re.compile(r'(?:<0x[0-9A-Fa-f]{2}>)+')
+
 # Patterns that indicate the model produced a meta-commentary / refusal instead of a
 # translation.  When any of these match the translated output we fall back to the
 # original source text so that no garbage leaks into the HTML.
@@ -316,6 +321,7 @@ def _translate_plain_fragment(
             translated = core
         else:
             translated = _strip_source_echo(translated, core)
+            translated = _BYTE_TOKEN_ARTIFACT_PATTERN.sub("", translated)
         cache[core] = translated
 
     return text[:leading_len] + translated + text[core_end:]

@@ -46,6 +46,9 @@ _DISPLAY_MATH_IN_PARA_PATTERN = re.compile(r'\\\[(.*?)\\\]', re.DOTALL)
 _TRAILING_EQ_NUM_PATTERN = re.compile(r'\(\d+\)\s*$')
 _LATEX_TAG_PATTERN = re.compile(r'\\tag\{(\d+)\}')
 _SLASH_PIPE_ARTIFACT_PATTERN = re.compile(r"\s*\\\s*\|\s*\\\s*")
+# SentencePiece byte-fallback tokens emitted by Gemma when it encounters Unicode
+# near translation boundaries: e.g. <0xE2><0x82><0xA9> instead of a real character.
+_BYTE_TOKEN_ARTIFACT_PATTERN = re.compile(r'(?:<0x[0-9A-Fa-f]{2}>)+')
 _LEADING_SPACED_BACKSLASH_PATTERN = re.compile(r"(^|\s)\\\s+")
 _TRAILING_SPACED_BACKSLASH_PATTERN = re.compile(r"\s+\\(?=\s|$)")
 _BROKEN_URL_SPLIT_PATTERN = re.compile(
@@ -691,6 +694,7 @@ def polish_html_document(html: str) -> str:
     polished = _unescape_inline_sup_sub(polished)
     polished = _normalize_spaced_inline_sup_sub_tags(polished)
     polished = _fix_common_mojibake(polished)
+    polished = _BYTE_TOKEN_ARTIFACT_PATTERN.sub("", polished)
     polished = _cleanup_marker_escape_artifacts(polished)
     polished = _fix_equation_display(polished)
     polished = _convert_math_tags_to_tex(polished)
