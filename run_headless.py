@@ -23,6 +23,7 @@ if str(SRC) not in sys.path:
 from zoteropdf2md.marker_runner import MarkerRunner
 from zoteropdf2md.paths import discover_zotero_profiles
 from zoteropdf2md.pipeline import PipelineOptions, run_pipeline
+from zoteropdf2md.single_file_html import polish_html_document
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -54,6 +55,28 @@ RUNS: list[dict] = [
 
 def _log(msg: str) -> None:
     print(msg, flush=True)
+
+
+def _repolish_output_dir(output_dir: Path) -> None:
+    """Re-apply polish_html_document to every EN and RU HTML in *output_dir*.
+
+    This guarantees that all layout fixes (equation rows, ref numbering, etc.)
+    are present in the final files even if the pipeline's own polish step ran
+    with an older cached version of the code.
+    """
+    html_files = list(output_dir.rglob("*.html"))
+    if not html_files:
+        return
+    _log(f"\nPost-polish: {len(html_files)} HTML file(s) in {output_dir.name}")
+    for p in html_files:
+        try:
+            raw = p.read_text(encoding="utf-8", errors="replace")
+            polished = polish_html_document(raw)
+            if polished != raw:
+                p.write_text(polished, encoding="utf-8")
+                _log(f"  refreshed: {p.name}")
+        except Exception as exc:
+            _log(f"  WARN: could not re-polish {p.name}: {exc}")
 
 
 def main() -> None:
@@ -93,6 +116,7 @@ def main() -> None:
             is_cancelled=lambda: False,
         )
         _log(f"\nSummary: {summary}")
+        _repolish_output_dir(output_dir)
 
     _log("\nAll runs complete.")
 
