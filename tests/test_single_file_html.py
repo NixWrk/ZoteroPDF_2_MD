@@ -245,3 +245,38 @@ def test_polish_html_document_strips_bracket_ref_prefix_from_references() -> Non
     # Check no "1. [1]" double numbering
     assert "1.</span> [1]" not in ref_section
     assert "1.</span> [2]" not in ref_section
+
+
+def test_polish_html_document_recovers_bare_citations_as_sup() -> None:
+    """Marker sometimes drops <sup> and glues citation numbers to text."""
+    html = (
+        "<html><body>"
+        "<p>can mitigate these issues17,68 and potential69,70.</p>"
+        "<h4>References</h4>"
+        "<ul>" + "".join(f"<li>Ref {i}.</li>" for i in range(1, 71)) + "</ul>"
+        "</body></html>"
+    )
+    polished = polish_html_document(html)
+
+    assert '<sup>' in polished
+    assert 'href="#ref-17"' in polished
+    assert 'href="#ref-68"' in polished
+    assert 'href="#ref-69"' in polished
+    assert 'href="#ref-70"' in polished
+
+
+def test_polish_html_document_restores_sup_from_byte_tokens() -> None:
+    """Gemma byte-token artifacts followed by citation numbers → <sup>."""
+    html = (
+        "<html><body>"
+        "<p>кодирование<0xE2><0x82><0xA9>1,2 текст.</p>"
+        "<h4>References</h4>"
+        "<ul><li>Ref one.</li><li>Ref two.</li></ul>"
+        "</body></html>"
+    )
+    polished = polish_html_document(html)
+
+    assert "<0x" not in polished
+    assert '<sup>' in polished
+    assert 'href="#ref-1"' in polished
+    assert 'href="#ref-2"' in polished

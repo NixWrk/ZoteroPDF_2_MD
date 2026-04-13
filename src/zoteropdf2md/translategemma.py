@@ -39,8 +39,12 @@ _NO_TRANSLATE_ATTR_PATTERN = re.compile(r'\btranslate\s*=\s*["\']no["\']', re.IG
 
 # SentencePiece byte-fallback tokens that Gemma sometimes emits when it encounters
 # Unicode characters near the translation boundary.  They appear as literal ASCII
-# sequences like <0xE2><0x82><0xA9> in the output and must be stripped.
+# sequences like <0xE2><0x82><0xA9> in the output.
+# When followed by citation-like numbers the whole group is a dropped <sup>; restore it.
 _BYTE_TOKEN_ARTIFACT_PATTERN = re.compile(r'(?:<0x[0-9A-Fa-f]{2}>)+')
+_BYTE_TOKEN_CITATION_PATTERN = re.compile(
+    r'(?:<0x[0-9A-Fa-f]{2}>)+(\d[\d,\u2013\u2014\-]*)'
+)
 
 # Patterns that indicate the model produced a meta-commentary / refusal instead of a
 # translation.  When any of these match the translated output we fall back to the
@@ -321,6 +325,9 @@ def _translate_plain_fragment(
             translated = core
         else:
             translated = _strip_source_echo(translated, core)
+            # Byte-token sequences followed by citation numbers are dropped <sup> tags;
+            # restore them so _add_reference_ids_and_citation_links can linkify them.
+            translated = _BYTE_TOKEN_CITATION_PATTERN.sub(r'<sup>\1</sup>', translated)
             translated = _BYTE_TOKEN_ARTIFACT_PATTERN.sub("", translated)
         cache[core] = translated
 

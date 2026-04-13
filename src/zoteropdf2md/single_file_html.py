@@ -48,7 +48,16 @@ _LATEX_TAG_PATTERN = re.compile(r'\\tag\{(\d+)\}')
 _SLASH_PIPE_ARTIFACT_PATTERN = re.compile(r"\s*\\\s*\|\s*\\\s*")
 # SentencePiece byte-fallback tokens emitted by Gemma when it encounters Unicode
 # near translation boundaries: e.g. <0xE2><0x82><0xA9> instead of a real character.
+# When followed by citation numbers they represent a dropped <sup> tag.
 _BYTE_TOKEN_ARTIFACT_PATTERN = re.compile(r'(?:<0x[0-9A-Fa-f]{2}>)+')
+_BYTE_TOKEN_CITATION_PATTERN = re.compile(r'(?:<0x[0-9A-Fa-f]{2}>)+(\d[\d,\u2013\u2014\-]*)')
+# Bare citation numbers glued to words: "issues17,68" or "potential69,70"
+# Marker sometimes fails to recognise superscript and dumps citations as body text.
+# We look for: word-char immediately followed by 2+ numbers separated by commas,
+# where none of the numbers exceeds a reasonable reference count (≤999).
+_BARE_CITATION_PATTERN = re.compile(
+    r'(?<=[A-Za-zА-Яа-яёЁ])(\d{1,3}(?:,\s?\d{1,3})+)(?=[\s.,;:!?)<\]]|$)'
+)
 _LEADING_SPACED_BACKSLASH_PATTERN = re.compile(r"(^|\s)\\\s+")
 _TRAILING_SPACED_BACKSLASH_PATTERN = re.compile(r"\s+\\(?=\s|$)")
 _BROKEN_URL_SPLIT_PATTERN = re.compile(
@@ -500,6 +509,45 @@ def _link_bracket_citations(html: str, ref_count: int) -> str:
     return "".join(out)
 
 
+def _recover_bare_citations(html: str, ref_count: int) -> str:
+    """Wrap bare citation numbers glued to words in ``<sup>`` tags.
+
+    Marker sometimes fails to detect superscript formatting and produces
+    ``issues17,68`` instead of ``issues<sup>17,68</sup>``.  We match
+    comma-separated number groups directly following a letter and wrap them
+    only when *every* number falls within [1, ref_count].
+
+    Skips content inside tags that should not be modified.
+    """
+    parts = _TAG_SPLIT_PATTERN.split(html)
+    out: list[str] = []
+    skip_stack: list[str] = []
+
+    def _wrap(m: re.Match[str]) -> str:
+        nums_text = m.group(1)
+        nums = [n.strip() for n in nums_text.split(",")]
+        try:
+            if all(1 <= int(n) <= ref_count for n in nums):
+                return f"<sup>{nums_text}</sup>"
+        except ValueError:
+            pass
+        return m.group(0)
+
+    for part in parts:
+        if not part:
+            continue
+        if part.startswith("<"):
+            _update_skip_stack(part, skip_stack)
+            out.append(part)
+            continue
+        if skip_stack:
+            out.append(part)
+            continue
+        out.append(_BARE_CITATION_PATTERN.sub(_wrap, part))
+
+    return "".join(out)
+
+
 def _add_reference_ids_and_citation_links(html: str) -> str:
     heading_match = _REFERENCES_HEADING_PATTERN.search(html)
     if heading_match is None:
@@ -565,6 +613,9 @@ def _add_reference_ids_and_citation_links(html: str) -> str:
 
         linked_inner = _SUP_NUMBER_PATTERN.sub(replace_number, inner)
         return f"<sup>{linked_inner}</sup>"
+
+    # Recover bare citations: "issues17,68" → "issues<sup>17,68</sup>"
+    before_references = _recover_bare_citations(before_references, ref_index)
 
     # Link <sup>N</sup> citations first, then [N] bracket-style citations.
     before_with_citation_links = _SUP_PATTERN.sub(link_sup, before_references)
@@ -694,6 +745,7 @@ def polish_html_document(html: str) -> str:
     polished = _unescape_inline_sup_sub(polished)
     polished = _normalize_spaced_inline_sup_sub_tags(polished)
     polished = _fix_common_mojibake(polished)
+    polished = _BYTE_TOKEN_CITATION_PATTERN.sub(r'<sup>\1</sup>', polished)
     polished = _BYTE_TOKEN_ARTIFACT_PATTERN.sub("", polished)
     polished = _cleanup_marker_escape_artifacts(polished)
     polished = _fix_equation_display(polished)
