@@ -3,8 +3,11 @@ from pathlib import Path
 import pytest
 
 from zoteropdf2md.translategemma import (
+    _apply_formula_mask,
     _is_translator_refusal,
     _mark_author_line_notranslate,
+    _restore_formula_mask,
+    _try_batch_translate,
     language_name_for_code,
     normalize_language_code,
     translate_html_text_nodes,
@@ -262,6 +265,121 @@ def test_translate_html_text_nodes_strips_appended_source_echo() -> None:
     assert translated_segments == 1
     assert "Привет мир." in translated
     assert "Hello world." not in translated
+
+
+# ---------------------------------------------------------------------------
+# Batch translation helpers
+# ---------------------------------------------------------------------------
+
+def test_apply_formula_mask_replaces_spans_with_tokens() -> None:
+    text = r"Coupling L_{\rm m} and current I_1 flow."
+    masked, fmap = _apply_formula_mask(text)
+    assert "L_{" not in masked
+    assert "I_1" not in masked
+    assert len(fmap) == 2
+    restored = _restore_formula_mask(masked, fmap)
+    assert restored == text
+
+
+def test_try_batch_translate_returns_none_for_single_segment() -> None:
+    """One segment is not worth a batch call."""
+    assert _try_batch_translate(["hello"], lambda t: t.upper()) is None
+
+
+def test_try_batch_translate_translates_multiple_segments() -> None:
+    """Two segments are joined, translated once, split back."""
+    calls: list[str] = []
+
+    def fake_translate(text: str) -> str:
+        calls.append(text)
+        return text.replace("Hello", "Привет").replace("World", "Мир")
+
+    result = _try_batch_translate(["Hello.", "World."], fake_translate)
+
+    assert result == ["Привет.", "Мир."]
+    assert len(calls) == 1  # Only one model call
+
+
+def test_try_batch_translate_returns_none_on_separator_mismatch() -> None:
+    """If the model drops the separator the result is discarded."""
+    def eating_translate(text: str) -> str:
+        # Remove the separator — simulate model eating it
+        return text.replace("<z2m-sep/>", "")
+
+    result = _try_batch_translate(["Hello.", "World."], eating_translate)
+    assert result is None
+
+
+def test_try_batch_translate_returns_none_on_exception() -> None:
+    def failing(text: str) -> str:
+        raise RuntimeError("OOM")
+
+    result = _try_batch_translate(["A", "B"], failing)
+    assert result is None
+
+
+def test_try_batch_translate_preserves_formulas() -> None:
+    r"""Formula spans must survive a translate call that would corrupt LaTeX."""
+    def corrupting_translate(text: str) -> str:
+        return (
+            text
+            .replace("\\", "X")
+            .replace("_", "U")
+            .replace("Hello", "Привет")
+        )
+
+    segments = [r"Hello \frac{a}{b}.", r"\omega = 2\pi f."]
+    result = _try_batch_translate(segments, corrupting_translate)
+
+    assert result is not None
+    assert r"\frac{a}{b}" in result[0]
+    assert r"\omega = 2\pi f." in result[1]
+    assert "Привет" in result[0]
+
+
+def test_translate_html_text_nodes_uses_single_model_call_for_multi_paragraph() -> None:
+    """Batch mode must translate multiple paragraphs with exactly one model call."""
+    html = (
+        "<html><body>"
+        "<p>First paragraph text.</p>"
+        "<p>Second paragraph text.</p>"
+        "<p>Third paragraph text.</p>"
+        "</body></html>"
+    )
+    calls: list[str] = []
+
+    def fake_translate(text: str) -> str:
+        calls.append(text)
+        return text.upper()
+
+    translated, translated_segments = translate_html_text_nodes(
+        html,
+        translate_text=fake_translate,
+    )
+
+    assert translated_segments == 3
+    assert "<p>FIRST PARAGRAPH TEXT.</p>" in translated
+    assert "<p>SECOND PARAGRAPH TEXT.</p>" in translated
+    assert len(calls) == 1  # Single batch call
+
+
+def test_translate_html_text_nodes_falls_back_on_separator_loss() -> None:
+    """When the model eats the separator, fall back to per-segment translation."""
+    html = "<html><body><p>Hello.</p><p>World.</p></body></html>"
+    call_count = [0]
+
+    def eating_translate(text: str) -> str:
+        call_count[0] += 1
+        # Remove separators — forces fallback
+        result = text.replace("<z2m-sep/>", "").replace("<Z2M-SEP/>", "")
+        return result.replace("Hello", "Привет").replace("World", "Мир")
+
+    translated, _ = translate_html_text_nodes(html, translate_text=eating_translate)
+
+    # Fallback: 2 per-segment calls (after 1 failed batch attempt)
+    assert call_count[0] >= 2
+    assert "Привет" in translated
+    assert "Мир" in translated
 
 
 def test_translate_html_text_nodes_preserves_formula_fragments() -> None:

@@ -295,6 +295,109 @@ def _formula_spans(text: str) -> list[tuple[int, int]]:
     return _merge_spans(spans)
 
 
+# ---------------------------------------------------------------------------
+# Batch translation helpers
+# ---------------------------------------------------------------------------
+
+# Separator injected between segments in batch mode.  Looks like an HTML
+# self-closing tag so translation models treat it as non-translatable markup.
+_BATCH_SEPARATOR = "\n<z2m-sep/>\n"
+_BATCH_SEP_PATTERN = re.compile(r'\n?[ \t]*<z2m-sep\s*/?>[ \t]*\n?', re.IGNORECASE)
+
+# Formula placeholder tokens: <z2m-f id="N"/>  — kept unchanged by the model.
+_FORMULA_TOKEN_PATTERN = re.compile(r'<z2m-f\s+id="(\d+)"\s*/>', re.IGNORECASE)
+
+# Safety limit: skip batch mode if the combined text exceeds this many characters
+# (rough estimate 4 chars ≈ 1 token, limit ≈ 50k tokens input).
+_MAX_BATCH_CHARS = 200_000
+
+
+def _apply_formula_mask(text: str) -> tuple[str, dict[str, str]]:
+    """Replace formula spans with ``<z2m-f id="N"/>`` tokens.
+
+    Returns ``(masked_text, token_map)`` where *token_map* maps each token
+    back to the original formula string so it can be restored after translation.
+    """
+    spans = _formula_spans(text)
+    if not spans:
+        return text, {}
+    fmap: dict[str, str] = {}
+    masked = text
+    # Replace right-to-left so positions stay valid.
+    for j, (start, end) in enumerate(reversed(spans)):
+        real_j = len(spans) - 1 - j
+        token = f'<z2m-f id="{real_j}"/>'
+        fmap[token] = text[start:end]
+        masked = masked[:start] + token + masked[end:]
+    return masked, fmap
+
+
+def _restore_formula_mask(text: str, fmap: dict[str, str]) -> str:
+    """Substitute formula placeholder tokens back with their original strings."""
+    for token, formula in fmap.items():
+        text = text.replace(token, formula)
+    return text
+
+
+def _try_batch_translate(
+    segments: list[str],
+    translate_text: Callable[[str], str],
+) -> list[str] | None:
+    """Translate all *segments* in a single model call.
+
+    Masks mathematical formulas, joins segments with ``<z2m-sep/>`` separator,
+    calls ``translate_text`` once, then splits the result back.
+
+    Returns the translated list on success.  Returns ``None`` — signalling the
+    caller to fall back to per-segment translation — when:
+
+    * there is only one segment (batch overhead not worth it),
+    * the combined text exceeds ``_MAX_BATCH_CHARS``,
+    * the model call raises an exception,
+    * or the separator count in the output does not match the input.
+    """
+    if len(segments) < 2:
+        return None
+
+    # Mask formulas so the model does not try to translate LaTeX/math notation.
+    masked_segs: list[str] = []
+    fmaps: list[dict[str, str]] = []
+    for seg in segments:
+        masked, fmap = _apply_formula_mask(seg)
+        masked_segs.append(masked)
+        fmaps.append(fmap)
+
+    batch_text = _BATCH_SEPARATOR.join(masked_segs)
+    if len(batch_text) > _MAX_BATCH_CHARS:
+        return None
+
+    try:
+        translated_batch = translate_text(batch_text)
+    except Exception:
+        return None
+
+    # Clean byte-token artefacts before splitting.
+    translated_batch = _BYTE_TOKEN_CITATION_PATTERN.sub(r'<sup>\1</sup>', translated_batch)
+    translated_batch = _BYTE_TOKEN_ARTIFACT_PATTERN.sub("", translated_batch)
+
+    translated_parts = _BATCH_SEP_PATTERN.split(translated_batch)
+    if len(translated_parts) != len(segments):
+        # Model ate or duplicated separators — result is not trustworthy.
+        return None
+
+    result: list[str] = []
+    for orig, t_seg, fmap in zip(segments, translated_parts, fmaps):
+        t_seg = t_seg.strip()
+        if _is_translator_refusal(t_seg):
+            t_seg = orig
+        else:
+            t_seg = _strip_source_echo(t_seg, orig)
+            t_seg = _restore_formula_mask(t_seg, fmap)
+        result.append(t_seg)
+
+    return result
+
+
 def _translate_plain_fragment(
     text: str,
     *,
@@ -495,8 +598,20 @@ def translate_html_text_nodes(
     on_segment_start: Callable[[int, int], None] | None = None,
     on_progress: Callable[[int, int], None] | None = None,
 ) -> tuple[str, int]:
-    # The References / Bibliography section must never be translated – author names,
-    # journal titles and DOIs should stay in the original language.
+    """Translate all translatable text nodes in *html*, leaving markup intact.
+
+    **Batch mode (primary path):** all translatable text nodes are joined with
+    ``<z2m-sep/>`` markers, translated in a single model call, then split back.
+    This preserves inter-paragraph context and is faster than per-segment calls.
+
+    **Fallback path:** if the batch fails (context overflow, separator count
+    mismatch, or any exception), each segment is translated individually — the
+    previous behaviour.
+
+    The References / Bibliography section is never translated.
+    """
+    # The References / Bibliography section must never be translated – author
+    # names, journal titles and DOIs should stay in the original language.
     heading_match = _REFERENCES_HEADING_PATTERN.search(html)
     if heading_match is not None:
         references_tail = html[heading_match.start():]
@@ -505,34 +620,59 @@ def translate_html_text_nodes(
         references_tail = ""
 
     parts = _TAG_SPLIT_PATTERN.split(html)
-    out: list[str] = []
+
+    # Single pass: collect indices of translatable text nodes.
     skip_stack: list[str] = []
-    cache: dict[str, str] = {}
-    translated_segments = 0
-    total_segments = 0
-    processed_segments = 0
-
-    pre_count_skip_stack: list[str] = []
-    for part in parts:
+    translatable_indices: list[int] = []
+    for i, part in enumerate(parts):
         if not part:
             continue
-        if part.startswith("<"):
-            _update_skip_stack(part, pre_count_skip_stack)
-            continue
-        if pre_count_skip_stack or not _TRANSLATABLE_TEXT_PATTERN.search(part):
-            continue
-        total_segments += 1
-
-    for part in parts:
-        if not part:
-            continue
-
         if part.startswith("<"):
             _update_skip_stack(part, skip_stack)
+            continue
+        if not skip_stack and _TRANSLATABLE_TEXT_PATTERN.search(part):
+            translatable_indices.append(i)
+
+    total_segments = len(translatable_indices)
+    if total_segments == 0:
+        return "".join(p for p in parts if p) + references_tail, 0
+
+    # ------------------------------------------------------------------ #
+    # Primary path: batch translation                                      #
+    # ------------------------------------------------------------------ #
+    source_texts = [parts[i] for i in translatable_indices]
+    batch_result = _try_batch_translate(source_texts, translate_text)
+
+    if batch_result is not None:
+        translated_segments = 0
+        for idx, src, tgt in zip(translatable_indices, source_texts, batch_result):
+            parts[idx] = tgt
+            if tgt != src:
+                translated_segments += 1
+        if on_progress is not None:
+            try:
+                on_progress(total_segments, total_segments)
+            except Exception:
+                pass
+        return "".join(p for p in parts if p) + references_tail, translated_segments
+
+    # ------------------------------------------------------------------ #
+    # Fallback: per-segment translation (original behaviour)              #
+    # ------------------------------------------------------------------ #
+    cache: dict[str, str] = {}
+    translated_segments = 0
+    processed_segments = 0
+    out: list[str] = []
+    fallback_skip_stack: list[str] = []
+
+    for part in parts:
+        if not part:
+            continue
+        if part.startswith("<"):
+            _update_skip_stack(part, fallback_skip_stack)
             out.append(part)
             continue
-
-        if skip_stack or not _TRANSLATABLE_TEXT_PATTERN.search(part):
+        if fallback_skip_stack or not _TRANSLATABLE_TEXT_PATTERN.search(part):
             out.append(part)
             continue
 
