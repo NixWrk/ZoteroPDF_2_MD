@@ -44,6 +44,7 @@ _EQUATION_PARA_PATTERN = re.compile(
 )
 _DISPLAY_MATH_IN_PARA_PATTERN = re.compile(r'\\\[(.*?)\\\]', re.DOTALL)
 _TRAILING_EQ_NUM_PATTERN = re.compile(r'\(\d+\)\s*$')
+_LATEX_TAG_PATTERN = re.compile(r'\\tag\{(\d+)\}')
 _SLASH_PIPE_ARTIFACT_PATTERN = re.compile(r"\s*\\\s*\|\s*\\\s*")
 _LEADING_SPACED_BACKSLASH_PATTERN = re.compile(r"(^|\s)\\\s+")
 _TRAILING_SPACED_BACKSLASH_PATTERN = re.compile(r"\s+\\(?=\s|$)")
@@ -589,8 +590,8 @@ def _fix_equation_display(html: str) -> str:
         open_tag, body, close_tag = m.group(1), m.group(2), m.group(3)
 
         # Check if there is real prose text around the display math.
-        # Strip all \[...\] and any equation numbers; if text remains this is
-        # "text-with-math" and the display math should become inline.
+        # Strip \[...\], equation numbers (N), and \tag{N}; if text remains
+        # this is "text-with-math" and the display math should become inline.
         stripped = _DISPLAY_MATH_IN_PARA_PATTERN.sub("", body)
         stripped = re.sub(r"\(\d+\)", "", stripped)
         stripped = stripped.strip()
@@ -601,9 +602,47 @@ def _fix_equation_display(html: str) -> str:
             )
             return f"{open_tag}{body}{close_tag}"
 
-        # Pure equation paragraph: extract (N) and wrap the whole paragraph in a
-        # flex row so the number sits flush-right regardless of how MathJax renders.
+        # Pure equation paragraph: extract the equation number and wrap in a flex
+        # row so the number sits flush-right regardless of how MathJax renders.
+        # Two sources of equation numbers:
+        #   a) \tag{N} inside the LaTeX itself (Marker embeds the tag in the math)
+        #   b) Plain text "(N)" following the \[...\] block
         body_rstripped = body.rstrip()
+
+        # Check for \tag{N} inside any \[...\] block and strip it out so MathJax
+        # does not render it (we show the number via our own z2m-eq-num span).
+        def _strip_tag(math_match: re.Match[str]) -> tuple[str, str | None]:
+            content = math_match.group(0)
+            tag_m = _LATEX_TAG_PATTERN.search(content)
+            if tag_m:
+                num = tag_m.group(1)
+                content_no_tag = _LATEX_TAG_PATTERN.sub("", content).rstrip()
+                return content_no_tag, f"({num})"
+            return content, None
+
+        tag_num: str | None = None
+        new_body_parts: list[str] = []
+        last = 0
+        for dm in _DISPLAY_MATH_IN_PARA_PATTERN.finditer(body_rstripped):
+            new_body_parts.append(body_rstripped[last : dm.start()])
+            cleaned, found_num = _strip_tag(dm)
+            new_body_parts.append(cleaned)
+            if found_num and tag_num is None:
+                tag_num = found_num
+            last = dm.end()
+        new_body_parts.append(body_rstripped[last:])
+        body_no_tag = "".join(new_body_parts).rstrip()
+
+        if tag_num:
+            return (
+                f'<div class="z2m-equation-row">'
+                f'<span class="z2m-eq-lhs"></span>'
+                f"{open_tag}{body_no_tag}{close_tag}"
+                f'<span class="z2m-eq-num">{tag_num}</span>'
+                f"</div>"
+            )
+
+        # Fall back to trailing "(N)" text
         eq_num_match = _TRAILING_EQ_NUM_PATTERN.search(body_rstripped)
         if eq_num_match:
             num_text = eq_num_match.group(0).strip()
