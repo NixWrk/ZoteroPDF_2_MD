@@ -265,6 +265,37 @@ def test_polish_html_document_recovers_bare_citations_as_sup() -> None:
     assert 'href="#ref-70"' in polished
 
 
+def test_polish_html_document_recovers_spaced_bare_citations() -> None:
+    """Space-separated bare citations before punctuation must also become <sup>."""
+    html = (
+        "<html><body>"
+        "<p>relatively understudied 80,152,166. Robust methods will be essential 81.</p>"
+        "<h4>References</h4>"
+        "<ul>" + "".join(f"<li>Ref {i}.</li>" for i in range(1, 171)) + "</ul>"
+        "</body></html>"
+    )
+    polished = polish_html_document(html)
+
+    assert 'href="#ref-80"' in polished
+    assert 'href="#ref-152"' in polished
+    assert 'href="#ref-166"' in polished
+
+
+def test_polish_html_document_recovers_dot_separated_citations() -> None:
+    """Marker OCR artefact: dots instead of commas in citation lists."""
+    html = (
+        "<html><body>"
+        "<p>mitigate these issues17.68. Specific education</p>"
+        "<h4>References</h4>"
+        "<ul>" + "".join(f"<li>Ref {i}.</li>" for i in range(1, 71)) + "</ul>"
+        "</body></html>"
+    )
+    polished = polish_html_document(html)
+
+    assert 'href="#ref-17"' in polished
+    assert 'href="#ref-68"' in polished
+
+
 def test_polish_html_document_restores_sup_from_byte_tokens() -> None:
     """Gemma byte-token artifacts followed by citation numbers → <sup>."""
     html = (

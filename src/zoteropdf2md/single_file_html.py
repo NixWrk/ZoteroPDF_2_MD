@@ -51,12 +51,23 @@ _SLASH_PIPE_ARTIFACT_PATTERN = re.compile(r"\s*\\\s*\|\s*\\\s*")
 # When followed by citation numbers they represent a dropped <sup> tag.
 _BYTE_TOKEN_ARTIFACT_PATTERN = re.compile(r'(?:<0x[0-9A-Fa-f]{2}>)+')
 _BYTE_TOKEN_CITATION_PATTERN = re.compile(r'(?:<0x[0-9A-Fa-f]{2}>)+(\d[\d,\u2013\u2014\-]*)')
-# Bare citation numbers glued to words: "issues17,68" or "potential69,70"
-# Marker sometimes fails to recognise superscript and dumps citations as body text.
-# We look for: word-char immediately followed by 2+ numbers separated by commas,
-# where none of the numbers exceeds a reasonable reference count (≤999).
-_BARE_CITATION_PATTERN = re.compile(
+# Bare citation numbers that Marker failed to mark as superscript.
+# Two variants:
+#   Glued  — number immediately follows letter: "issues17,68"
+#   Spaced — single space before citation group: "issues 17,68."
+#            (only allowed before sentence-ending punctuation to reduce false positives)
+# Numbers are only wrapped when ALL of them fall within [1, ref_count].
+_BARE_CITATION_GLUED_PATTERN = re.compile(
     r'(?<=[A-Za-zА-Яа-яёЁ])(\d{1,3}(?:,\s?\d{1,3})+)(?=[\s.,;:!?)<\]]|$)'
+)
+_BARE_CITATION_SPACED_PATTERN = re.compile(
+    r'(?<=[A-Za-zА-Яа-яёЁ]) (\d{1,3}(?:,\d{1,3})+)(?=[.,;:!?)<\]]|$)'
+)
+# Dot-separated citations: OCR artefact where Marker writes "17.68" instead of "17,68"
+# Only triggered when ALL numbers are within ref_count and the sequence immediately
+# follows a letter (no space), to minimise collisions with decimal numbers.
+_BARE_CITATION_DOT_PATTERN = re.compile(
+    r'(?<=[A-Za-zА-Яа-яёЁ])(\d{1,3}(?:\.\d{1,3})+)(?=[\s.,;:!?)<\]]|$)'
 )
 _LEADING_SPACED_BACKSLASH_PATTERN = re.compile(r"(^|\s)\\\s+")
 _TRAILING_SPACED_BACKSLASH_PATTERN = re.compile(r"\s+\\(?=\s|$)")
@@ -510,28 +521,43 @@ def _link_bracket_citations(html: str, ref_count: int) -> str:
 
 
 def _recover_bare_citations(html: str, ref_count: int) -> str:
-    """Wrap bare citation numbers glued to words in ``<sup>`` tags.
+    """Wrap bare citation numbers in ``<sup>`` tags.
 
-    Marker sometimes fails to detect superscript formatting and produces
-    ``issues17,68`` instead of ``issues<sup>17,68</sup>``.  We match
-    comma-separated number groups directly following a letter and wrap them
-    only when *every* number falls within [1, ref_count].
+    Handles three Marker OCR failure modes:
 
-    Skips content inside tags that should not be modified.
+    1. *Glued* — number immediately follows a letter: ``issues17,68``
+    2. *Spaced* — space before the group, followed by punctuation: ``issues 17,68.``
+    3. *Dot-separated* — Marker wrote commas as dots: ``issues17.68``
+
+    Numbers are only wrapped when *every* individual number falls within
+    ``[1, ref_count]`` to minimise false positives.
+
+    Skips content inside tags that should not be modified (scripts, anchors, etc.).
     """
     parts = _TAG_SPLIT_PATTERN.split(html)
     out: list[str] = []
     skip_stack: list[str] = []
 
-    def _wrap(m: re.Match[str]) -> str:
-        nums_text = m.group(1)
-        nums = [n.strip() for n in nums_text.split(",")]
+    def _valid_nums(nums_text: str, sep: str = ",") -> bool:
         try:
-            if all(1 <= int(n) <= ref_count for n in nums):
-                return f"<sup>{nums_text}</sup>"
+            return all(1 <= int(n.strip()) <= ref_count for n in nums_text.split(sep))
         except ValueError:
-            pass
-        return m.group(0)
+            return False
+
+    def _wrap_glued(m: re.Match[str]) -> str:
+        nums_text = m.group(1)
+        return f"<sup>{nums_text}</sup>" if _valid_nums(nums_text) else m.group(0)
+
+    def _wrap_spaced(m: re.Match[str]) -> str:
+        nums_text = m.group(1)
+        # Preserve the space before <sup>
+        return f" <sup>{nums_text}</sup>" if _valid_nums(nums_text) else m.group(0)
+
+    def _wrap_dot(m: re.Match[str]) -> str:
+        nums_text = m.group(1)
+        # Convert dots to commas so downstream link logic treats them uniformly
+        nums_comma = nums_text.replace(".", ",")
+        return f"<sup>{nums_comma}</sup>" if _valid_nums(nums_comma) else m.group(0)
 
     for part in parts:
         if not part:
@@ -543,7 +569,10 @@ def _recover_bare_citations(html: str, ref_count: int) -> str:
         if skip_stack:
             out.append(part)
             continue
-        out.append(_BARE_CITATION_PATTERN.sub(_wrap, part))
+        text = _BARE_CITATION_GLUED_PATTERN.sub(_wrap_glued, part)
+        text = _BARE_CITATION_SPACED_PATTERN.sub(_wrap_spaced, text)
+        text = _BARE_CITATION_DOT_PATTERN.sub(_wrap_dot, text)
+        out.append(text)
 
     return "".join(out)
 
