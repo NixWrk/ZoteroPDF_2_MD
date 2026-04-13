@@ -178,19 +178,26 @@ _DEFAULT_READABILITY_STYLE = """
     overflow-x: auto;
   }
   p[block-type="Equation"] {
-    position: relative;
     text-align: center;
-    padding-right: 3.5em;
     margin: 0.8em 0;
   }
+  .z2m-equation-row {
+    display: flex;
+    align-items: center;
+    margin: 0.8em 0;
+  }
+  .z2m-equation-row > p[block-type="Equation"] {
+    flex: 1;
+    margin: 0;
+    padding: 0;
+  }
+  .z2m-eq-lhs,
   .z2m-eq-num {
-    position: absolute;
-    right: 0;
-    top: 50%;
-    transform: translateY(-50%);
+    flex: 0 0 3.5em;
     font-size: 0.92em;
     color: #374151;
   }
+  .z2m-eq-num { text-align: right; }
   @media (max-width: 960px) {
     body { padding: 10px; }
     #marker-doc { padding: 16px 15px; border-radius: 8px; }
@@ -594,13 +601,20 @@ def _fix_equation_display(html: str) -> str:
             )
             return f"{open_tag}{body}{close_tag}"
 
-        # Pure equation paragraph: wrap trailing (N) in a positioned span.
-        new_body = _TRAILING_EQ_NUM_PATTERN.sub(
-            lambda nm: f'<span class="z2m-eq-num">{nm.group(0).strip()}</span>',
-            body.rstrip(),
-        )
-        if new_body != body.rstrip():
-            return f"{open_tag}{new_body}{close_tag}"
+        # Pure equation paragraph: extract (N) and wrap the whole paragraph in a
+        # flex row so the number sits flush-right regardless of how MathJax renders.
+        body_rstripped = body.rstrip()
+        eq_num_match = _TRAILING_EQ_NUM_PATTERN.search(body_rstripped)
+        if eq_num_match:
+            num_text = eq_num_match.group(0).strip()
+            body_no_num = body_rstripped[: eq_num_match.start()].rstrip()
+            return (
+                f'<div class="z2m-equation-row">'
+                f'<span class="z2m-eq-lhs"></span>'
+                f"{open_tag}{body_no_num}{close_tag}"
+                f'<span class="z2m-eq-num">{num_text}</span>'
+                f"</div>"
+            )
 
         return m.group(0)
 

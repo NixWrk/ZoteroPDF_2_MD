@@ -37,7 +37,7 @@ SKIP_EXISTING = False           # force re-run even if output already exists
 RUNS: list[dict] = [
     {
         "collection_key": "LSZKA7Z9",
-        "output_subdir":  "intracranial_compare",
+        "output_subdir":  "intracranial",
         "include_subcollections": True,
     },
     {

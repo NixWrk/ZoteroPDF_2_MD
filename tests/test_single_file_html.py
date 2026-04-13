@@ -176,7 +176,7 @@ def test_polish_html_document_converts_inline_math_to_tex_delimiters() -> None:
 
 
 def test_polish_html_document_positions_equation_number_right() -> None:
-    """Equation numbers like (1) inside <p block-type='Equation'> must get z2m-eq-num span."""
+    """Equation numbers like (1) must be extracted into a flex-row wrapper div."""
     html = (
         '<html><body>'
         '<p block-type="Equation">\\[Z_1 = j\\omega L_1\\]\n   (1)</p>'
@@ -184,7 +184,9 @@ def test_polish_html_document_positions_equation_number_right() -> None:
     )
     polished = polish_html_document(html)
 
+    assert 'class="z2m-equation-row"' in polished
     assert '<span class="z2m-eq-num">(1)</span>' in polished
+    assert '<span class="z2m-eq-lhs">' in polished
     assert '\\[Z_1 = j\\omega L_1\\]' in polished
 
 
