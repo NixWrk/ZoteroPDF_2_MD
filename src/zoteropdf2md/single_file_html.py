@@ -84,7 +84,7 @@ _SECTION_REF_PATTERN = re.compile(
 # Figure/image caption paragraphs: <p …>Fig. 3. Some caption text…
 # Russian equivalents: Рис. (standard) or Фиг. (sometimes emitted by translators)
 _FIG_CAPTION_PARA_PATTERN = re.compile(
-    r'(<p\b[^>]*)>([ \t]*(?:Fig|Рис|рис|Фиг|фиг|FIG)\.?\s*(\d+)\.)',
+    r'(<p\b[^>]*)>([ \t\r\n]*(?:Fig|Рис|рис|Фиг|фиг|FIG)\.?\s*(\d+)\.)',
     re.IGNORECASE,
 )
 # In-text figure references: "Fig. 3" / "рис. 3" / "фиг. 3" NOT followed by ". <text>"

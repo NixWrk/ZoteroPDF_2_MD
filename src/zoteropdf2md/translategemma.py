@@ -1112,7 +1112,11 @@ class TranslateGemmaTranslator:
             f"[timer] translategemma.polish_source_html: {perf_counter() - read_started_at:.2f}s"
         )
         # Protect the author-line paragraph from translation before processing.
-        source_html = _mark_author_line_notranslate(source_html_raw)
+        # Use polished_source (not source_html_raw) so that section/figure anchors
+        # added by polish_html_document survive into the translated HTML — the
+        # translation engine only touches text nodes, not HTML attributes, so
+        # id="section-II" and id="fig-3" are carried through intact.
+        source_html = _mark_author_line_notranslate(polished_source)
         self._log_line(f"[timer] translategemma.read_html: {perf_counter() - read_started_at:.2f}s")
 
         translate_started_at = perf_counter()
