@@ -429,16 +429,13 @@ def _try_batch_translate(
     if len(segments) < 2:
         return None
 
-    # Mask formulas and uppercase abbreviations so the model cannot transliterate them.
+    # Mask formulas so the model does not try to translate LaTeX/math notation.
     masked_segs: list[str] = []
     fmaps: list[dict[str, str]] = []
-    amaps: list[dict[str, str]] = []
     for seg in segments:
         masked, fmap = _apply_formula_mask(seg)
-        masked, amap = _apply_abbrev_mask(masked)
         masked_segs.append(masked)
         fmaps.append(fmap)
-        amaps.append(amap)
 
     batch_text = _BATCH_SEPARATOR.join(masked_segs)
     if len(batch_text) > max_batch_chars:
@@ -459,7 +456,7 @@ def _try_batch_translate(
         return None
 
     result: list[str] = []
-    for orig, t_seg, fmap, amap in zip(segments, translated_parts, fmaps, amaps):
+    for orig, t_seg, fmap in zip(segments, translated_parts, fmaps):
         lead, core, tail = _split_outer_ws(t_seg)
         _, orig_core, _ = _split_outer_ws(orig)
         if _is_translator_refusal(core.strip()):
@@ -467,7 +464,6 @@ def _try_batch_translate(
         else:
             core = _strip_source_echo(core, orig_core)
             core = _restore_formula_mask(core, fmap)
-            core = _restore_abbrev_mask(core, amap)
             t_seg = f"{lead}{core}{tail}"
         result.append(t_seg)
 
@@ -536,21 +532,19 @@ def _translate_plain_fragment(
 
     translated = cache.get(core)
     if translated is None:
-        core_masked, amap = _apply_abbrev_mask(core)
-        translated_masked = _translate_with_chunk_fallback(
-            core_masked,
+        translated = _translate_with_chunk_fallback(
+            core,
             translate_text=translate_text,
             max_chunk_chars=max_chunk_chars,
         )
-        if _is_translator_refusal(translated_masked):
+        if _is_translator_refusal(translated):
             translated = core
         else:
-            translated_masked = _strip_source_echo(translated_masked, core_masked)
+            translated = _strip_source_echo(translated, core)
             # Byte-token sequences followed by citation numbers are dropped <sup> tags;
             # restore them so _add_reference_ids_and_citation_links can linkify them.
-            translated_masked = _BYTE_TOKEN_CITATION_PATTERN.sub(r'<sup>\1</sup>', translated_masked)
-            translated_masked = _BYTE_TOKEN_ARTIFACT_PATTERN.sub("", translated_masked)
-            translated = _restore_abbrev_mask(translated_masked, amap)
+            translated = _BYTE_TOKEN_CITATION_PATTERN.sub(r'<sup>\1</sup>', translated)
+            translated = _BYTE_TOKEN_ARTIFACT_PATTERN.sub("", translated)
         cache[core] = translated
 
     return text[:leading_len] + translated + text[core_end:]
@@ -977,14 +971,17 @@ class TranslateGemmaTranslator:
 
         source_language = (self._config.source_language or "Auto").strip()
         target_language = language_name_for_code(self._config.target_language_code)
-        # The extra constraints prevent the model from translating proper names,
-        # technical abbreviations (LC, ADC, VNA, …) or producing meta-commentary
-        # when it cannot translate a particular token.
+        # Constraints prevent transliteration of abbreviations (GAI→ГАИ, VNA→ВНА),
+        # mangling of author names, and meta-commentary when the model is uncertain.
         _extra = (
-            "Do not translate proper names, author names, or technical abbreviations – "
-            "keep them exactly as they appear in the source. "
-            "If you cannot translate a specific term, leave it unchanged. "
-            "Output only the translation, nothing else."
+            "Rules: "
+            "(1) Keep all uppercase Latin abbreviations letter-for-letter – "
+            "write LC, VNA, ICP, SNR, ADC, IEEE, GAI, RF, MEMS, FPGA, AC, DC, USB, "
+            "MIMO, and any other sequence of uppercase Latin letters exactly as given; "
+            "never transliterate them into Cyrillic. "
+            "(2) Do not translate or modify proper names, author names, or DOIs. "
+            "(3) If you cannot translate a specific term, leave it unchanged. "
+            "(4) Output only the translation, nothing else."
         )
         if source_language.lower() in {"auto", "auto-detect", "autodetect"}:
             instruction = (
