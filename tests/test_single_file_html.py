@@ -465,3 +465,27 @@ def test_polish_html_document_adds_figure_anchor_links() -> None:
     assert 'id="fig-1"' in polished
     assert 'href="#fig-1"' in polished
     assert "z2m-fig-link" in polished
+
+
+def test_link_figure_refs_handles_fig_transliteration() -> None:
+    """'Фиг. 3' (translation of 'Fig. 3' by some models) must get a link."""
+    html = "<p>Как показано на Фиг. 3 в данной работе.</p>"
+    linked = _link_figure_refs(html, {"3"})
+    assert 'href="#fig-3"' in linked
+    assert "z2m-fig-link" in linked
+
+
+def test_add_figure_anchors_handles_fig_transliteration_in_caption() -> None:
+    """A caption starting with 'Фиг. 3.' must get id='fig-3'."""
+    html = "<p>Фиг. 3. Схема устройства.</p>"
+    result, found = _add_figure_anchors(html)
+    assert "3" in found
+    assert 'id="fig-3"' in result
+
+
+def test_link_section_refs_handles_russian_case_forms() -> None:
+    """Genitive (Раздела) and locative (Разделе) case forms must create links."""
+    html = "<p>Описано в Разделе II и результаты Раздела III представлены ниже.</p>"
+    linked = _link_section_refs(html, {"II", "III"})
+    assert 'href="#section-II"' in linked
+    assert 'href="#section-III"' in linked

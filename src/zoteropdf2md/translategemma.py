@@ -47,10 +47,11 @@ _BYTE_TOKEN_CITATION_PATTERN = re.compile(
 )
 
 # Uppercase Latin abbreviations that must survive translation unchanged.
-# Matches 2+ consecutive uppercase letters optionally followed by digits,
-# e.g.  IEEE, LC, ADC, VNA, GAI, MEMS, RF, II, III.
-# Single-letter symbols are excluded to avoid masking variables like T or V.
-_ABBREV_PATTERN = re.compile(r'\b[A-Z]{2,}\d*\b')
+# Restricted to SHORT sequences (2–5 letters) so that all-caps section titles
+# such as INTRODUCTION, CONCLUSION, RESULTS (≥6 letters) are NOT masked and
+# can still be translated normally.  Real abbreviations (IEEE, MEMS, GAI, LC,
+# ADC, VNA, RF) are typically ≤5 characters and will be protected.
+_ABBREV_PATTERN = re.compile(r'\b[A-Z]{2,5}\d*\b')
 # Placeholder tokens used to protect abbreviations during model calls.
 _ABBREV_TOKEN_PATTERN = re.compile(r'<z2m-a id="(\d+)"/>')
 

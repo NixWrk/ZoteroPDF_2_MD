@@ -74,22 +74,24 @@ _ROMAN_SECTION_HEADING_PATTERN = re.compile(
     r'<(h[1-6])(\b[^>]*)>\s*([IVX]{1,6})\.\s',
     re.IGNORECASE,
 )
-# In-text references to section numbers (English or Russian)
+# In-text references to section numbers (English or Russian).
+# Russian case forms: Раздел (nominative/accusative), Раздела (genitive),
+# Разделе (locative), Разделу (dative) — all captured by the suffix group.
 _SECTION_REF_PATTERN = re.compile(
-    r'\b(Section|Раздел)\s+([IVX]{1,6})\b',
+    r'\b(Section|Раздел[еауо]?)\s+([IVX]{1,6})\b',
     re.IGNORECASE,
 )
 # Figure/image caption paragraphs: <p …>Fig. 3. Some caption text…
-# or Russian equivalent: <p …>Рис. 3. Some caption text…
+# Russian equivalents: Рис. (standard) or Фиг. (sometimes emitted by translators)
 _FIG_CAPTION_PARA_PATTERN = re.compile(
-    r'(<p\b[^>]*)>([ \t]*(?:Fig|Рис|рис|FIG)\.?\s*(\d+)\.)',
+    r'(<p\b[^>]*)>([ \t]*(?:Fig|Рис|рис|Фиг|фиг|FIG)\.?\s*(\d+)\.)',
     re.IGNORECASE,
 )
-# In-text figure references: "Fig. 3" / "рис. 3" NOT followed by ". <text>" (that would be a
-# figure caption).  We distinguish "Fig. 3. Caption..." from "...Fig. 3." (end of sentence)
-# by requiring a non-whitespace character *after* the dot, i.e. ".\s" → caption lookahead.
+# In-text figure references: "Fig. 3" / "рис. 3" / "фиг. 3" NOT followed by ". <text>"
+# (that would be a figure caption).  We distinguish "Fig. 3. Caption..." from "...Fig. 3."
+# (end of sentence) by requiring whitespace after the dot, i.e. ".\s" → caption lookahead.
 _FIG_REF_PATTERN = re.compile(
-    r'\b((?:Fig|Рис|рис|FIG)\.?)\s*(\d+)\b(?!\s*\.\s)',
+    r'\b((?:Fig|Рис|рис|Фиг|фиг|FIG)\.?)\s*(\d+)\b(?!\s*\.\s)',
     re.IGNORECASE,
 )
 _LEADING_SPACED_BACKSLASH_PATTERN = re.compile(r"(^|\s)\\\s+")

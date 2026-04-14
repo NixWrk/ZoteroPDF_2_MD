@@ -531,3 +531,38 @@ def test_translate_html_text_nodes_preserves_abbreviations() -> None:
     assert "VNA" in translated
     assert "ГАИ" not in translated
     assert "датчик" in translated
+
+
+def test_apply_abbrev_mask_does_not_mask_long_uppercase_section_titles() -> None:
+    """All-caps section title words (>5 letters) must NOT be masked.
+
+    In IEEE-style papers section headings are written in all-caps:
+    e.g. I. INTRODUCTION, V. CONCLUSION.  These must be translatable by the
+    model so the translated document has Russian headings.
+    """
+    text = "I. INTRODUCTION\n\nV. CONCLUSION\n\nIII. PROPOSED DESIGN"
+    masked, amap = _apply_abbrev_mask(text)
+
+    # Words longer than 5 letters must pass through unchanged.
+    assert "INTRODUCTION" in masked
+    assert "CONCLUSION" in masked
+    assert "PROPOSED" in masked
+    assert "DESIGN" in masked
+
+    # Roman numerals (short sequences) ARE expected to be masked — that's fine.
+    # The key requirement is that long section-title words are NOT masked.
+
+
+def test_apply_abbrev_mask_still_protects_short_abbreviations() -> None:
+    """Short abbreviations (≤5 chars) must still be masked after the length limit."""
+    text = "The MEMS sensor and IEEE standard use VNA calibration with ADC chips."
+    masked, amap = _apply_abbrev_mask(text)
+
+    assert "MEMS" not in masked
+    assert "IEEE" not in masked
+    assert "VNA" not in masked
+    assert "ADC" not in masked
+    assert len(amap) == 4
+
+    restored = _restore_abbrev_mask(masked, amap)
+    assert restored == text
