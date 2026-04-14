@@ -101,6 +101,16 @@ _BROKEN_URL_SPLIT_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
+# Quick-scan trigger: only run the subscript-spill fix when this substring exists.
+_SUBSCRIPT_OPEN = re.compile(r'[_^]\{')
+# Detect an = followed immediately by a "large" LaTeX command inside a subscript/
+# superscript brace — this is the Marker OCR artefact where the equation continuation
+# (e.g. =\frac{…}{…}) was accidentally included in the sub/superscript.
+_SUBSCRIPT_SPILL_RE = re.compile(
+    r'=\s*\\(?:frac|sqrt|sum|int|oint|prod|lim|sup|inf|max|min|sin|cos|tan|'
+    r'exp|log|ln|left|right|bigl|bigr|Big|Bigl|Bigr|begin|end)\b'
+)
+
 _LATEX_LABEL_PATTERN = re.compile(r"\\label\{[^{}]*\}")
 _LATEX_TEXTBF_PATTERN = re.compile(r"\\textbf\{([^{}]*)\}")
 _LATEX_ITALIC_PATTERN = re.compile(r"\\(?:textit|emph)\{([^{}]*)\}")
@@ -363,6 +373,74 @@ def drop_repeated_phrases(text: str) -> str:
         prev = result
         result = _REPEATED_PHRASE_PATTERN.sub(r"\1", result)
     return result
+
+
+def _fix_subscript_equation_spill(html: str) -> str:
+    """Fix Marker OCR artefact where ``=\\frac{…}`` ends up inside a subscript/
+    superscript brace, causing the fraction to render at sub/superscript size.
+
+    Example::
+
+        \\gamma_{ij=\\frac{2a_ib_j}{a_i^2+b_j^2}}
+        →  \\gamma_{ij}=\\frac{2a_ib_j}{a_i^2+b_j^2}
+
+    The fix is applied to ``_{…}`` and ``^{…}`` blocks whose content contains
+    ``=\\frac`` (or another "large" LaTeX command) after the first identifier
+    characters.  The closing brace is located by balanced-brace counting so
+    deeply nested fractions are handled correctly.
+    """
+    if not _SUBSCRIPT_OPEN.search(html):
+        return html
+
+    out: list[str] = []
+    i = 0
+    n = len(html)
+
+    while i < n:
+        ch = html[i]
+        # Look for _{ or ^{ only
+        if ch not in ('_', '^') or i + 1 >= n or html[i + 1] != '{':
+            out.append(ch)
+            i += 1
+            continue
+
+        # Locate matching closing brace via brace-depth counting.
+        brace_open = i + 1          # position of '{'
+        content_start = i + 2       # first char inside braces
+        depth = 0
+        close_pos = -1
+        for k in range(brace_open, n):
+            if html[k] == '{':
+                depth += 1
+            elif html[k] == '}':
+                depth -= 1
+                if depth == 0:
+                    close_pos = k
+                    break
+
+        if close_pos == -1:
+            # Unmatched brace — copy as-is
+            out.append(html[i])
+            i += 1
+            continue
+
+        content = html[content_start:close_pos]
+
+        spill = _SUBSCRIPT_SPILL_RE.search(content)
+        if spill is None:
+            # Normal subscript — copy verbatim
+            out.append(html[i: close_pos + 1])
+            i = close_pos + 1
+            continue
+
+        # Split: keep everything before '=' in the brace, move '=...' outside.
+        eq_pos = spill.start()
+        before_eq = content[:eq_pos]
+        after_eq = content[eq_pos + 1:]   # skip the '='
+        out.append(f'{ch}{{{before_eq}}}={after_eq}')
+        i = close_pos + 1
+
+    return "".join(out)
 
 
 def _fix_latex_text_commands(html: str) -> str:
@@ -914,6 +992,7 @@ def _link_figure_refs(html: str, found_figures: set[str]) -> str:
 def polish_html_document(html: str) -> str:
     polished = drop_repeated_phrases(html)
     polished = _fix_latex_text_commands(polished)
+    polished = _fix_subscript_equation_spill(polished)
     polished = _unescape_inline_sup_sub(polished)
     polished = _normalize_spaced_inline_sup_sub_tags(polished)
     polished = _fix_common_mojibake(polished)

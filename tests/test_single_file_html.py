@@ -5,6 +5,7 @@ from uuid import uuid4
 from zoteropdf2md.single_file_html import (
     _add_figure_anchors,
     _add_section_anchors,
+    _fix_subscript_equation_spill,
     _link_figure_refs,
     _link_section_refs,
     inline_images_from_html_file,
@@ -489,3 +490,52 @@ def test_link_section_refs_handles_russian_case_forms() -> None:
     linked = _link_section_refs(html, {"II", "III"})
     assert 'href="#section-II"' in linked
     assert 'href="#section-III"' in linked
+
+
+# ---------------------------------------------------------------------------
+# Subscript / superscript equation-spill fix
+# ---------------------------------------------------------------------------
+
+def test_fix_subscript_equation_spill_moves_frac_outside_subscript() -> None:
+    r"""\\gamma_{ij=\\frac{a}{b}} → \\gamma_{ij}=\\frac{a}{b}"""
+    latex = r"\gamma_{ij=\frac{2a_ib_j}{a_i^2+b_j^2}}"
+    result = _fix_subscript_equation_spill(latex)
+    assert result == r"\gamma_{ij}=\frac{2a_ib_j}{a_i^2+b_j^2}"
+
+
+def test_fix_subscript_equation_spill_handles_nested_braces() -> None:
+    r"""Nested fraction braces inside the spill must be preserved."""
+    latex = r"\alpha_{n=\frac{x+1}{y-1}}"
+    result = _fix_subscript_equation_spill(latex)
+    assert result == r"\alpha_{n}=\frac{x+1}{y-1}"
+
+
+def test_fix_subscript_equation_spill_leaves_normal_subscripts_untouched() -> None:
+    r"""\\sum_{i=1}^{n} must not be modified (= is a summation limit, not a spill)."""
+    latex = r"\sum_{i=1}^{n} x_i"
+    result = _fix_subscript_equation_spill(latex)
+    assert result == latex
+
+
+def test_fix_subscript_equation_spill_handles_superscript() -> None:
+    r"""Same fix applies to ^{…=\\frac{…}}."""
+    latex = r"\phi^{k=\frac{a}{b}}"
+    result = _fix_subscript_equation_spill(latex)
+    assert result == r"\phi^{k}=\frac{a}{b}"
+
+
+def test_fix_subscript_equation_spill_leaves_html_unchanged_when_no_match() -> None:
+    html = "<p>Normal text with no LaTeX.</p>"
+    assert _fix_subscript_equation_spill(html) == html
+
+
+def test_polish_html_document_fixes_subscript_equation_spill() -> None:
+    r"""End-to-end: spill inside an equation paragraph is repaired."""
+    html = (
+        "<html><body>"
+        r'<p block-type="Equation">\[\gamma_{ij=\frac{2a_ib_j}{a_i^2+b_j^2}}\]</p>'
+        "</body></html>"
+    )
+    polished = polish_html_document(html)
+    assert r"\gamma_{ij}=\frac" in polished
+    assert r"\gamma_{ij=\frac" not in polished
