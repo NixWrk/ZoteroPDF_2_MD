@@ -25,3 +25,5 @@ src/*.egg-info/
 # Runtime artifacts
 md_output/
 _staging/
+logs/
+models/

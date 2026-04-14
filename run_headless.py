@@ -1,14 +1,16 @@
-"""Headless pipeline runner — processes specific Zotero collections without the GUI.
+"""Headless pipeline runner - processes specific Zotero collections without the GUI.
 
 Usage:
     python run_headless.py
 
 Outputs to  md_output/<run_name>/  next to this file.
+Log written to  logs/run_<timestamp>.log  next to this file.
 """
 from __future__ import annotations
 
 import sys
 import io
+import datetime
 from pathlib import Path
 
 # Force UTF-8 output so Marker's unicode log lines don't crash on cp1251 consoles.
@@ -50,12 +52,37 @@ RUNS: list[dict] = [
 
 
 # ---------------------------------------------------------------------------
-# Main
+# Logging
 # ---------------------------------------------------------------------------
 
-def _log(msg: str) -> None:
-    print(msg, flush=True)
+_log_file: io.TextIOWrapper | None = None
 
+
+def _log(msg: str) -> None:
+    ts = datetime.datetime.now().strftime("%H:%M:%S")
+    line = f"[{ts}] {msg}"
+    print(line, flush=True)
+    if _log_file is not None:
+        try:
+            _log_file.write(line + "\n")
+            _log_file.flush()
+        except Exception:
+            pass
+
+
+def _open_log_file() -> io.TextIOWrapper:
+    log_dir = ROOT / "logs"
+    log_dir.mkdir(exist_ok=True)
+    ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    log_path = log_dir / f"run_{ts}.log"
+    fh = log_path.open("w", encoding="utf-8", errors="replace")
+    print(f"Log file: {log_path}", flush=True)
+    return fh
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
 
 def _repolish_output_dir(output_dir: Path) -> None:
     """Re-apply polish_html_document to every EN and RU HTML in *output_dir*.
@@ -79,46 +106,63 @@ def _repolish_output_dir(output_dir: Path) -> None:
             _log(f"  WARN: could not re-polish {p.name}: {exc}")
 
 
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+
 def main() -> None:
-    profiles = discover_zotero_profiles()
-    profile = next((p for p in profiles if p.name == PROFILE_NAME), profiles[0])
-    _log(f"Using Zotero profile: {profile.name}  ({profile.zotero_data_dir})")
+    global _log_file
+    _log_file = _open_log_file()
 
-    runner = MarkerRunner(marker_cmd="marker", marker_single_cmd="marker_single")
+    try:
+        _log(f"run_headless start  python={sys.version.split()[0]}")
 
-    for run_cfg in RUNS:
-        output_dir = ROOT / "md_output" / run_cfg["output_subdir"]
-        _log(f"\n{'='*60}")
-        _log(f"Collection key : {run_cfg['collection_key']}")
-        _log(f"Output dir     : {output_dir}")
-        _log(f"Export mode    : {EXPORT_MODE}")
-        _log(f"Translate      : {TRANSLATE} -> {TARGET_LANG}")
-        _log(f"{'='*60}")
+        profiles = discover_zotero_profiles()
+        profile = next((p for p in profiles if p.name == PROFILE_NAME), profiles[0])
+        _log(f"Using Zotero profile: {profile.name}  ({profile.zotero_data_dir})")
 
-        options = PipelineOptions(
-            zotero_data_dir=str(profile.zotero_data_dir),
-            collection_key=run_cfg["collection_key"],
-            include_subcollections=run_cfg["include_subcollections"],
-            output_dir=str(output_dir),
-            skip_existing=SKIP_EXISTING,
-            use_cuda=True,
-            cuda_device_index=0,
-            export_mode=EXPORT_MODE,
-            translate_html_with_gemma=TRANSLATE,
-            translation_target_language_code=TARGET_LANG,
-            translation_source_language="Auto",
-        )
+        runner = MarkerRunner(marker_cmd="marker", marker_single_cmd="marker_single")
 
-        summary = run_pipeline(
-            options=options,
-            runner=runner,
-            log=_log,
-            is_cancelled=lambda: False,
-        )
-        _log(f"\nSummary: {summary}")
-        _repolish_output_dir(output_dir)
+        for run_cfg in RUNS:
+            output_dir = ROOT / "md_output" / run_cfg["output_subdir"]
+            _log(f"\n{'='*60}")
+            _log(f"Collection key : {run_cfg['collection_key']}")
+            _log(f"Output dir     : {output_dir}")
+            _log(f"Export mode    : {EXPORT_MODE}")
+            _log(f"Translate      : {TRANSLATE} -> {TARGET_LANG}")
+            _log(f"{'='*60}")
 
-    _log("\nAll runs complete.")
+            options = PipelineOptions(
+                zotero_data_dir=str(profile.zotero_data_dir),
+                collection_key=run_cfg["collection_key"],
+                include_subcollections=run_cfg["include_subcollections"],
+                output_dir=str(output_dir),
+                skip_existing=SKIP_EXISTING,
+                use_cuda=True,
+                cuda_device_index=0,
+                export_mode=EXPORT_MODE,
+                translate_html_with_gemma=TRANSLATE,
+                translation_target_language_code=TARGET_LANG,
+                translation_source_language="Auto",
+            )
+
+            summary = run_pipeline(
+                options=options,
+                runner=runner,
+                log=_log,
+                is_cancelled=lambda: False,
+            )
+            _log(f"\nSummary: {summary}")
+            _repolish_output_dir(output_dir)
+
+        _log("\nAll runs complete.")
+
+    except Exception as exc:
+        _log(f"\nFATAL: {type(exc).__name__}: {exc}")
+        raise
+    finally:
+        if _log_file is not None:
+            _log_file.close()
 
 
 if __name__ == "__main__":
