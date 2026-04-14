@@ -31,7 +31,7 @@ _REFERENCES_HEADING_PATTERN = re.compile(
 _LI_OPEN_PATTERN = re.compile(r"<li\b([^>]*)>", re.IGNORECASE)
 _LI_BLOCK_PATTERN = re.compile(r"<li\b([^>]*)>(.*?)</li>", re.IGNORECASE | re.DOTALL)
 _LI_ID_PATTERN = re.compile(r'\bid\s*=\s*["\']ref-(\d+)["\']', re.IGNORECASE)
-_SUP_PATTERN = re.compile(r"<sup>(.*?)</sup>", re.IGNORECASE | re.DOTALL)
+_SUP_PATTERN = re.compile(r"<sup\b[^>]*>(.*?)</sup>", re.IGNORECASE | re.DOTALL)
 _SUP_NUMBER_PATTERN = re.compile(r"\d+")
 _BRACKET_CITATION_PATTERN = re.compile(r'(?<!\\)\[(\d+)\]')
 _SKIP_AUTOLINK_TAGS = {"script", "style", "code", "pre", "math", "svg", "a"}
@@ -68,6 +68,29 @@ _BARE_CITATION_SPACED_PATTERN = re.compile(
 # follows a letter (no space), to minimise collisions with decimal numbers.
 _BARE_CITATION_DOT_PATTERN = re.compile(
     r'(?<=[A-Za-zА-Яа-яёЁ])(\d{1,3}(?:\.\d{1,3})+)(?=[\s.,;:!?)<\]]|$)'
+)
+# Section headings that start with a Roman numeral (I. INTRODUCTION, II. METHOD …)
+_ROMAN_SECTION_HEADING_PATTERN = re.compile(
+    r'<(h[1-6])(\b[^>]*)>\s*([IVX]{1,6})\.\s',
+    re.IGNORECASE,
+)
+# In-text references to section numbers (English or Russian)
+_SECTION_REF_PATTERN = re.compile(
+    r'\b(Section|Раздел)\s+([IVX]{1,6})\b',
+    re.IGNORECASE,
+)
+# Figure/image caption paragraphs: <p …>Fig. 3. Some caption text…
+# or Russian equivalent: <p …>Рис. 3. Some caption text…
+_FIG_CAPTION_PARA_PATTERN = re.compile(
+    r'(<p\b[^>]*)>([ \t]*(?:Fig|Рис|рис|FIG)\.?\s*(\d+)\.)',
+    re.IGNORECASE,
+)
+# In-text figure references: "Fig. 3" / "рис. 3" NOT followed by ". <text>" (that would be a
+# figure caption).  We distinguish "Fig. 3. Caption..." from "...Fig. 3." (end of sentence)
+# by requiring a non-whitespace character *after* the dot, i.e. ".\s" → caption lookahead.
+_FIG_REF_PATTERN = re.compile(
+    r'\b((?:Fig|Рис|рис|FIG)\.?)\s*(\d+)\b(?!\s*\.\s)',
+    re.IGNORECASE,
 )
 _LEADING_SPACED_BACKSLASH_PATTERN = re.compile(r"(^|\s)\\\s+")
 _TRAILING_SPACED_BACKSLASH_PATTERN = re.compile(r"\s+\\(?=\s|$)")
@@ -140,6 +163,15 @@ _DEFAULT_READABILITY_STYLE = """
   }
   .z2m-ref-link {
     text-decoration: none;
+  }
+  .z2m-section-link,
+  .z2m-fig-link {
+    text-decoration: none;
+    border-bottom: 1px dotted #0b57d0;
+  }
+  .z2m-section-link:hover,
+  .z2m-fig-link:hover {
+    border-bottom-style: solid;
   }
   .z2m-ref-num {
     font-weight: 600;
@@ -768,6 +800,115 @@ def _convert_math_tags_to_tex(html: str) -> str:
     return _MATH_TAG_PATTERN.sub(replace_math, html)
 
 
+def _add_section_anchors(html: str) -> tuple[str, set[str]]:
+    """Add ``id="section-{ROMAN}"`` to headings that open with a Roman numeral.
+
+    Returns the modified HTML and the set of upper-case Roman numerals found.
+    """
+    found: set[str] = set()
+
+    def _add_id(m: re.Match[str]) -> str:
+        roman = m.group(3).upper()
+        attrs = m.group(2)
+        if re.search(r'\bid\s*=', attrs, re.IGNORECASE):
+            found.add(roman)
+            return m.group(0)
+        found.add(roman)
+        full = m.group(0)
+        tag_close = full.index('>')
+        return full[:tag_close] + f' id="section-{roman}"' + full[tag_close:]
+
+    result = _ROMAN_SECTION_HEADING_PATTERN.sub(_add_id, html)
+    return result, found
+
+
+def _add_figure_anchors(html: str) -> tuple[str, set[str]]:
+    """Add ``id="fig-{n}"`` to paragraphs that open with a figure caption marker.
+
+    Returns the modified HTML and the set of figure number strings found.
+    """
+    found: set[str] = set()
+
+    def _add_id(m: re.Match[str]) -> str:
+        p_attrs = m.group(1)     # '<p ...' (no closing '>')
+        caption_start = m.group(2)  # 'Fig. 3.' or 'Рис. 3.' etc.
+        fig_num = m.group(3)        # '3'
+        if re.search(r'\bid\s*=', p_attrs, re.IGNORECASE):
+            found.add(fig_num)
+            return m.group(0)
+        found.add(fig_num)
+        return f'{p_attrs} id="fig-{fig_num}">{caption_start}'
+
+    result = _FIG_CAPTION_PARA_PATTERN.sub(_add_id, html)
+    return result, found
+
+
+def _link_section_refs(html: str, found_sections: set[str]) -> str:
+    """Wrap ``Section II`` / ``Раздел II`` occurrences with ``<a>`` links."""
+    if not found_sections:
+        return html
+
+    parts = _TAG_SPLIT_PATTERN.split(html)
+    out: list[str] = []
+    skip_stack: list[str] = []
+
+    def _replace(m: re.Match[str]) -> str:
+        word = m.group(1)
+        roman = m.group(2).upper()
+        if roman not in found_sections:
+            return m.group(0)
+        return f'<a href="#section-{roman}" class="z2m-section-link">{word}\xa0{roman}</a>'
+
+    for part in parts:
+        if not part:
+            continue
+        if part.startswith("<"):
+            _update_skip_stack(part, skip_stack)
+            out.append(part)
+            continue
+        if skip_stack:
+            out.append(part)
+            continue
+        out.append(_SECTION_REF_PATTERN.sub(_replace, part))
+
+    return "".join(out)
+
+
+def _link_figure_refs(html: str, found_figures: set[str]) -> str:
+    """Wrap ``Fig. 3`` / ``рис. 3`` occurrences with ``<a>`` links.
+
+    Caption paragraphs themselves are intentionally skipped because
+    ``_FIG_REF_PATTERN`` has a negative lookahead for a trailing dot.
+    """
+    if not found_figures:
+        return html
+
+    parts = _TAG_SPLIT_PATTERN.split(html)
+    out: list[str] = []
+    skip_stack: list[str] = []
+
+    def _replace(m: re.Match[str]) -> str:
+        prefix = m.group(1)
+        num = m.group(2)
+        if num not in found_figures:
+            return m.group(0)
+        return f'<a href="#fig-{num}" class="z2m-fig-link">{prefix}\xa0{num}</a>'
+
+    for part in parts:
+        if not part:
+            continue
+        if part.startswith("<"):
+            _update_skip_stack(part, skip_stack)
+            out.append(part)
+            continue
+        if skip_stack:
+            out.append(part)
+            continue
+        out.append(_FIG_REF_PATTERN.sub(_replace, part))
+
+    return "".join(out)
+
+
 def polish_html_document(html: str) -> str:
     polished = drop_repeated_phrases(html)
     polished = _fix_latex_text_commands(polished)
@@ -779,7 +920,11 @@ def polish_html_document(html: str) -> str:
     polished = _cleanup_marker_escape_artifacts(polished)
     polished = _fix_equation_display(polished)
     polished = _convert_math_tags_to_tex(polished)
+    polished, found_sections = _add_section_anchors(polished)
+    polished, found_figures = _add_figure_anchors(polished)
     polished = _add_reference_ids_and_citation_links(polished)
+    polished = _link_section_refs(polished, found_sections)
+    polished = _link_figure_refs(polished, found_figures)
     polished = _autolink_plain_urls(polished)
     polished = _inject_utf8_charset(polished)
     polished = _inject_default_styles(polished)
