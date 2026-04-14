@@ -46,6 +46,14 @@ _BYTE_TOKEN_CITATION_PATTERN = re.compile(
     r'(?:<0x[0-9A-Fa-f]{2}>)+(\d[\d,\u2013\u2014\-]*)'
 )
 
+# Uppercase Latin abbreviations that must survive translation unchanged.
+# Matches 2+ consecutive uppercase letters optionally followed by digits,
+# e.g.  IEEE, LC, ADC, VNA, GAI, MEMS, RF, II, III.
+# Single-letter symbols are excluded to avoid masking variables like T or V.
+_ABBREV_PATTERN = re.compile(r'\b[A-Z]{2,}\d*\b')
+# Placeholder tokens used to protect abbreviations during model calls.
+_ABBREV_TOKEN_PATTERN = re.compile(r'<z2m-a id="(\d+)"/>')
+
 # Patterns that indicate the model produced a meta-commentary / refusal instead of a
 # translation.  When any of these match the translated output we fall back to the
 # original source text so that no garbage leaks into the HTML.
@@ -350,6 +358,47 @@ def _restore_formula_mask(text: str, fmap: dict[str, str]) -> str:
     return restored
 
 
+def _apply_abbrev_mask(text: str) -> tuple[str, dict[str, str]]:
+    """Replace uppercase abbreviations with ``<z2m-a id="N"/>`` tokens.
+
+    Protects sequences such as ``IEEE``, ``GAI``, ``LC``, ``ADC`` from being
+    transliterated or "translated" by the model (e.g. GAI → ГАИ).
+    Single-letter identifiers are intentionally left unmasked to avoid
+    interfering with normal sentence capitalisation.
+    """
+    spans = [(m.start(), m.end()) for m in _ABBREV_PATTERN.finditer(text)]
+    if not spans:
+        return text, {}
+    amap: dict[str, str] = {}
+    masked = text
+    for j, (start, end) in enumerate(reversed(spans)):
+        real_j = len(spans) - 1 - j
+        token = f'<z2m-a id="{real_j}"/>'
+        amap[token] = text[start:end]
+        masked = masked[:start] + token + masked[end:]
+    return masked, amap
+
+
+def _restore_abbrev_mask(text: str, amap: dict[str, str]) -> str:
+    """Substitute abbreviation placeholder tokens back with their original strings.
+
+    Returns the original *text* unchanged if any placeholder token could not be
+    restored (which would indicate the model dropped part of the masked text).
+    """
+    if not amap:
+        return text
+
+    def _replace(match: re.Match[str]) -> str:
+        token = f'<z2m-a id="{match.group(1)}"/>'
+        return amap.get(token, match.group(0))
+
+    restored = _ABBREV_TOKEN_PATTERN.sub(_replace, text)
+    # Check that all tokens were consumed; orphaned tokens signal model interference.
+    for token in amap:
+        restored = restored.replace(token, amap[token])
+    return restored
+
+
 def _split_outer_ws(text: str) -> tuple[str, str, str]:
     leading_len = len(text) - len(text.lstrip())
     trailing_len = len(text) - len(text.rstrip())
@@ -379,13 +428,16 @@ def _try_batch_translate(
     if len(segments) < 2:
         return None
 
-    # Mask formulas so the model does not try to translate LaTeX/math notation.
+    # Mask formulas and uppercase abbreviations so the model cannot transliterate them.
     masked_segs: list[str] = []
     fmaps: list[dict[str, str]] = []
+    amaps: list[dict[str, str]] = []
     for seg in segments:
         masked, fmap = _apply_formula_mask(seg)
+        masked, amap = _apply_abbrev_mask(masked)
         masked_segs.append(masked)
         fmaps.append(fmap)
+        amaps.append(amap)
 
     batch_text = _BATCH_SEPARATOR.join(masked_segs)
     if len(batch_text) > max_batch_chars:
@@ -406,7 +458,7 @@ def _try_batch_translate(
         return None
 
     result: list[str] = []
-    for orig, t_seg, fmap in zip(segments, translated_parts, fmaps):
+    for orig, t_seg, fmap, amap in zip(segments, translated_parts, fmaps, amaps):
         lead, core, tail = _split_outer_ws(t_seg)
         _, orig_core, _ = _split_outer_ws(orig)
         if _is_translator_refusal(core.strip()):
@@ -414,6 +466,7 @@ def _try_batch_translate(
         else:
             core = _strip_source_echo(core, orig_core)
             core = _restore_formula_mask(core, fmap)
+            core = _restore_abbrev_mask(core, amap)
             t_seg = f"{lead}{core}{tail}"
         result.append(t_seg)
 
@@ -482,19 +535,21 @@ def _translate_plain_fragment(
 
     translated = cache.get(core)
     if translated is None:
-        translated = _translate_with_chunk_fallback(
-            core,
+        core_masked, amap = _apply_abbrev_mask(core)
+        translated_masked = _translate_with_chunk_fallback(
+            core_masked,
             translate_text=translate_text,
             max_chunk_chars=max_chunk_chars,
         )
-        if _is_translator_refusal(translated):
+        if _is_translator_refusal(translated_masked):
             translated = core
         else:
-            translated = _strip_source_echo(translated, core)
+            translated_masked = _strip_source_echo(translated_masked, core_masked)
             # Byte-token sequences followed by citation numbers are dropped <sup> tags;
             # restore them so _add_reference_ids_and_citation_links can linkify them.
-            translated = _BYTE_TOKEN_CITATION_PATTERN.sub(r'<sup>\1</sup>', translated)
-            translated = _BYTE_TOKEN_ARTIFACT_PATTERN.sub("", translated)
+            translated_masked = _BYTE_TOKEN_CITATION_PATTERN.sub(r'<sup>\1</sup>', translated_masked)
+            translated_masked = _BYTE_TOKEN_ARTIFACT_PATTERN.sub("", translated_masked)
+            translated = _restore_abbrev_mask(translated_masked, amap)
         cache[core] = translated
 
     return text[:leading_len] + translated + text[core_end:]

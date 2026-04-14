@@ -3,9 +3,11 @@ from pathlib import Path
 import pytest
 
 from zoteropdf2md.translategemma import (
+    _apply_abbrev_mask,
     _apply_formula_mask,
     _is_translator_refusal,
     _mark_author_line_notranslate,
+    _restore_abbrev_mask,
     _restore_formula_mask,
     _try_batch_translate,
     _try_windowed_batch_translate,
@@ -440,3 +442,92 @@ def test_translate_html_text_nodes_preserves_formula_fragments() -> None:
     assert "Z_{1} = \\frac{V_{1}}{I_{1}} = j\\omega L_{1}" in translated
     assert "BROKEN_SLASH" not in translated
     assert "BROKEN_UNDERSCORE" not in translated
+
+
+# ---------------------------------------------------------------------------
+# Abbreviation mask
+# ---------------------------------------------------------------------------
+
+def test_apply_abbrev_mask_replaces_uppercase_sequences() -> None:
+    text = "The IEEE standard for VNA measurements uses ADC chips."
+    masked, amap = _apply_abbrev_mask(text)
+
+    assert "IEEE" not in masked
+    assert "VNA" not in masked
+    assert "ADC" not in masked
+    assert len(amap) == 3
+
+    restored = _restore_abbrev_mask(masked, amap)
+    assert restored == text
+
+
+def test_apply_abbrev_mask_leaves_single_letters_and_lowercase() -> None:
+    text = "Variable T is measured in K at time t."
+    masked, amap = _apply_abbrev_mask(text)
+
+    # Single uppercase letters must NOT be masked
+    assert "T" in masked
+    assert "K" in masked
+    assert not amap
+
+
+def test_apply_abbrev_mask_handles_roman_numerals() -> None:
+    text = "See Section II and Section III for details."
+    masked, amap = _apply_abbrev_mask(text)
+
+    assert "II" not in masked
+    assert "III" not in masked
+
+    restored = _restore_abbrev_mask(masked, amap)
+    assert restored == text
+
+
+def test_try_batch_translate_preserves_abbreviations() -> None:
+    """Batch translate must protect uppercase abbreviations from transliteration."""
+
+    def transliterating_translate(text: str) -> str:
+        # Simulate model transliterating GAI as ГАИ and VNA as ВНА
+        return (
+            text
+            .replace("GAI", "ГАИ")
+            .replace("VNA", "ВНА")
+            .replace("uses", "использует")
+        )
+
+    segments = ["The GAI sensor uses VNA calibration.", "Standard test method."]
+    result = _try_batch_translate(segments, transliterating_translate)
+
+    assert result is not None
+    assert "GAI" in result[0]
+    assert "VNA" in result[0]
+    assert "ГАИ" not in result[0]
+    assert "ВНА" not in result[0]
+    assert "использует" in result[0]
+
+
+def test_translate_html_text_nodes_preserves_abbreviations() -> None:
+    """End-to-end: abbreviations in translated HTML must remain in Latin form."""
+    html = "<html><body><p>The GAI sensor uses LC resonance and VNA measurement.</p></body></html>"
+
+    def transliterating_translate(text: str) -> str:
+        return (
+            text
+            .replace("GAI", "ГАИ")
+            .replace("LC", "ЛЦ")
+            .replace("VNA", "ВНА")
+            .replace("sensor uses", "датчик использует")
+            .replace("resonance and", "резонанс и")
+            .replace("measurement", "измерение")
+        )
+
+    translated, _ = translate_html_text_nodes(
+        html,
+        translate_text=transliterating_translate,
+        max_chunk_chars=512,
+    )
+
+    assert "GAI" in translated
+    assert "LC" in translated
+    assert "VNA" in translated
+    assert "ГАИ" not in translated
+    assert "датчик" in translated
