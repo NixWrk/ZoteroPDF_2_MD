@@ -305,11 +305,14 @@ _BATCH_SEPARATOR = "\n<z2m-sep/>\n"
 _BATCH_SEP_PATTERN = re.compile(r'\n?[ \t]*<z2m-sep\s*/?>[ \t]*\n?', re.IGNORECASE)
 
 # Formula placeholder tokens: <z2m-f id="N"/>  — kept unchanged by the model.
-_FORMULA_TOKEN_PATTERN = re.compile(r'<z2m-f\s+id="(\d+)"\s*/>', re.IGNORECASE)
+_FORMULA_TOKEN_PATTERN = re.compile(r'<z2m-f\s+id\s*=\s*"(\d+)"\s*/?>', re.IGNORECASE)
 
 # Safety limit: skip batch mode if the combined text exceeds this many characters
 # (rough estimate 4 chars ≈ 1 token, limit ≈ 50k tokens input).
-_MAX_BATCH_CHARS = 200_000
+_MAX_BATCH_CHARS = 80_000
+_WINDOW_BATCH_TARGET_SEGMENTS = 8
+_WINDOW_BATCH_OVERLAP_SEGMENTS = 1
+_MAX_WINDOW_BATCH_CHARS = 40_000
 
 
 def _apply_formula_mask(text: str) -> tuple[str, dict[str, str]]:
@@ -334,14 +337,31 @@ def _apply_formula_mask(text: str) -> tuple[str, dict[str, str]]:
 
 def _restore_formula_mask(text: str, fmap: dict[str, str]) -> str:
     """Substitute formula placeholder tokens back with their original strings."""
+    if not fmap:
+        return text
+
+    def _replace(match: re.Match[str]) -> str:
+        token = f'<z2m-f id="{match.group(1)}"/>'
+        return fmap.get(token, match.group(0))
+
+    restored = _FORMULA_TOKEN_PATTERN.sub(_replace, text)
     for token, formula in fmap.items():
-        text = text.replace(token, formula)
-    return text
+        restored = restored.replace(token, formula)
+    return restored
+
+
+def _split_outer_ws(text: str) -> tuple[str, str, str]:
+    leading_len = len(text) - len(text.lstrip())
+    trailing_len = len(text) - len(text.rstrip())
+    core_end = len(text) - trailing_len if trailing_len else len(text)
+    return text[:leading_len], text[leading_len:core_end], text[core_end:]
 
 
 def _try_batch_translate(
     segments: list[str],
     translate_text: Callable[[str], str],
+    *,
+    max_batch_chars: int = _MAX_BATCH_CHARS,
 ) -> list[str] | None:
     """Translate all *segments* in a single model call.
 
@@ -352,7 +372,7 @@ def _try_batch_translate(
     caller to fall back to per-segment translation — when:
 
     * there is only one segment (batch overhead not worth it),
-    * the combined text exceeds ``_MAX_BATCH_CHARS``,
+    * the combined text exceeds ``max_batch_chars``,
     * the model call raises an exception,
     * or the separator count in the output does not match the input.
     """
@@ -368,7 +388,7 @@ def _try_batch_translate(
         fmaps.append(fmap)
 
     batch_text = _BATCH_SEPARATOR.join(masked_segs)
-    if len(batch_text) > _MAX_BATCH_CHARS:
+    if len(batch_text) > max_batch_chars:
         return None
 
     try:
@@ -387,15 +407,58 @@ def _try_batch_translate(
 
     result: list[str] = []
     for orig, t_seg, fmap in zip(segments, translated_parts, fmaps):
-        t_seg = t_seg.strip()
-        if _is_translator_refusal(t_seg):
+        lead, core, tail = _split_outer_ws(t_seg)
+        _, orig_core, _ = _split_outer_ws(orig)
+        if _is_translator_refusal(core.strip()):
             t_seg = orig
         else:
-            t_seg = _strip_source_echo(t_seg, orig)
-            t_seg = _restore_formula_mask(t_seg, fmap)
+            core = _strip_source_echo(core, orig_core)
+            core = _restore_formula_mask(core, fmap)
+            t_seg = f"{lead}{core}{tail}"
         result.append(t_seg)
 
     return result
+
+
+def _try_windowed_batch_translate(
+    segments: list[str],
+    translate_text: Callable[[str], str],
+    *,
+    window_segments: int = _WINDOW_BATCH_TARGET_SEGMENTS,
+    overlap_segments: int = _WINDOW_BATCH_OVERLAP_SEGMENTS,
+    max_window_chars: int = _MAX_WINDOW_BATCH_CHARS,
+) -> list[str] | None:
+    """Translate in overlapping windows to balance context quality and GPU load."""
+    if len(segments) < 2:
+        return None
+
+    window_segments = max(2, int(window_segments))
+    overlap_segments = max(0, int(overlap_segments))
+    n = len(segments)
+    translated: list[str | None] = [None] * n
+
+    core_start = 0
+    while core_start < n:
+        core_end = min(n, core_start + window_segments)
+        ext_start = max(0, core_start - overlap_segments)
+        ext_end = min(n, core_end + overlap_segments)
+
+        window_result = _try_batch_translate(
+            segments[ext_start:ext_end],
+            translate_text,
+            max_batch_chars=max_window_chars,
+        )
+        if window_result is None:
+            return None
+
+        local_start = core_start - ext_start
+        for idx in range(core_start, core_end):
+            translated[idx] = window_result[local_start + (idx - core_start)]
+        core_start = core_end
+
+    if any(item is None for item in translated):
+        return None
+    return [item for item in translated if item is not None]
 
 
 def _translate_plain_fragment(
@@ -600,9 +663,9 @@ def translate_html_text_nodes(
 ) -> tuple[str, int]:
     """Translate all translatable text nodes in *html*, leaving markup intact.
 
-    **Batch mode (primary path):** all translatable text nodes are joined with
-    ``<z2m-sep/>`` markers, translated in a single model call, then split back.
-    This preserves inter-paragraph context and is faster than per-segment calls.
+    **Batch mode (primary path):** translatable text nodes are translated in
+    overlapping windows with ``<z2m-sep/>`` markers (one model call per window).
+    This preserves local inter-paragraph context while avoiding one huge call.
 
     **Fallback path:** if the batch fails (context overflow, separator count
     mismatch, or any exception), each segment is translated individually — the
@@ -641,7 +704,13 @@ def translate_html_text_nodes(
     # Primary path: batch translation                                      #
     # ------------------------------------------------------------------ #
     source_texts = [parts[i] for i in translatable_indices]
-    batch_result = _try_batch_translate(source_texts, translate_text)
+    batch_result = _try_windowed_batch_translate(
+        source_texts,
+        translate_text,
+        window_segments=_WINDOW_BATCH_TARGET_SEGMENTS,
+        overlap_segments=_WINDOW_BATCH_OVERLAP_SEGMENTS,
+        max_window_chars=_MAX_WINDOW_BATCH_CHARS,
+    )
 
     if batch_result is not None:
         translated_segments = 0
@@ -892,8 +961,8 @@ class TranslateGemmaTranslator:
                 f"(prompt_tokens={prompt_len}, context_window={context_window})."
             )
 
-        dynamic_cap = max(256, prompt_len * 4)
-        max_new_tokens = min(65536, dynamic_cap)
+        dynamic_cap = max(256, int(prompt_len * 1.5))
+        max_new_tokens = min(8192, dynamic_cap)
         configured_cap = int(self._config.max_new_tokens)
         if configured_cap > 0:
             max_new_tokens = min(max_new_tokens, configured_cap)

@@ -8,6 +8,7 @@ from zoteropdf2md.translategemma import (
     _mark_author_line_notranslate,
     _restore_formula_mask,
     _try_batch_translate,
+    _try_windowed_batch_translate,
     language_name_for_code,
     normalize_language_code,
     translate_html_text_nodes,
@@ -337,6 +338,26 @@ def test_try_batch_translate_preserves_formulas() -> None:
     assert "Привет" in result[0]
 
 
+def test_try_windowed_batch_translate_makes_multiple_calls_for_many_segments() -> None:
+    calls: list[str] = []
+
+    def fake_translate(text: str) -> str:
+        calls.append(text)
+        return text.replace("A", "X")
+
+    segments = [f"A{i}" for i in range(12)]
+    result = _try_windowed_batch_translate(
+        segments,
+        fake_translate,
+        window_segments=4,
+        overlap_segments=1,
+        max_window_chars=2048,
+    )
+
+    assert result == [f"X{i}" for i in range(12)]
+    assert len(calls) == 3
+
+
 def test_translate_html_text_nodes_uses_single_model_call_for_multi_paragraph() -> None:
     """Batch mode must translate multiple paragraphs with exactly one model call."""
     html = (
@@ -361,6 +382,13 @@ def test_translate_html_text_nodes_uses_single_model_call_for_multi_paragraph() 
     assert "<p>FIRST PARAGRAPH TEXT.</p>" in translated
     assert "<p>SECOND PARAGRAPH TEXT.</p>" in translated
     assert len(calls) == 1  # Single batch call
+
+
+def test_translate_html_text_nodes_preserves_inline_boundary_spaces() -> None:
+    html = "<html><body><p>Hello <em>world</em> !</p><p><em>Hello</em> world</p></body></html>"
+    translated, _ = translate_html_text_nodes(html, translate_text=lambda t: t)
+    assert "<p>Hello <em>world</em> !</p>" in translated
+    assert "<p><em>Hello</em> world</p>" in translated
 
 
 def test_translate_html_text_nodes_falls_back_on_separator_loss() -> None:
