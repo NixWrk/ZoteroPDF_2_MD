@@ -880,6 +880,79 @@ def _convert_math_tags_to_tex(html: str) -> str:
     return _MATH_TAG_PATTERN.sub(replace_math, html)
 
 
+def _fix_orphaned_sup_tags(html: str) -> str:
+    """Remove broken ``<sup>`` openers whose direct content starts with a period.
+
+    The translator occasionally emits a spurious ``<sup>`` wrapper around body
+    text, producing something like::
+
+        …understudied <sup>. However, researchers apply models
+        <sup><a href="#ref-5">5</a></sup> to many tasks.</sup>
+
+    — where the entire following paragraph renders as superscript.
+
+    **Strategy**: delete only the ``<sup>`` *opener* tag.  Any eventual
+    ``</sup>`` that was meant to close it becomes an orphan — HTML5 parsers
+    silently ignore orphan end tags.  Unclosed inner ``<sup>N`` citation tags
+    are implicitly closed at the end of their parent block element (``</p>``)
+    by the HTML5 parsing algorithm, so they render correctly.
+
+    This avoids any fragile balanced-matching logic and works regardless of
+    how many ``</sup>`` tags the translator dropped.
+
+    **Guard**: if the distance to the next ``</sup>`` is ≤ 25 characters,
+    the ``<sup>`` is treated as a legitimate short marker (table footnote,
+    ``<sup>a</sup>``, etc.) and is left unchanged.
+    """
+    def _maybe_delete_opener(m: re.Match[str]) -> str:
+        # Peek at how far the next </sup> is to distinguish a real short marker
+        # from a broken long wrapper.
+        next_close = html.find("</sup>", m.end())
+        content_len = (next_close - m.end()) if next_close >= 0 else 9999
+        if content_len <= 25:
+            return m.group(0)   # short marker — leave untouched
+        return ""               # delete only the <sup> opener
+
+    return re.sub(r"<sup>(?=\s*\.)", _maybe_delete_opener, html)
+
+
+# Latin abbreviations that the translator sometimes transliterates into Cyrillic
+# when they appear right after an expanded Cyrillic form, e.g.
+# "Генеративный искусственный интеллект (ГАИ)".  We restore the Latin form so
+# the document stays consistent with the rest of the body text (which, due to
+# the translation prompt, keeps "GAI" untouched).
+_LATIN_ABBREV_RESTORE_MAP: dict[str, str] = {
+    "ГАИ": "GAI",
+    "ВНА": "VNA",
+    "МПЧ": "ICP",  # Cyrillic mis-transliteration of ICP (sometimes)
+    "ИКД": "ICP",
+    "ОСШ": "SNR",
+    "АЦП": "ADC",
+    "ОУ": "AC",    # only in abbreviation contexts — handled via parens
+    "ПЧ": "RF",
+    "МЭМС": "MEMS",
+    "ПЛИС": "FPGA",
+    "МИМО": "MIMO",
+}
+
+
+def _restore_latin_abbrevs(html: str) -> str:
+    """Replace Cyrillic transliterations of Latin abbrevs in parentheses.
+
+    The translator, when it sees ``Generative artificial intelligence (GAI)``,
+    often writes ``Генеративный искусственный интеллект (ГАИ)`` — it
+    transliterates the abbreviation even though the prompt forbids it.  We
+    restore the Latin form by replacing ``(ГАИ)`` with ``(GAI)`` (and friends)
+    after translation.
+    """
+    if not any(cyr in html for cyr in _LATIN_ABBREV_RESTORE_MAP):
+        return html
+    for cyr, lat in _LATIN_ABBREV_RESTORE_MAP.items():
+        # In parentheses — highest confidence.
+        html = re.sub(rf"\(\s*{re.escape(cyr)}\s*\)", f"({lat})", html)
+    return html
+
+
 def _add_section_anchors(html: str) -> tuple[str, set[str]]:
     """Add ``id="section-{ROMAN}"`` to headings that open with a Roman numeral.
 
@@ -993,6 +1066,7 @@ def polish_html_document(html: str) -> str:
     polished = drop_repeated_phrases(html)
     polished = _fix_latex_text_commands(polished)
     polished = _fix_subscript_equation_spill(polished)
+    polished = _fix_orphaned_sup_tags(polished)
     polished = _unescape_inline_sup_sub(polished)
     polished = _normalize_spaced_inline_sup_sub_tags(polished)
     polished = _fix_common_mojibake(polished)

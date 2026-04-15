@@ -5,6 +5,7 @@ from uuid import uuid4
 from zoteropdf2md.single_file_html import (
     _add_figure_anchors,
     _add_section_anchors,
+    _fix_orphaned_sup_tags,
     _fix_subscript_equation_spill,
     _link_figure_refs,
     _link_section_refs,
@@ -539,3 +540,58 @@ def test_polish_html_document_fixes_subscript_equation_spill() -> None:
     polished = polish_html_document(html)
     assert r"\gamma_{ij}=\frac" in polished
     assert r"\gamma_{ij=\frac" not in polished
+
+
+# ---------------------------------------------------------------------------
+# _fix_orphaned_sup_tags
+# ---------------------------------------------------------------------------
+
+def test_fix_orphaned_sup_simple() -> None:
+    """<sup>. text</sup> with long content is unwrapped."""
+    html = "<p>understudied <sup>. However, researchers are applying foundation models to tasks that could improve healthcare quality.</sup> More.</p>"
+    result = _fix_orphaned_sup_tags(html)
+    assert "<sup>." not in result
+    assert "However, researchers" in result
+    # The wrapping sup is removed
+    assert result.count("<sup>") == 0
+
+
+def test_fix_orphaned_sup_preserves_inner_citation() -> None:
+    """Inner <sup><a>N</a></sup> citation survives unwrapping of broken outer sup."""
+    html = (
+        '<p>studied <sup>. Researchers apply models '
+        '<sup><a href="#ref-5" class="z2m-ref-link">5</a></sup>'
+        ' to many tasks.</sup> Next sentence.</p>'
+    )
+    result = _fix_orphaned_sup_tags(html)
+    assert "<sup>." not in result
+    # Inner citation sup is preserved
+    assert 'href="#ref-5"' in result
+    assert "<sup>" in result  # inner citation sup still present
+    assert "Researchers apply models" in result
+
+
+def test_fix_orphaned_sup_leaves_valid_citation_unchanged() -> None:
+    """Short <sup> with digit content (real citation) is not touched."""
+    html = '<p>pressure<sup><a href="#ref-3">3</a></sup>. Next.</p>'
+    result = _fix_orphaned_sup_tags(html)
+    assert result == html
+
+
+def test_fix_orphaned_sup_leaves_short_period_sup_unchanged() -> None:
+    """<sup>. X</sup> shorter than 30 chars without nested sup is left alone."""
+    html = "<p>text<sup>. ok</sup> more</p>"
+    result = _fix_orphaned_sup_tags(html)
+    assert result == html
+
+
+def test_fix_orphaned_sup_multiple_in_document() -> None:
+    """Multiple broken sups in one document are all repaired."""
+    broken = (
+        '<sup>. First broken sentence with enough chars to trigger fix.</sup>'
+        '<sup>. Second broken sentence with enough chars to trigger fix.</sup>'
+    )
+    result = _fix_orphaned_sup_tags(broken)
+    assert "<sup>." not in result
+    assert "First broken" in result
+    assert "Second broken" in result
