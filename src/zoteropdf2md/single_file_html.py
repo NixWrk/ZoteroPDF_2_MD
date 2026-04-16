@@ -992,7 +992,15 @@ def _add_figure_anchors(html: str) -> tuple[str, set[str]]:
             found.add(fig_num)
             return m.group(0)
         found.add(fig_num)
-        return f'{p_attrs} id="fig-{fig_num}">{caption_start}'
+        # Ensure we add the id attribute properly even if there are extra spaces
+        # or attributes that need to be preserved
+        if p_attrs.endswith('>'):
+            # Remove the closing '>' and add id
+            attrs_without_closing = p_attrs[:-1]
+            return f'{attrs_without_closing} id="fig-{fig_num}">{caption_start}'
+        else:
+            # If no closing >, add it after the attributes
+            return f'{p_attrs} id="fig-{fig_num}">{caption_start}'
 
     result = _FIG_CAPTION_PARA_PATTERN.sub(_add_id, html)
     return result, found
