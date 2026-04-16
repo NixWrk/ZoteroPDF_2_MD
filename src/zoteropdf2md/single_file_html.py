@@ -36,6 +36,11 @@ _LI_ID_PATTERN = re.compile(r'\bid\s*=\s*["\']ref-(\d+)["\']', re.IGNORECASE)
 _SUP_PATTERN = re.compile(r"<sup\b[^>]*>(.*?)</sup>", re.IGNORECASE | re.DOTALL)
 _SUP_NUMBER_PATTERN = re.compile(r"\d+")
 _BRACKET_CITATION_PATTERN = re.compile(r'(?<!\\)\[(\d+)\]')
+# Parenthetical reference: "(ref. 30)" / "(ref 30)" / "(см. 30)" → sup link
+_PAREN_REF_CITATION_PATTERN = re.compile(
+    r'\((?:ref|см|see)\.?\s*(\d{1,3})\)',
+    re.IGNORECASE,
+)
 _SKIP_AUTOLINK_TAGS = {"script", "style", "code", "pre", "math", "svg", "a"}
 _LEADING_REF_NUMBER_PATTERN = re.compile(r"^\s*(?:<[^>]+>\s*)*\d+\.\s+", re.IGNORECASE)
 _BRACKET_REF_NUM_STRIP_PATTERN = re.compile(r'^\s*\[(\d+)\]\s*')
@@ -98,6 +103,8 @@ _FIG_REF_PATTERN = re.compile(
 )
 _LEADING_SPACED_BACKSLASH_PATTERN = re.compile(r"(^|\s)\\\s+")
 _TRAILING_SPACED_BACKSLASH_PATTERN = re.compile(r"\s+\\(?=\s|$)")
+# Backslash immediately before a quote mark: word\" → word"  (Marker OCR artefact)
+_BACKSLASH_BEFORE_QUOTE_PATTERN = re.compile(r'\\(["\'])')
 _BROKEN_URL_SPLIT_PATTERN = re.compile(
     r"((?:https?://|www\.)[^\s<>\"]+?/)\s+([A-Za-z0-9][A-Za-z0-9._~:/?#\[\]@!$&'()*+,;=%-]*)",
     re.IGNORECASE,
@@ -514,6 +521,7 @@ def _cleanup_marker_escape_artifacts(html: str) -> str:
         cleaned = _SLASH_PIPE_ARTIFACT_PATTERN.sub(" | ", part)
         cleaned = _LEADING_SPACED_BACKSLASH_PATTERN.sub(r"\1", cleaned)
         cleaned = _TRAILING_SPACED_BACKSLASH_PATTERN.sub(" ", cleaned)
+        cleaned = _BACKSLASH_BEFORE_QUOTE_PATTERN.sub(r"\1", cleaned)
         out.append(cleaned)
 
     return "".join(out)
@@ -596,6 +604,41 @@ def _autolink_plain_urls(html: str) -> str:
             out.append(part)
             continue
         out.append(_autolink_text_urls(part))
+
+    return "".join(out)
+
+
+def _link_paren_ref_citations(html: str, ref_count: int) -> str:
+    """Convert (ref. N) / (ref N) / (см. N) to superscript anchor links.
+
+    Handles the artefact where Marker or the translator leaves parenthetical
+    references like ``(ref. 30)`` as plain text instead of ``<sup>30</sup>``.
+    Only links numbers in the range [1, ref_count].
+    """
+    parts = _TAG_SPLIT_PATTERN.split(html)
+    out: list[str] = []
+    skip_stack: list[str] = []
+
+    def replace_paren_ref(match: re.Match[str]) -> str:
+        try:
+            number = int(match.group(1))
+        except ValueError:
+            return match.group(0)
+        if 1 <= number <= ref_count:
+            return f'<sup><a href="#ref-{number}" class="z2m-ref-link">{number}</a></sup>'
+        return match.group(0)
+
+    for part in parts:
+        if not part:
+            continue
+        if part.startswith("<"):
+            _update_skip_stack(part, skip_stack)
+            out.append(part)
+            continue
+        if skip_stack:
+            out.append(part)
+            continue
+        out.append(_PAREN_REF_CITATION_PATTERN.sub(replace_paren_ref, part))
 
     return "".join(out)
 
@@ -705,9 +748,9 @@ def _add_reference_ids_and_citation_links(html: str) -> str:
     def add_li_id(match: re.Match[str]) -> str:
         nonlocal ref_index
         attrs = match.group(1) or ""
+        ref_index += 1  # Always count every <li> so ref_index equals total refs
         if re.search(r"\bid\s*=", attrs, re.IGNORECASE):
-            return match.group(0)
-        ref_index += 1
+            return match.group(0)  # Keep existing id= unchanged
         return f'<li{attrs} id="ref-{ref_index}">'
 
     references_with_ids = _LI_OPEN_PATTERN.sub(add_li_id, references_and_after)
@@ -760,9 +803,10 @@ def _add_reference_ids_and_citation_links(html: str) -> str:
     # Recover bare citations: "issues17,68" → "issues<sup>17,68</sup>"
     before_references = _recover_bare_citations(before_references, ref_index)
 
-    # Link <sup>N</sup> citations first, then [N] bracket-style citations.
+    # Link <sup>N</sup> citations first, then [N] bracket-style, then (ref. N).
     before_with_citation_links = _SUP_PATTERN.sub(link_sup, before_references)
     before_with_citation_links = _link_bracket_citations(before_with_citation_links, ref_index)
+    before_with_citation_links = _link_paren_ref_citations(before_with_citation_links, ref_index)
     return before_with_citation_links + references_with_ids
 
 
