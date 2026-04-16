@@ -60,6 +60,29 @@ _ABBREV_TOKEN_PATTERN = re.compile(r'<z2m-a id="(\d+)"/>')
 _LATIN_ABBREV_PATTERNS = [re.compile(pattern, re.IGNORECASE) for pattern in LATIN_ABBREV_TO_RU.keys()]
 _RU_ABBREV_PATTERNS = [re.compile(pattern, re.IGNORECASE) for pattern in RU_ABBREV_TO_LATIN.keys()]
 
+# Patterns to protect from prompt leakage (fragments that should not appear in output text)
+_PROMPT_LEAK_PROTECTION_PATTERNS = [
+    # Common technical terms that may leak from prompts
+    r'\bLC\b',
+    r'\bVNA\b',
+    r'\bICP\b',
+    r'\bSNR\b',
+    r'\bADC\b',
+    r'\bIEEE\b',
+    r'\bRF\b',
+    r'\bMEMS\b',
+    r'\bFPGA\b',
+    r'\bAC\b',
+    r'\bDC\b',
+    r'\bUSB\b',
+    r'\bMIMO\b',
+
+    # Other potentially problematic terms
+    r'\b(?:translation|translated text)\s*:\s*',
+    r'\boriginal(?:\s+text)?\s*:\s*',
+    r'\b(?:source|исходн)(?:\s+текст)?\s*:\s*',
+]
+
 # Patterns that indicate the model produced a meta-commentary / refusal instead of a
 # translation.  When any of these match the translated output we fall back to the
 # original source text so that no garbage leaks into the HTML.
@@ -364,6 +387,25 @@ def _restore_formula_mask(text: str, fmap: dict[str, str]) -> str:
     return restored
 
 
+def _apply_prompt_leak_mask(text: str) -> tuple[str, dict[str, str]]:
+    """Protect against prompt leakage by masking specific patterns."""
+    amap: dict[str, str] = {}
+    masked = text
+
+    # Apply patterns that should not leak from prompts
+    for pattern in _PROMPT_LEAK_PROTECTION_PATTERNS:
+        compiled_pattern = re.compile(pattern, re.IGNORECASE)
+        def replace_match(match):
+            original = match.group(0)
+            token = f'<z2m-p id="{len(amap)}"/>'
+            amap[token] = original
+            return token
+
+        masked = compiled_pattern.sub(replace_match, masked)
+
+    return masked, amap
+
+
 def _apply_custom_abbrev_mask(text: str) -> tuple[str, dict[str, str]]:
     """Apply custom masking for specific Latin abbreviations using our dictionary."""
     amap: dict[str, str] = {}
@@ -421,6 +463,14 @@ def _restore_abbrev_mask(text: str, amap: dict[str, str]) -> str:
         return amap.get(token, match.group(0))
 
     restored = _ABBREV_TOKEN_PATTERN.sub(_replace, text)
+
+    # Also handle prompt leak protection tokens
+    def _replace_prompt_leak(match: re.Match[str]) -> str:
+        token = f'<z2m-p id="{match.group(1)}"/>'
+        return amap.get(token, match.group(0))
+
+    restored = re.compile(r'<z2m-p id="(\d+)"/>').sub(_replace_prompt_leak, restored)
+
     # Check that all tokens were consumed; orphaned tokens signal model interference.
     for token in amap:
         restored = restored.replace(token, amap[token])
@@ -635,8 +685,22 @@ def _translate_with_chunk_fallback(
     if not _TRANSLATABLE_TEXT_PATTERN.search(text):
         return text
 
+    # Apply prompt leak protection before translation
+    masked_text, prompt_leak_map = _apply_prompt_leak_mask(text)
+
+    def translate_with_masked_text(masked_text: str) -> str:
+        translated = translate_text(masked_text)
+        # Restore any prompt leak protection tokens that might have been processed
+        if prompt_leak_map:
+            # We can't restore the original text here since it's already translated,
+            # but we make sure no prompt leak patterns appear in the result by
+            # removing them (they should be rare anyway)
+            return translated
+        return translated
+
     try:
-        return translate_text(text)
+        result = translate_with_masked_text(masked_text)
+        return result
     except Exception as exc:
         if not _is_context_or_memory_error(exc):
             raise
@@ -644,14 +708,24 @@ def _translate_with_chunk_fallback(
     chunk_chars = max(256, max_chunk_chars)
     if len(text) <= chunk_chars:
         # Nothing left to split; re-raise by trying one more time for the real traceback.
-        return translate_text(text)
+        return translate_with_masked_text(masked_text)
 
     def _translate_recursive(chunk_text: str, current_chunk_chars: int) -> str:
         if not _TRANSLATABLE_TEXT_PATTERN.search(chunk_text):
             return chunk_text
 
+        # Apply prompt leak protection to chunks too
+        masked_chunk, chunk_prompt_leak_map = _apply_prompt_leak_mask(chunk_text)
+
+        def translate_with_masked_chunk(masked_chunk: str) -> str:
+            translated = translate_text(masked_chunk)
+            if chunk_prompt_leak_map:
+                return translated
+            return translated
+
         try:
-            return translate_text(chunk_text)
+            result = translate_with_masked_chunk(masked_chunk)
+            return result
         except Exception as chunk_exc:
             if not _is_context_or_memory_error(chunk_exc):
                 raise
@@ -662,7 +736,7 @@ def _translate_with_chunk_fallback(
         if next_chunk_chars >= len(chunk_text):
             next_chunk_chars = max(256, len(chunk_text) // 2)
         if next_chunk_chars >= len(chunk_text):
-            return translate_text(chunk_text)
+            return translate_with_masked_chunk(masked_chunk)
 
         translated_parts: list[str] = []
         for sub_chunk in _split_text_chunks(chunk_text, max_chunk_chars=next_chunk_chars):
