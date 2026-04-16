@@ -109,6 +109,15 @@ _ORIGINAL_SECTION_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
+# Guard against prompt-leak: if the model echoes back a comma-separated list of
+# uppercase Latin acronyms followed by wording that references translation/language
+# (the tail of our abbreviation instruction), strip the fragment so it never
+# reaches the rendered HTML.
+_PROMPT_LEAK_SIGNATURE = re.compile(
+    r'[A-Z]{2,},\s*[A-Z]{2,},\s*[A-Z]{2,}.*?(?:перевод|translation|язык|language).*?[\.\n]',
+    re.IGNORECASE | re.DOTALL,
+)
+
 _FORMULA_PATTERNS: tuple[re.Pattern[str], ...] = (
     # Inline math delimiters.
     re.compile(r"\$[^$\n]{1,600}\$"),
@@ -1076,10 +1085,8 @@ class TranslateGemmaTranslator:
         # mangling of author names, and meta-commentary when the model is uncertain.
         _extra = (
             "Rules: "
-            "(1) Keep all uppercase Latin abbreviations letter-for-letter – "
-            "write LC, VNA, ICP, SNR, ADC, IEEE, GAI, RF, MEMS, FPGA, AC, DC, USB, "
-            "MIMO, and any other sequence of uppercase Latin letters exactly as given; "
-            "never transliterate them into Cyrillic. "
+            "(1) Keep every sequence of 2 or more uppercase Latin letters (acronyms) "
+            "letter-for-letter – never transliterate them into Cyrillic. "
             "(2) Do not translate or modify proper names, author names, or DOIs. "
             "(3) If you cannot translate a specific term, leave it unchanged. "
             "(4) Output only the translation, nothing else."
@@ -1197,6 +1204,9 @@ class TranslateGemmaTranslator:
 
         translated = self._tokenizer.decode(out[0][prompt_len:], skip_special_tokens=True).strip()
         translated = translated.replace("<end_of_turn>", "").strip()
+        # Guard against prompt-leak: if the model echoed the abbreviation list back,
+        # strip anything before and including the leaked fragment.
+        translated = _PROMPT_LEAK_SIGNATURE.sub("", translated).strip()
         return translated or text
 
     def translate_html_file(self, html_path: Path) -> TranslatedHtmlArtifact:
