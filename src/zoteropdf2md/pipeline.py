@@ -85,6 +85,56 @@ def _log_elapsed(log: Callable[[str], None] | None, stage: str, started_at: floa
     log(f"[timer] {stage}: {perf_counter() - started_at:.2f}s")
 
 
+def _webdav_upload_if_configured(
+    file_path: Path,
+    output_dir: Path,
+    log: Callable[[str], None] | None,
+) -> None:
+    """Upload ``file_path`` to every enabled WebDAV server, if configured.
+
+    Looks for ``webdav_config.json`` in the current working directory. When the
+    file is absent, the call is a silent no-op (WebDAV is not configured).
+    Upload errors are logged but never raised — the pipeline must not break
+    if a remote server is down or misconfigured.
+    """
+    config_path = Path("webdav_config.json")
+    if not config_path.is_file():
+        return
+
+    def _emit(message: str) -> None:
+        if log is not None:
+            log(message)
+
+    try:
+        from .webdav_config import WebDavConfig
+        from .webdav_uploader import WebDavUploader
+
+        config = WebDavConfig.load(config_path)
+        enabled = config.get_enabled_servers()
+        if not enabled:
+            return
+
+        uploader = WebDavUploader()
+        try:
+            relative = file_path.relative_to(output_dir).as_posix()
+        except ValueError:
+            # File is not under output_dir — fall back to just the filename.
+            relative = file_path.name
+
+        for server in enabled:
+            try:
+                ok, msg = uploader.upload_file(server, file_path, relative)
+            except Exception as exc:  # noqa: BLE001 — never break pipeline
+                _emit(f"WebDAV upload error: {server.name}: {exc}")
+                continue
+            if ok:
+                _emit(f"WebDAV upload: {server.name} <- {file_path.name}")
+            else:
+                _emit(f"WebDAV upload failed: {server.name}: {msg}")
+    except Exception as exc:  # noqa: BLE001 — never break pipeline
+        _emit(f"WebDAV upload error: {exc}")
+
+
 def _build_env(options: PipelineOptions) -> dict[str, str]:
     env = os.environ.copy()
     if options.use_cuda:
@@ -531,6 +581,8 @@ def run_pipeline(
                         html_path.write_text(result.html, encoding="utf-8")
                         inlined_files += 1
                         total_inlined_images += result.inlined_images
+                        # Upload EN HTML to WebDAV if configured.
+                        _webdav_upload_if_configured(html_path, output_dir, log)
                     except Exception as exc:
                         log(f"Inline images failed for {html_path.name}: {exc}")
                 _log_elapsed(log, "pipeline.inline_en_images", started_at)
@@ -609,6 +661,12 @@ def run_pipeline(
                                     f"Inlined {ru_inline_result.inlined_images} images into "
                                     f"{translated_artifact.translated_html_path.name}"
                                 )
+                            # Upload translated RU HTML to WebDAV if configured.
+                            _webdav_upload_if_configured(
+                                translated_artifact.translated_html_path,
+                                output_dir,
+                                log,
+                            )
                         except Exception as exc:
                             log(
                                 f"Inline images failed for translated "
