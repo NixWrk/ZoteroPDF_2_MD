@@ -7,6 +7,8 @@ import urllib.parse
 from dataclasses import dataclass
 from pathlib import Path
 
+from .abbreviations import RU_ABBREV_TO_LATIN
+
 
 _IMG_SRC_PATTERN = re.compile(r'(<img\b[^>]*?\bsrc\s*=\s*)(["\'])([^"\']+)(\2)', re.IGNORECASE)
 _HEAD_OPEN_PATTERN = re.compile(r"<head\b[^>]*>", re.IGNORECASE)
@@ -1086,7 +1088,23 @@ def polish_html_document(html: str) -> str:
     polished = _inject_mathjax(polished)
     polished = _wrap_body_in_container(polished)
     polished = _cleanup_empty_html_blocks(polished)
+    polished = _restore_abbreviations(polished)
     return polished
+
+
+def _restore_abbreviations(html: str) -> str:
+    """Restore Latin abbreviations that were masked during translation."""
+    restored = html
+
+    # Restore specific abbreviations using our mapping
+    for pattern, replacement in RU_ABBREV_TO_LATIN.items():
+        # Use word boundaries to match complete words only
+        def replace_match(match):
+            return replacement
+
+        restored = re.sub(pattern, replace_match, restored, flags=re.IGNORECASE)
+
+    return restored
 
 
 def inline_images_from_html_file(html_path: Path) -> InlineHtmlResult:

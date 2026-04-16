@@ -6,6 +6,7 @@ from pathlib import Path
 from time import perf_counter
 from typing import Callable
 
+from .abbreviations import LATIN_ABBREV_TO_RU, RU_ABBREV_TO_LATIN
 from .single_file_html import polish_html_document, _REFERENCES_HEADING_PATTERN
 
 
@@ -54,6 +55,10 @@ _BYTE_TOKEN_CITATION_PATTERN = re.compile(
 _ABBREV_PATTERN = re.compile(r'\b[A-Z]{2,5}\d*\b')
 # Placeholder tokens used to protect abbreviations during model calls.
 _ABBREV_TOKEN_PATTERN = re.compile(r'<z2m-a id="(\d+)"/>')
+
+# Additional patterns for protecting specific abbreviations from translation
+_LATIN_ABBREV_PATTERNS = [re.compile(pattern, re.IGNORECASE) for pattern in LATIN_ABBREV_TO_RU.keys()]
+_RU_ABBREV_PATTERNS = [re.compile(pattern, re.IGNORECASE) for pattern in RU_ABBREV_TO_LATIN.keys()]
 
 # Patterns that indicate the model produced a meta-commentary / refusal instead of a
 # translation.  When any of these match the translated output we fall back to the
@@ -357,6 +362,28 @@ def _restore_formula_mask(text: str, fmap: dict[str, str]) -> str:
     for token, formula in fmap.items():
         restored = restored.replace(token, formula)
     return restored
+
+
+def _apply_custom_abbrev_mask(text: str) -> tuple[str, dict[str, str]]:
+    """Apply custom masking for specific Latin abbreviations using our dictionary."""
+    amap: dict[str, str] = {}
+    masked = text
+
+    # Apply patterns from our custom dictionary
+    for pattern in _LATIN_ABBREV_PATTERNS:
+        def replace_match(match):
+            original = match.group(0)
+            # Get the replacement from our mapping
+            for key_pattern, replacement in LATIN_ABBREV_TO_RU.items():
+                if re.match(key_pattern, original, re.IGNORECASE):
+                    token = f'<z2m-a id="{len(amap)}"/>'
+                    amap[token] = original
+                    return token
+            return original
+
+        masked = pattern.sub(replace_match, masked)
+
+    return masked, amap
 
 
 def _apply_abbrev_mask(text: str) -> tuple[str, dict[str, str]]:
