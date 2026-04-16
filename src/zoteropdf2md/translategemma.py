@@ -60,24 +60,12 @@ _ABBREV_TOKEN_PATTERN = re.compile(r'<z2m-a id="(\d+)"/>')
 _LATIN_ABBREV_PATTERNS = [re.compile(pattern, re.IGNORECASE) for pattern in LATIN_ABBREV_TO_RU.keys()]
 _RU_ABBREV_PATTERNS = [re.compile(pattern, re.IGNORECASE) for pattern in RU_ABBREV_TO_LATIN.keys()]
 
-# Patterns to protect from prompt leakage (fragments that should not appear in output text)
+# Patterns that mask meta-commentary prefixes the model sometimes emits before
+# the actual translation.  Abbreviations are no longer listed here: since commit 3b
+# the prompt already contains an abstract rule ("keep every 2+ uppercase Latin
+# letters"), masking them with <z2m-p> tokens causes them to be LOST when the
+# model drops the unfamiliar XML token.  Rely on the prompt rule instead.
 _PROMPT_LEAK_PROTECTION_PATTERNS = [
-    # Common technical terms that may leak from prompts
-    r'\bLC\b',
-    r'\bVNA\b',
-    r'\bICP\b',
-    r'\bSNR\b',
-    r'\bADC\b',
-    r'\bIEEE\b',
-    r'\bRF\b',
-    r'\bMEMS\b',
-    r'\bFPGA\b',
-    r'\bAC\b',
-    r'\bDC\b',
-    r'\bUSB\b',
-    r'\bMIMO\b',
-
-    # Other potentially problematic terms
     r'\b(?:translation|translated text)\s*:\s*',
     r'\boriginal(?:\s+text)?\s*:\s*',
     r'\b(?:source|исходн)(?:\s+текст)?\s*:\s*',
