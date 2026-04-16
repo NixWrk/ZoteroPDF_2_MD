@@ -517,6 +517,25 @@ def run_pipeline(
                     f"(md={llm_bundle_result.markdown_files}, images={llm_bundle_result.image_files})"
                 )
 
+            # Level 4: inline images into EN HTML files (before translation).
+            if converted_source_paths and marker_output_format == "html":
+                started_at = perf_counter()
+                inlined_files = 0
+                total_inlined_images = 0
+                for staged_file in converted_staged_files:
+                    html_path = expected_output_artifact_path(output_dir, staged_file.alias_base_name, ".html")
+                    if not html_path.is_file():
+                        continue
+                    try:
+                        result = inline_images_from_html_file(html_path)
+                        html_path.write_text(result.html, encoding="utf-8")
+                        inlined_files += 1
+                        total_inlined_images += result.inlined_images
+                    except Exception as exc:
+                        log(f"Inline images failed for {html_path.name}: {exc}")
+                _log_elapsed(log, "pipeline.inline_en_images", started_at)
+                log(f"Inlined images in EN HTML: files={inlined_files}, images={total_inlined_images}")
+
             if converted_source_paths and marker_output_format == "html" and options.translate_html_with_gemma:
                 started_at = perf_counter()
                 from .translategemma import (
@@ -577,6 +596,24 @@ def run_pipeline(
                             f"language={translated_artifact.language_name}, "
                             f"elapsed={perf_counter() - file_started_at:.2f}s)"
                         )
+                        # Inline images into translated RU HTML.
+                        try:
+                            ru_inline_result = inline_images_from_html_file(
+                                translated_artifact.translated_html_path
+                            )
+                            translated_artifact.translated_html_path.write_text(
+                                ru_inline_result.html, encoding="utf-8"
+                            )
+                            if ru_inline_result.inlined_images > 0:
+                                log(
+                                    f"Inlined {ru_inline_result.inlined_images} images into "
+                                    f"{translated_artifact.translated_html_path.name}"
+                                )
+                        except Exception as exc:
+                            log(
+                                f"Inline images failed for translated "
+                                f"{translated_artifact.translated_html_path.name}: {exc}"
+                            )
                     except Exception as exc:
                         translated_html_failed_total += 1
                         log(
