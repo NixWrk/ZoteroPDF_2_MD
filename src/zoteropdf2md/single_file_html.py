@@ -105,6 +105,27 @@ _LEADING_SPACED_BACKSLASH_PATTERN = re.compile(r"(^|\s)\\\s+")
 _TRAILING_SPACED_BACKSLASH_PATTERN = re.compile(r"\s+\\(?=\s|$)")
 # Backslash immediately before a quote mark: word\" → word"  (Marker OCR artefact)
 _BACKSLASH_BEFORE_QUOTE_PATTERN = re.compile(r'\\(["\'])')
+# Marker OCR artefact: figure captions wrapped in <math display="inline"> instead
+# of plain HTML.  A genuine <math> block never contains <strong>/<em>/<b>/<i> tags.
+_SPURIOUS_MATH_CAPTION_PATTERN = re.compile(
+    r'<math\b[^>]*>((?:(?!</math>).)*?<(?:strong|em|b|i)\b(?:(?!</math>).)*?)</math>',
+    re.IGNORECASE | re.DOTALL,
+)
+# URL ending with a common English connector/preposition that OCR appended: wysa.com/and
+_URL_TRAILING_CONNECTOR_RE = re.compile(
+    r'^(.*/)(?:and|or|the|to|in|of|for|with|from|at|by|a|an)$',
+    re.IGNORECASE,
+)
+# Bare single citation: "knowledge 67. Prompt" — number preceded by letter+space,
+# followed by period + capital letter (new-sentence signal).
+_BARE_CITATION_SINGLE_SPACED_PATTERN = re.compile(
+    r'(?<=[A-Za-zА-Яа-яёЁ]) (\d{1,3})(?=\. [A-Z])'
+)
+# Dot-citation preceded by space: "issues 17.68." — spaced variant of the glued
+# dot pattern.  Only fires when followed by sentence-end punctuation.
+_BARE_CITATION_SPACED_DOT_PATTERN = re.compile(
+    r'(?<=[A-Za-zА-Яа-яёЁ]) (\d{1,3}(?:\.\d{1,3})+)(?=[.,;:!?)<\]]|$)'
+)
 _BROKEN_URL_SPLIT_PATTERN = re.compile(
     r"((?:https?://|www\.)[^\s<>\"]+?/)\s+([A-Za-z0-9][A-Za-z0-9._~:/?#\[\]@!$&'()*+,;=%-]*)",
     re.IGNORECASE,
@@ -552,6 +573,16 @@ def _update_skip_stack(tag_fragment: str, skip_stack: list[str]) -> None:
         skip_stack.append(tag_name)
 
 
+def _unwrap_spurious_math_captions(html: str) -> str:
+    """Unwrap <math> tags that contain HTML formatting — they are figure captions.
+
+    Marker sometimes wraps figure captions in ``<math display="inline">`` by mistake.
+    Real math never contains ``<strong>``, ``<em>``, ``<b>``, or ``<i>`` tags, so any
+    ``<math>`` block that does is safe to unwrap so cleanup and translation can process it.
+    """
+    return _SPURIOUS_MATH_CAPTION_PATTERN.sub(r'\1', html)
+
+
 def _split_url_and_trailing_punct(url: str) -> tuple[str, str]:
     core = url
     trailing = ""
@@ -575,6 +606,15 @@ def _autolink_text_urls(text: str) -> str:
         core_url, trailing = _split_url_and_trailing_punct(raw_url)
         if not core_url:
             return raw_url
+
+        # Strip common English connectors that OCR incorrectly appended: wysa.com/and
+        connector_match = _URL_TRAILING_CONNECTOR_RE.match(core_url)
+        if connector_match:
+            stripped = connector_match.group(1)
+            # Put the connector word back as plain text after the link
+            connector_word = core_url[len(stripped):]
+            core_url = stripped
+            trailing = connector_word + trailing
 
         href = core_url
         if core_url.lower().startswith("www."):
@@ -716,6 +756,15 @@ def _recover_bare_citations(html: str, ref_count: int) -> str:
         nums_comma = nums_text.replace(".", ",")
         return f"<sup>{nums_comma}</sup>" if _valid_nums(nums_comma) else m.group(0)
 
+    def _wrap_single_spaced(m: re.Match[str]) -> str:
+        nums_text = m.group(1)
+        return f" <sup>{nums_text}</sup>" if _valid_nums(nums_text) else m.group(0)
+
+    def _wrap_spaced_dot(m: re.Match[str]) -> str:
+        nums_text = m.group(1)
+        nums_comma = nums_text.replace(".", ",")
+        return f" <sup>{nums_comma}</sup>" if _valid_nums(nums_comma) else m.group(0)
+
     for part in parts:
         if not part:
             continue
@@ -727,7 +776,10 @@ def _recover_bare_citations(html: str, ref_count: int) -> str:
             out.append(part)
             continue
         text = _BARE_CITATION_GLUED_PATTERN.sub(_wrap_glued, part)
+        # Spaced-dot before single-spaced so "word 17.68." wins over "word 17."
+        text = _BARE_CITATION_SPACED_DOT_PATTERN.sub(_wrap_spaced_dot, text)
         text = _BARE_CITATION_SPACED_PATTERN.sub(_wrap_spaced, text)
+        text = _BARE_CITATION_SINGLE_SPACED_PATTERN.sub(_wrap_single_spaced, text)
         text = _BARE_CITATION_DOT_PATTERN.sub(_wrap_dot, text)
         out.append(text)
 
@@ -1117,7 +1169,8 @@ def _link_figure_refs(html: str, found_figures: set[str]) -> str:
 
 
 def polish_html_document(html: str) -> str:
-    polished = drop_repeated_phrases(html)
+    polished = _unwrap_spurious_math_captions(html)  # before all else: free captions from <math>
+    polished = drop_repeated_phrases(polished)
     polished = _fix_latex_text_commands(polished)
     polished = _fix_subscript_equation_spill(polished)
     polished = _fix_orphaned_sup_tags(polished)
