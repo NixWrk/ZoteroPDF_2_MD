@@ -835,6 +835,10 @@ def _add_reference_ids_and_citation_links(html: str) -> str:
             # Strip leading "[N]" bracket number (IEEE/Vancouver style) to avoid
             # "1. [1] Author..." double-numbering.
             body = _BRACKET_REF_NUM_STRIP_PATTERN.sub("", body)
+            # Idempotency guard: if a z2m-ref-num span already exists this <li>
+            # was processed in a previous polish pass — don't add another one.
+            if 'class="z2m-ref-num"' in body:
+                return f"<li{attrs}>{body}</li>"
             # If Marker already wrote "N. Author..." wrap that N. in the span for
             # consistent bold styling instead of leaving it unstyled.
             if _LEADING_REF_NUMBER_PATTERN.search(body):
@@ -1198,6 +1202,10 @@ def _convert_latex_sup_citations(html: str) -> str:
 def _fix_heading_translation_breaks(html: str) -> str:
     """Remove false sentence-break periods inserted before inline abbreviations in headings.
 
+    Also lowercase the first Cyrillic capital letter following closing inline tags
+    (</i>, </em>, </b>, </strong>) within headings, as a fallback when heading
+    text node merging fails.
+
     The translator processes heading text nodes in isolation, so it may end the
     first node with a period: ``"беспроводного. <i>LC</i> Датчик"``.
     Inside ``<h1>``–``<h6>`` a period before ``<i>``/``<b>``/``<em>``/``<strong>``
@@ -1205,7 +1213,20 @@ def _fix_heading_translation_breaks(html: str) -> str:
     """
     def fix_heading(m: re.Match[str]) -> str:
         open_tag, content, close_tag = m.group(1), m.group(2), m.group(3)
+
+        # Fix 1: Remove period before inline markup
         fixed = _HEADING_PERIOD_BEFORE_ABBREV_PATTERN.sub(r' \1', content)
+
+        # Fix 2: Lowercase Cyrillic capital after </i>, </em>, etc.
+        # Pattern: </tag> followed by whitespace and Cyrillic capital letter
+        # This handles the case where "Sensor" became "Датчик" instead of "датчика"
+        fixed = re.sub(
+            r'(</(i|em|b|strong)>)\s+([А-ЯЁ])',
+            lambda m: m.group(1) + ' ' + m.group(3).lower(),
+            fixed,
+            flags=re.IGNORECASE
+        )
+
         return f"{open_tag}{fixed}{close_tag}"
 
     return _HEADING_TAG_PATTERN.sub(fix_heading, html)

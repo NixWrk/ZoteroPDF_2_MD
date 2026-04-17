@@ -801,6 +801,112 @@ def _translate_text_segment(
     return segment[:leading_len] + translated_core + segment[core_end:]
 
 
+def _merge_heading_text_nodes(
+    parts: list[str],
+) -> tuple[list[str], dict[int, list[int]]]:
+    """Merge text nodes inside heading tags (h1-h6) using \\x00 separator.
+
+    Returns:
+        tuple of (modified_parts, merges) where merges is {merge_src_idx: [secondary_indices]}
+        to track which text nodes were merged.
+    """
+    heading_stack: list[str] = []  # Stack of open heading tag names
+    heading_text_indices: dict[int, list[int]] = {}  # depth -> list of text part indices
+    current_heading_depth = -1
+    merges: dict[int, list[int]] = {}  # merge_src_idx -> [other_indices_that_were_merged]
+
+    # First pass: identify text nodes inside headings
+    for i, part in enumerate(parts):
+        if not part:
+            continue
+
+        if part.startswith("<"):
+            # Parse opening/closing tags
+            tag_name = ""
+            match = re.match(r"</?([a-z0-9]+)", part, re.IGNORECASE)
+            if match:
+                tag_name = match.group(1).lower()
+
+            if tag_name in ("h1", "h2", "h3", "h4", "h5", "h6"):
+                if not part.startswith("</"):
+                    # Opening tag
+                    heading_stack.append(tag_name)
+                    current_heading_depth = len(heading_stack) - 1
+                    heading_text_indices[current_heading_depth] = []
+                else:
+                    # Closing tag
+                    if heading_stack and heading_stack[-1] == tag_name:
+                        heading_stack.pop()
+                        current_heading_depth = len(heading_stack) - 1
+        else:
+            # Text node
+            if heading_stack:
+                # We're inside a heading
+                heading_text_indices[current_heading_depth].append(i)
+
+    # Second pass: merge text nodes within headings if >= 2 nodes
+    modified_parts = list(parts)
+
+    for depth in sorted(heading_text_indices.keys(), reverse=True):
+        text_indices = heading_text_indices[depth]
+        if len(text_indices) < 2:
+            # Single text node or no text in heading — skip merge
+            continue
+
+        # Collect texts from all indices
+        texts_to_merge = [modified_parts[idx] for idx in text_indices]
+
+        # Merge via \x00 separator
+        merged_text = "\x00".join(texts_to_merge)
+
+        # Replace first index with merged, empty out the rest
+        first_idx = text_indices[0]
+        modified_parts[first_idx] = merged_text
+        secondary_indices = text_indices[1:]
+        for idx in secondary_indices:
+            modified_parts[idx] = ""
+
+        # Record which indices were merged
+        merges[first_idx] = secondary_indices
+
+    return modified_parts, merges
+
+
+def _split_heading_text_nodes(
+    parts: list[str],
+    merges: dict[int, list[int]],
+) -> list[str]:
+    """Restore heading text nodes after translation.
+
+    If \\x00 separator was preserved, split and restore.
+    If lost, keep merged in first index.
+    """
+    result = list(parts)
+
+    for merge_src_idx, secondary_indices in merges.items():
+        merged_text = result[merge_src_idx]
+
+        # Check if separator was preserved
+        if not merged_text or "\x00" not in merged_text:
+            # Model dropped the separator — keep merged in first index
+            # Secondary indices stay empty
+            continue
+
+        # Split by separator
+        split_texts = merged_text.split("\x00")
+        expected_count = 1 + len(secondary_indices)
+        if len(split_texts) != expected_count:
+            # Mismatch — keep merged
+            continue
+
+        # Distribute split texts
+        result[merge_src_idx] = split_texts[0]
+        for i, idx in enumerate(secondary_indices, start=1):
+            result[idx] = split_texts[i]
+
+    return result
+
+
 def translate_html_text_nodes(
     html: str,
     translate_text: Callable[[str], str],
@@ -831,6 +937,12 @@ def translate_html_text_nodes(
         references_tail = ""
 
     parts = _TAG_SPLIT_PATTERN.split(html)
+
+    # Pre-merge: combine text nodes within heading tags (h1-h6) to preserve context.
+    # This fixes the issue where "Sensor" inside <h1>...<i>LC</i>Sensor</h1> was
+    # translated separately and incorrectly as "Датчик" (nominative) instead of
+    # "датчика" (genitive). The merge uses \x00 as separator, which the model never outputs.
+    parts, heading_merges = _merge_heading_text_nodes(parts)
 
     # Single pass: collect indices of translatable text nodes.
     skip_stack: list[str] = []
@@ -871,6 +983,8 @@ def translate_html_text_nodes(
                 on_progress(total_segments, total_segments)
             except Exception:
                 pass
+        # Post-split: restore original heading text nodes if separator preserved.
+        parts = _split_heading_text_nodes(parts, heading_merges)
         return "".join(p for p in parts if p) + references_tail, translated_segments
 
     # ------------------------------------------------------------------ #
@@ -916,6 +1030,8 @@ def translate_html_text_nodes(
             except Exception:
                 pass
 
+    # Post-split: restore original heading text nodes if separator preserved.
+    out = _split_heading_text_nodes(out, heading_merges)
     return "".join(out) + references_tail, translated_segments
 
 
