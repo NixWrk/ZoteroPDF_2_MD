@@ -52,6 +52,22 @@ _EQUATION_PARA_PATTERN = re.compile(
 _DISPLAY_MATH_IN_PARA_PATTERN = re.compile(r'\\\[(.*?)\\\]', re.DOTALL)
 _TRAILING_EQ_NUM_PATTERN = re.compile(r'\(\d+\)\s*$')
 _LATEX_TAG_PATTERN = re.compile(r'\\tag\{(\d+)\}')
+# Marker sometimes emits citation superscripts as MathJax inline math:
+# \(^{157}\) or \(^{153-156}\) instead of <sup>157</sup>.
+# Capture the content inside \(^{...}\) so it can be promoted to <sup>.
+_LATEX_SUP_CITATION_PATTERN = re.compile(
+    r'\\\(\^\{([\d,\s\-\u2013\u2014]+)\}\\\)',
+)
+# Heading translation artefact: the model inserts a period before an inline-
+# formatted abbreviation: "беспроводного. <i>LC</i> Датчик" inside <h1>-<h6>.
+_HEADING_TAG_PATTERN = re.compile(
+    r'(<h[1-6]\b[^>]*>)(.*?)(</h[1-6]>)',
+    re.IGNORECASE | re.DOTALL,
+)
+_HEADING_PERIOD_BEFORE_ABBREV_PATTERN = re.compile(
+    r'\.\s+(<(?:i|em|b|strong)\b[^>]*>\s*[A-Z]{2,})',
+    re.IGNORECASE,
+)
 _SLASH_PIPE_ARTIFACT_PATTERN = re.compile(r"\s*\\\s*\|\s*\\\s*")
 # SentencePiece byte-fallback tokens emitted by Gemma when it encounters Unicode
 # near translation boundaries: e.g. <0xE2><0x82><0xA9> instead of a real character.
@@ -1168,6 +1184,33 @@ def _link_figure_refs(html: str, found_figures: set[str]) -> str:
     return "".join(out)
 
 
+def _convert_latex_sup_citations(html: str) -> str:
+    r"""Convert Marker's LaTeX superscript citations to ``<sup>`` tags.
+
+    Marker sometimes emits citation numbers as MathJax inline math:
+    ``\(^{157}\)`` or ``\(^{153-156}\)`` instead of ``<sup>157</sup>``.
+    These are not caught by ``_add_reference_ids_and_citation_links`` because
+    they look like math.  Promote them to ``<sup>`` before citation linking.
+    """
+    return _LATEX_SUP_CITATION_PATTERN.sub(r'<sup>\1</sup>', html)
+
+
+def _fix_heading_translation_breaks(html: str) -> str:
+    """Remove false sentence-break periods inserted before inline abbreviations in headings.
+
+    The translator processes heading text nodes in isolation, so it may end the
+    first node with a period: ``"беспроводного. <i>LC</i> Датчик"``.
+    Inside ``<h1>``–``<h6>`` a period before ``<i>``/``<b>``/``<em>``/``<strong>``
+    that starts with 2+ uppercase Latin letters is a translation artefact and is removed.
+    """
+    def fix_heading(m: re.Match[str]) -> str:
+        open_tag, content, close_tag = m.group(1), m.group(2), m.group(3)
+        fixed = _HEADING_PERIOD_BEFORE_ABBREV_PATTERN.sub(r' \1', content)
+        return f"{open_tag}{fixed}{close_tag}"
+
+    return _HEADING_TAG_PATTERN.sub(fix_heading, html)
+
+
 def polish_html_document(html: str) -> str:
     polished = _unwrap_spurious_math_captions(html)  # before all else: free captions from <math>
     polished = drop_repeated_phrases(polished)
@@ -1180,6 +1223,7 @@ def polish_html_document(html: str) -> str:
     polished = _BYTE_TOKEN_CITATION_PATTERN.sub(r'<sup>\1</sup>', polished)
     polished = _BYTE_TOKEN_ARTIFACT_PATTERN.sub("", polished)
     polished = _cleanup_marker_escape_artifacts(polished)
+    polished = _convert_latex_sup_citations(polished)   # \(^{N}\) → <sup>N</sup>
     polished = _fix_equation_display(polished)
     polished = _convert_math_tags_to_tex(polished)
     polished, found_sections = _add_section_anchors(polished)
@@ -1193,6 +1237,7 @@ def polish_html_document(html: str) -> str:
     polished = _inject_mathjax(polished)
     polished = _wrap_body_in_container(polished)
     polished = _cleanup_empty_html_blocks(polished)
+    polished = _fix_heading_translation_breaks(polished)  # ". <i>LC</i>" → " <i>LC</i>"
     polished = _restore_abbreviations(polished)
     return polished
 
