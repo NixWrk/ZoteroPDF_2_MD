@@ -880,10 +880,23 @@ def _split_heading_text_nodes(
 
     If \\x00 separator was preserved, split and restore.
     If lost, keep merged in first index.
+
+    Safely handles index bounds — returns parts unchanged if indices are invalid.
     """
+    if not merges:
+        return list(parts)
+
     result = list(parts)
 
     for merge_src_idx, secondary_indices in merges.items():
+        # Bounds check
+        if merge_src_idx >= len(result):
+            continue
+
+        # Check all secondary indices too
+        if any(idx >= len(result) for idx in secondary_indices):
+            continue
+
         merged_text = result[merge_src_idx]
 
         # Check if separator was preserved
