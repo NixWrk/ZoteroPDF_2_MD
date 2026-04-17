@@ -804,7 +804,10 @@ def _translate_text_segment(
 def _merge_heading_text_nodes(
     parts: list[str],
 ) -> tuple[list[str], dict[int, list[int]]]:
-    """Merge text nodes inside heading tags (h1-h6) using \\x00 separator.
+    """Merge text nodes inside heading tags (h1-h6) using U+E001 separator.
+
+    U+E001 (Private Use Area) is used instead of \\x00 to avoid corrupting the
+    tokenizer, and is virtually never present in real text.
 
     Returns:
         tuple of (modified_parts, merges) where merges is {merge_src_idx: [secondary_indices]}
@@ -856,8 +859,10 @@ def _merge_heading_text_nodes(
         # Collect texts from all indices
         texts_to_merge = [modified_parts[idx] for idx in text_indices]
 
-        # Merge via \x00 separator
-        merged_text = "\x00".join(texts_to_merge)
+        # Merge via Private-Use-Area separator (U+E001).
+        # \x00 (null byte) would corrupt tokenizer input; \uE001 is safe and
+        # virtually never appears in real text, so we can detect it after translation.
+        merged_text = "\uE001".join(texts_to_merge)
 
         # Replace first index with merged, empty out the rest
         first_idx = text_indices[0]
@@ -878,8 +883,8 @@ def _split_heading_text_nodes(
 ) -> list[str]:
     """Restore heading text nodes after translation.
 
-    If \\x00 separator was preserved, split and restore.
-    If lost, keep merged in first index.
+    If U+E001 separator was preserved, split and restore.
+    If lost (model dropped it), keep merged in first index.
 
     Safely handles index bounds — returns parts unchanged if indices are invalid.
     """
@@ -900,13 +905,13 @@ def _split_heading_text_nodes(
         merged_text = result[merge_src_idx]
 
         # Check if separator was preserved
-        if not merged_text or "\x00" not in merged_text:
+        if not merged_text or "\uE001" not in merged_text:
             # Model dropped the separator — keep merged in first index
             # Secondary indices stay empty
             continue
 
         # Split by separator
-        split_texts = merged_text.split("\x00")
+        split_texts = merged_text.split("\uE001")
         expected_count = 1 + len(secondary_indices)
         if len(split_texts) != expected_count:
             # Mismatch — keep merged
@@ -998,6 +1003,8 @@ def translate_html_text_nodes(
                 pass
         # Post-split: restore original heading text nodes if separator preserved.
         parts = _split_heading_text_nodes(parts, heading_merges)
+        # Clean up any residual U+E001 separators that weren't split (safety net).
+        parts = [p.replace("\uE001", " ") for p in parts]
         return "".join(p for p in parts if p) + references_tail, translated_segments
 
     # ------------------------------------------------------------------ #
@@ -1043,8 +1050,10 @@ def translate_html_text_nodes(
             except Exception:
                 pass
 
-    # Post-split: restore original heading text nodes if separator preserved.
-    out = _split_heading_text_nodes(out, heading_merges)
+    # In the fallback path, out[] has different indices than parts[] (empty strings
+    # are skipped), so index-based split is not applicable. Instead, clean up any
+    # \x00 separators that survived translation by replacing them with a space.
+    out = [p.replace("\uE001", " ") for p in out]
     return "".join(out) + references_tail, translated_segments
 
 
