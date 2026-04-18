@@ -11,7 +11,9 @@ from zoteropdf2md.translategemma import (
     _restore_abbrev_mask,
     _restore_formula_mask,
     _try_batch_translate,
+    _try_batch_translate_with_reason,
     _try_windowed_batch_translate,
+    _try_windowed_batch_translate_with_reason,
     language_name_for_code,
     normalize_language_code,
     translate_html_text_nodes,
@@ -304,14 +306,23 @@ def test_try_batch_translate_translates_multiple_segments() -> None:
     assert len(calls) == 1  # Only one model call
 
 
-def test_try_batch_translate_returns_none_on_id_mismatch() -> None:
-    """If the model drops the separator the result is discarded."""
+def test_try_batch_translate_returns_none_on_non_trailing_id_mismatch() -> None:
+    """Middle-id loss must still fail (lenient applies only to safe cases)."""
     def eating_translate(text: str) -> str:
-        # Remove the separator — simulate model eating it
+        # Remove a middle id marker to force non-trailing mismatch.
+        return re.sub(r"<z2m-i2\s*/>", "", text, flags=re.IGNORECASE)
+
+    result = _try_batch_translate(["Hello.", "World.", "Again."], eating_translate)
+    assert result is None
+
+
+def test_try_batch_translate_lenient_for_trailing_single_id() -> None:
+    """Two-segment window may recover if the model drops the trailing id."""
+    def eating_translate(text: str) -> str:
         return re.sub(r"<z2m-i2\s*/>", "", text, flags=re.IGNORECASE)
 
     result = _try_batch_translate(["Hello.", "World."], eating_translate)
-    assert result is None
+    assert result == ["Hello.World.", "World."]
 
 
 def test_try_batch_translate_returns_none_on_exception() -> None:
@@ -361,7 +372,7 @@ def test_try_windowed_batch_translate_makes_multiple_calls_for_many_segments() -
     assert len(calls) == 3
 
 
-def test_try_windowed_batch_translate_recovers_after_single_retry() -> None:
+def test_try_windowed_batch_translate_recovers_via_bisect_without_retry() -> None:
     calls = {"count": 0}
 
     def flaky_translate(text: str) -> str:
@@ -380,10 +391,10 @@ def test_try_windowed_batch_translate_recovers_after_single_retry() -> None:
     )
 
     assert result == [f"X{i}" for i in range(8)]
-    assert calls["count"] == 3
+    assert calls["count"] == 4
 
 
-def test_try_windowed_batch_translate_uses_bisect_after_retry_failure() -> None:
+def test_try_windowed_batch_translate_uses_bisect_after_batch_failure() -> None:
     calls = {"count": 0}
 
     def size_sensitive_translate(text: str) -> str:
@@ -403,7 +414,7 @@ def test_try_windowed_batch_translate_uses_bisect_after_retry_failure() -> None:
     )
 
     assert result == [f"X{i}" for i in range(4)]
-    assert calls["count"] == 4
+    assert calls["count"] == 3
 
 
 def test_try_batch_translate_lenient_recovery_for_large_window_single_missing_id() -> None:
@@ -419,6 +430,67 @@ def test_try_batch_translate_lenient_recovery_for_large_window_single_missing_id
     assert result[4] == "A5"
     assert result[0] == "X1"
     assert result[-1] == "X10"
+
+
+def test_try_batch_translate_lenient_recovery_for_trailing_eos_suffix() -> None:
+    segments = [f"A{i}" for i in range(1, 7)]
+
+    def trailing_loss_translate(text: str) -> str:
+        cutoff = re.search(r"<z2m-i5\s*/>", text, flags=re.IGNORECASE)
+        if cutoff is not None:
+            text = text[:cutoff.start()]
+        return text.replace("A", "X")
+
+    result, reason = _try_batch_translate_with_reason(segments, trailing_loss_translate)
+
+    assert result is not None
+    assert reason == "ok_lenient_trailing_eos k=2"
+    assert result[0] == "X1"
+    assert result[3] == "X4"
+    assert result[4] == "A5"
+    assert result[5] == "A6"
+
+
+def test_try_windowed_batch_translate_leaf_fallback_returns_full_result() -> None:
+    segments = [f"A{i}" for i in range(4)]
+
+    def drop_tail_ids_translate(text: str) -> str:
+        marker_count = len(re.findall(r"<z2m-i\d+\s*/>", text, flags=re.IGNORECASE))
+        if marker_count >= 4:
+            text = re.sub(r"<z2m-i3\s*/>", "", text, flags=re.IGNORECASE)
+            text = re.sub(r"<z2m-i4\s*/>", "", text, flags=re.IGNORECASE)
+        return text.replace("A", "X")
+
+    result, reason = _try_windowed_batch_translate_with_reason(
+        segments,
+        drop_tail_ids_translate,
+        window_segments=4,
+        overlap_segments=0,
+        max_window_chars=4096,
+    )
+
+    assert result == [f"X{i}" for i in range(4)]
+    assert reason == "ok"
+
+
+def test_try_windowed_batch_translate_always_broken_batch_uses_leaf_path() -> None:
+    segments = [f"A{i}" for i in range(6)]
+
+    def always_mismatch_for_batches(text: str) -> str:
+        marker_count = len(re.findall(r"<z2m-i\d+\s*/>", text, flags=re.IGNORECASE))
+        if marker_count > 1:
+            return re.sub(r"<z2m-i\d+\s*/>", "", text, count=1, flags=re.IGNORECASE)
+        return text.replace("A", "X")
+
+    result = _try_windowed_batch_translate(
+        segments,
+        always_mismatch_for_batches,
+        window_segments=6,
+        overlap_segments=0,
+        max_window_chars=4096,
+    )
+
+    assert result == [f"X{i}" for i in range(6)]
 
 
 def test_translate_html_text_nodes_uses_single_model_call_for_multi_paragraph() -> None:
@@ -454,17 +526,22 @@ def test_translate_html_text_nodes_preserves_inline_boundary_spaces() -> None:
     assert "<p><em>Hello</em> world</p>" in translated
 
 
-def test_translate_html_text_nodes_falls_back_on_id_marker_loss() -> None:
-    """When the model loses an id marker, fall back to per-segment translation."""
-    html = "<html><body><p>Hello.</p><p>World.</p></body></html>"
+def test_translate_html_text_nodes_handles_id_marker_loss_without_global_fallback() -> None:
+    """Id marker loss should stay local (leaf fallback), not global per-segment."""
+    html = "<html><body><p>Hello.</p><p>World.</p><p>Again.</p></body></html>"
     call_count = [0]
     fallback_reasons: list[str] = []
 
     def eating_translate(text: str) -> str:
         call_count[0] += 1
-        # Remove separators — forces fallback
+        # Remove middle id marker (non-trailing mismatch) to force bisect+leaf path.
         result = re.sub(r"<z2m-i2\s*/>", "", text, flags=re.IGNORECASE)
-        return result.replace("Hello", "Привет").replace("World", "Мир")
+        return (
+            result
+            .replace("Hello", "Привет")
+            .replace("World", "Мир")
+            .replace("Again", "Снова")
+        )
 
     translated, _ = translate_html_text_nodes(
         html,
@@ -472,13 +549,12 @@ def test_translate_html_text_nodes_falls_back_on_id_marker_loss() -> None:
         on_batch_fallback=lambda reason: fallback_reasons.append(reason),
     )
 
-    # Fallback: 2 per-segment calls (after 1 failed batch attempt)
-    assert call_count[0] >= 2
-    assert fallback_reasons
-    assert "window_failed" in fallback_reasons[0]
-    assert "id_mismatch" in fallback_reasons[0]
+    # Fallback must be local inside the batch cascade, not document-wide.
+    assert call_count[0] >= 3
+    assert fallback_reasons == []
     assert "Привет" in translated
     assert "Мир" in translated
+    assert "Снова" in translated
 
 
 def test_translate_html_text_nodes_preserves_formula_fragments() -> None:

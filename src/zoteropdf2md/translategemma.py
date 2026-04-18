@@ -706,6 +706,7 @@ def _try_batch_translate_with_reason(
     extra_ids = sorted(found_ids_set - expected_ids_set)
 
     lenient_missing_id: int | None = None
+    lenient_trailing_eos_k = 0
     lenient_missing_limit = len(segments) // 10
     if missing_ids or extra_ids:
         if (
@@ -716,6 +717,25 @@ def _try_batch_translate_with_reason(
         ):
             lenient_missing_id = missing_ids[0]
             parsed_by_id[lenient_missing_id] = segments[lenient_missing_id - 1]
+        elif not extra_ids:
+            trailing_limit = max(1, len(segments) // 3)
+            trailing_suffix = list(
+                range(len(segments) - len(missing_ids) + 1, len(segments) + 1)
+            )
+            if (
+                missing_ids == trailing_suffix
+                and len(missing_ids) <= trailing_limit
+                and len(parsed_by_id) == len(segments) - len(missing_ids)
+            ):
+                lenient_trailing_eos_k = len(missing_ids)
+                for missing_id in missing_ids:
+                    parsed_by_id[missing_id] = segments[missing_id - 1]
+            else:
+                return None, (
+                    "id_mismatch "
+                    f"missing={_format_int_list(missing_ids)} "
+                    f"extra={_format_int_list(extra_ids)}"
+                )
         else:
             return None, (
                 "id_mismatch "
@@ -755,6 +775,8 @@ def _try_batch_translate_with_reason(
 
     if lenient_missing_id is not None:
         return result, f"ok_lenient_missing_id={lenient_missing_id}"
+    if lenient_trailing_eos_k > 0:
+        return result, f"ok_lenient_trailing_eos k={lenient_trailing_eos_k}"
     return result, "ok"
 
 
@@ -773,6 +795,8 @@ def _try_windowed_batch_translate_with_reason(
     overlap_segments = max(0, int(overlap_segments))
     n = len(segments)
     translated: list[str | None] = [None] * n
+    leaf_cache: dict[str, str] = {}
+    leaf_max_chunk_chars = max(256, min(max_window_chars, 1800))
 
     def _store_core_from_window(
         *,
@@ -788,31 +812,34 @@ def _try_windowed_batch_translate_with_reason(
     def _translate_core_range(core_start: int, core_end: int) -> tuple[bool, str]:
         ext_start = max(0, core_start - overlap_segments)
         ext_end = min(n, core_end + overlap_segments)
-
-        attempt_reasons: list[str] = []
-        for _ in range(2):  # retry once before bisect
-            window_result, reason = _try_batch_translate_with_reason(
-                segments[ext_start:ext_end],
-                translate_text,
-                max_batch_chars=max_window_chars,
+        window_result, reason = _try_batch_translate_with_reason(
+            segments[ext_start:ext_end],
+            translate_text,
+            max_batch_chars=max_window_chars,
+        )
+        if window_result is not None:
+            _store_core_from_window(
+                core_start=core_start,
+                core_end=core_end,
+                ext_start=ext_start,
+                window_result=window_result,
             )
-            if window_result is not None:
-                _store_core_from_window(
-                    core_start=core_start,
-                    core_end=core_end,
-                    ext_start=ext_start,
-                    window_result=window_result,
-                )
-                return True, "ok"
-            attempt_reasons.append(reason)
+            return True, "ok"
 
         core_len = core_end - core_start
         if core_len <= 2:
-            return False, (
-                "window_failed "
+            for idx in range(core_start, core_end):
+                translated[idx] = _translate_text_segment(
+                    segments[idx],
+                    translate_text=translate_text,
+                    cache=leaf_cache,
+                    max_chunk_chars=leaf_max_chunk_chars,
+                )
+            return True, (
+                "ok_leaf_per_segment "
                 f"core=[{core_start}:{core_end}) "
                 f"extended=[{ext_start}:{ext_end}) "
-                f"reason=retry_failed {attempt_reasons[0]} | {attempt_reasons[1]}"
+                f"reason={reason}"
             )
 
         mid = core_start + core_len // 2
@@ -1189,12 +1216,12 @@ def translate_html_text_nodes(
     """Translate all translatable text nodes in *html*, leaving markup intact.
 
     **Batch mode (primary path):** translatable text nodes are translated in
-    overlapping windows with ``<z2m-sep/>`` markers (one model call per window).
-    This preserves local inter-paragraph context while avoiding one huge call.
+    overlapping windows with id markers (``<z2m-iN/>``), which allows strict
+    parse/coverage validation while preserving local inter-paragraph context.
 
-    **Fallback path:** if the batch fails (context overflow, separator count
-    mismatch, or any exception), each segment is translated individually — the
-    previous behaviour.
+    **Recovery path:** failed windows are bisected recursively; leaf windows
+    (1-2 core segments) are translated per-segment locally, so one broken
+    batch does not force global document-wide fallback.
 
     The References / Bibliography section is never translated.
     """
