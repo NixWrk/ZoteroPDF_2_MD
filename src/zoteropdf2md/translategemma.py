@@ -333,10 +333,14 @@ def _formula_spans(text: str) -> list[tuple[int, int]]:
 # Batch translation helpers
 # ---------------------------------------------------------------------------
 
-# Separator injected between segments in batch mode.  Looks like an HTML
-# self-closing tag so translation models treat it as non-translatable markup.
-_BATCH_SEPARATOR = "\n<z2m-sep/>\n"
-_BATCH_SEP_PATTERN = re.compile(r'\n?[ \t]*<z2m-sep\s*/?>[ \t]*\n?', re.IGNORECASE)
+# ID-addressed markers injected before each segment in batch mode.
+# Example payload:
+#   <z2m-i1/>First segment text...
+#   <z2m-i2/>Second segment text...
+_BATCH_ITEM_PATTERN = re.compile(
+    r"<z2m-i(\d+)\s*/>([\s\S]*?)(?=<z2m-i\d+\s*/>|\Z)",
+    re.IGNORECASE,
+)
 
 # Formula placeholder tokens: <z2m-f id="N"/>  — kept unchanged by the model.
 _FORMULA_TOKEN_PATTERN = re.compile(r'<z2m-f\s+id\s*=\s*"(\d+)"\s*/?>', re.IGNORECASE)
@@ -347,6 +351,15 @@ _MAX_BATCH_CHARS = 80_000
 _WINDOW_BATCH_TARGET_SEGMENTS = 8
 _WINDOW_BATCH_OVERLAP_SEGMENTS = 1
 _MAX_WINDOW_BATCH_CHARS = 40_000
+
+
+def _format_int_list(values: list[int], *, max_items: int = 8) -> str:
+    if not values:
+        return "[]"
+    if len(values) <= max_items:
+        return "[" + ",".join(str(v) for v in values) + "]"
+    head = ",".join(str(v) for v in values[:max_items])
+    return f"[{head},...+{len(values) - max_items}]"
 
 
 def _apply_formula_mask(text: str) -> tuple[str, dict[str, str]]:
@@ -621,6 +634,202 @@ def _try_windowed_batch_translate_with_reason(
         local_start = core_start - ext_start
         for idx in range(core_start, core_end):
             translated[idx] = window_result[local_start + (idx - core_start)]
+        core_start = core_end
+
+    if any(item is None for item in translated):
+        return None, "window_postcheck_none_entries"
+    return [item for item in translated if item is not None], "ok"
+
+
+# --------------------------------------------------------------------------- #
+# Batch translation protocol v2 (id-addressed + retry/bisect recovery)
+# --------------------------------------------------------------------------- #
+
+def _try_batch_translate_with_reason(
+    segments: list[str],
+    translate_text: Callable[[str], str],
+    *,
+    max_batch_chars: int = _MAX_BATCH_CHARS,
+) -> tuple[list[str] | None, str]:
+    if len(segments) < 2:
+        return None, f"single_segment count={len(segments)}"
+
+    masked_segs: list[str] = []
+    fmaps: list[dict[str, str]] = []
+    for seg in segments:
+        masked, fmap = _apply_formula_mask(seg)
+        masked_segs.append(masked)
+        fmaps.append(fmap)
+
+    batch_text = "".join(
+        f"<z2m-i{idx}/>{seg}"
+        for idx, seg in enumerate(masked_segs, start=1)
+    )
+    if len(batch_text) > max_batch_chars:
+        return None, f"batch_too_long chars={len(batch_text)} max={max_batch_chars}"
+
+    try:
+        translated_batch = translate_text(batch_text)
+    except Exception as exc:
+        message = str(exc).replace("\n", " ").strip()
+        if len(message) > 200:
+            message = message[:200] + "..."
+        return None, f"llm_exception type={type(exc).__name__} msg={message!r}"
+
+    translated_batch = _BYTE_TOKEN_CITATION_PATTERN.sub(r'<sup>\1</sup>', translated_batch)
+    translated_batch = _BYTE_TOKEN_ARTIFACT_PATTERN.sub("", translated_batch)
+
+    matches = list(_BATCH_ITEM_PATTERN.finditer(translated_batch))
+    if not matches:
+        return None, "structured_parse_failed blocks=0"
+
+    parsed_by_id: dict[int, str] = {}
+    duplicate_ids: set[int] = set()
+    for match in matches:
+        item_id = int(match.group(1))
+        item_text = match.group(2)
+        if item_id in parsed_by_id:
+            duplicate_ids.add(item_id)
+            continue
+        parsed_by_id[item_id] = item_text
+
+    if duplicate_ids:
+        return None, (
+            "duplicate_ids "
+            f"ids={_format_int_list(sorted(duplicate_ids))}"
+        )
+
+    expected_ids = list(range(1, len(segments) + 1))
+    expected_ids_set = set(expected_ids)
+    found_ids_set = set(parsed_by_id.keys())
+    missing_ids = sorted(expected_ids_set - found_ids_set)
+    extra_ids = sorted(found_ids_set - expected_ids_set)
+
+    lenient_missing_id: int | None = None
+    lenient_missing_limit = len(segments) // 10
+    if missing_ids or extra_ids:
+        if (
+            lenient_missing_limit >= 1
+            and not extra_ids
+            and len(missing_ids) == 1
+            and len(parsed_by_id) == len(segments) - 1
+        ):
+            lenient_missing_id = missing_ids[0]
+            parsed_by_id[lenient_missing_id] = segments[lenient_missing_id - 1]
+        else:
+            return None, (
+                "id_mismatch "
+                f"missing={_format_int_list(missing_ids)} "
+                f"extra={_format_int_list(extra_ids)}"
+            )
+
+    translated_parts = [parsed_by_id[item_id] for item_id in expected_ids]
+    result: list[str] = []
+    for seg_idx, (orig, t_seg, fmap) in enumerate(
+        zip(segments, translated_parts, fmaps),
+        start=1,
+    ):
+        lead, core, tail = _split_outer_ws(t_seg)
+        _, orig_core, _ = _split_outer_ws(orig)
+
+        if fmap:
+            expected_token_ids = list(range(len(fmap)))
+            found_token_ids = sorted(
+                int(m.group(1)) for m in _FORMULA_TOKEN_PATTERN.finditer(core)
+            )
+            if found_token_ids != expected_token_ids:
+                return None, (
+                    "placeholder_mismatch "
+                    f"seg={seg_idx} "
+                    f"expected={_format_int_list(expected_token_ids)} "
+                    f"got={_format_int_list(found_token_ids)}"
+                )
+
+        if _is_translator_refusal(core.strip()):
+            t_seg = orig
+        else:
+            core = _strip_source_echo(core, orig_core)
+            core = _restore_formula_mask(core, fmap)
+            t_seg = f"{lead}{core}{tail}"
+        result.append(t_seg)
+
+    if lenient_missing_id is not None:
+        return result, f"ok_lenient_missing_id={lenient_missing_id}"
+    return result, "ok"
+
+
+def _try_windowed_batch_translate_with_reason(
+    segments: list[str],
+    translate_text: Callable[[str], str],
+    *,
+    window_segments: int = _WINDOW_BATCH_TARGET_SEGMENTS,
+    overlap_segments: int = _WINDOW_BATCH_OVERLAP_SEGMENTS,
+    max_window_chars: int = _MAX_WINDOW_BATCH_CHARS,
+) -> tuple[list[str] | None, str]:
+    if len(segments) < 2:
+        return None, f"single_segment count={len(segments)}"
+
+    window_segments = max(2, int(window_segments))
+    overlap_segments = max(0, int(overlap_segments))
+    n = len(segments)
+    translated: list[str | None] = [None] * n
+
+    def _store_core_from_window(
+        *,
+        core_start: int,
+        core_end: int,
+        ext_start: int,
+        window_result: list[str],
+    ) -> None:
+        local_start = core_start - ext_start
+        for idx in range(core_start, core_end):
+            translated[idx] = window_result[local_start + (idx - core_start)]
+
+    def _translate_core_range(core_start: int, core_end: int) -> tuple[bool, str]:
+        ext_start = max(0, core_start - overlap_segments)
+        ext_end = min(n, core_end + overlap_segments)
+
+        attempt_reasons: list[str] = []
+        for _ in range(2):  # retry once before bisect
+            window_result, reason = _try_batch_translate_with_reason(
+                segments[ext_start:ext_end],
+                translate_text,
+                max_batch_chars=max_window_chars,
+            )
+            if window_result is not None:
+                _store_core_from_window(
+                    core_start=core_start,
+                    core_end=core_end,
+                    ext_start=ext_start,
+                    window_result=window_result,
+                )
+                return True, "ok"
+            attempt_reasons.append(reason)
+
+        core_len = core_end - core_start
+        if core_len <= 2:
+            return False, (
+                "window_failed "
+                f"core=[{core_start}:{core_end}) "
+                f"extended=[{ext_start}:{ext_end}) "
+                f"reason=retry_failed {attempt_reasons[0]} | {attempt_reasons[1]}"
+            )
+
+        mid = core_start + core_len // 2
+        left_ok, left_reason = _translate_core_range(core_start, mid)
+        if not left_ok:
+            return False, left_reason
+        right_ok, right_reason = _translate_core_range(mid, core_end)
+        if not right_ok:
+            return False, right_reason
+        return True, "ok"
+
+    core_start = 0
+    while core_start < n:
+        core_end = min(n, core_start + window_segments)
+        ok, reason = _translate_core_range(core_start, core_end)
+        if not ok:
+            return None, reason
         core_start = core_end
 
     if any(item is None for item in translated):

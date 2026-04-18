@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 
 import pytest
@@ -303,11 +304,11 @@ def test_try_batch_translate_translates_multiple_segments() -> None:
     assert len(calls) == 1  # Only one model call
 
 
-def test_try_batch_translate_returns_none_on_separator_mismatch() -> None:
+def test_try_batch_translate_returns_none_on_id_mismatch() -> None:
     """If the model drops the separator the result is discarded."""
     def eating_translate(text: str) -> str:
         # Remove the separator — simulate model eating it
-        return text.replace("<z2m-sep/>", "")
+        return re.sub(r"<z2m-i2\s*/>", "", text, flags=re.IGNORECASE)
 
     result = _try_batch_translate(["Hello.", "World."], eating_translate)
     assert result is None
@@ -360,6 +361,66 @@ def test_try_windowed_batch_translate_makes_multiple_calls_for_many_segments() -
     assert len(calls) == 3
 
 
+def test_try_windowed_batch_translate_recovers_after_single_retry() -> None:
+    calls = {"count": 0}
+
+    def flaky_translate(text: str) -> str:
+        calls["count"] += 1
+        if calls["count"] == 1:
+            return re.sub(r"<z2m-i2\s*/>", "", text, flags=re.IGNORECASE)
+        return text.replace("A", "X")
+
+    segments = [f"A{i}" for i in range(8)]
+    result = _try_windowed_batch_translate(
+        segments,
+        flaky_translate,
+        window_segments=4,
+        overlap_segments=1,
+        max_window_chars=4096,
+    )
+
+    assert result == [f"X{i}" for i in range(8)]
+    assert calls["count"] == 3
+
+
+def test_try_windowed_batch_translate_uses_bisect_after_retry_failure() -> None:
+    calls = {"count": 0}
+
+    def size_sensitive_translate(text: str) -> str:
+        calls["count"] += 1
+        marker_count = len(re.findall(r"<z2m-i\d+\s*/>", text, flags=re.IGNORECASE))
+        if marker_count > 2:
+            return re.sub(r"<z2m-i\d+\s*/>", "", text, count=1, flags=re.IGNORECASE)
+        return text.replace("A", "X")
+
+    segments = [f"A{i}" for i in range(4)]
+    result = _try_windowed_batch_translate(
+        segments,
+        size_sensitive_translate,
+        window_segments=4,
+        overlap_segments=0,
+        max_window_chars=4096,
+    )
+
+    assert result == [f"X{i}" for i in range(4)]
+    assert calls["count"] == 4
+
+
+def test_try_batch_translate_lenient_recovery_for_large_window_single_missing_id() -> None:
+    segments = [f"A{i}" for i in range(1, 11)]
+
+    def marker_loss_translate(text: str) -> str:
+        text = re.sub(r"<z2m-i5\s*/>", "", text, flags=re.IGNORECASE)
+        return text.replace("A", "X")
+
+    result = _try_batch_translate(segments, marker_loss_translate)
+
+    assert result is not None
+    assert result[4] == "A5"
+    assert result[0] == "X1"
+    assert result[-1] == "X10"
+
+
 def test_translate_html_text_nodes_uses_single_model_call_for_multi_paragraph() -> None:
     """Batch mode must translate multiple paragraphs with exactly one model call."""
     html = (
@@ -393,8 +454,8 @@ def test_translate_html_text_nodes_preserves_inline_boundary_spaces() -> None:
     assert "<p><em>Hello</em> world</p>" in translated
 
 
-def test_translate_html_text_nodes_falls_back_on_separator_loss() -> None:
-    """When the model eats the separator, fall back to per-segment translation."""
+def test_translate_html_text_nodes_falls_back_on_id_marker_loss() -> None:
+    """When the model loses an id marker, fall back to per-segment translation."""
     html = "<html><body><p>Hello.</p><p>World.</p></body></html>"
     call_count = [0]
     fallback_reasons: list[str] = []
@@ -402,7 +463,7 @@ def test_translate_html_text_nodes_falls_back_on_separator_loss() -> None:
     def eating_translate(text: str) -> str:
         call_count[0] += 1
         # Remove separators — forces fallback
-        result = text.replace("<z2m-sep/>", "").replace("<Z2M-SEP/>", "")
+        result = re.sub(r"<z2m-i2\s*/>", "", text, flags=re.IGNORECASE)
         return result.replace("Hello", "Привет").replace("World", "Мир")
 
     translated, _ = translate_html_text_nodes(
@@ -415,7 +476,7 @@ def test_translate_html_text_nodes_falls_back_on_separator_loss() -> None:
     assert call_count[0] >= 2
     assert fallback_reasons
     assert "window_failed" in fallback_reasons[0]
-    assert "separator_mismatch" in fallback_reasons[0]
+    assert "id_mismatch" in fallback_reasons[0]
     assert "Привет" in translated
     assert "Мир" in translated
 
