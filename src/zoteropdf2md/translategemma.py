@@ -508,7 +508,7 @@ def _try_batch_translate(
     return result
 
 
-def _try_batch_translate_with_reason(
+def _try_batch_translate_with_reason_legacy(
     segments: list[str],
     translate_text: Callable[[str], str],
     *,
@@ -595,7 +595,7 @@ def _try_windowed_batch_translate(
     return result
 
 
-def _try_windowed_batch_translate_with_reason(
+def _try_windowed_batch_translate_with_reason_legacy(
     segments: list[str],
     translate_text: Callable[[str], str],
     *,
