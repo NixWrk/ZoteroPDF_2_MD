@@ -1,12 +1,134 @@
 # Translation Batch Protocol Hardening Plan
 
-**Last updated:** 2026-04-18
+**Last updated:** 2026-04-18 (revised after v2 field test)
 **Scope:** `src/zoteropdf2md/translategemma.py`
-**Status:** Design (not yet implemented)
+**Status:**
+- **Phase 1 (v2 id-protocol + cascade):** implemented in commits `4a43d65`, `5cce8e0`.
+- **Phase 2 (cascade hardening):** design, not yet implemented. См. §0 ниже.
+
+---
+
+## 0. Phase 2: результаты v2 и план доработки
+
+### 0.1 Что подтвердилось
+
+v2 id-протокол работает: positional loss `<z2m-sep/>` убран, структурный парсер
+по `<z2m-i{n}/>` корректно детектирует потерю/дубли ids, cascade частично
+восстанавливает окно через bisect. Ссылки/URL/якоря не пострадали (подтверждено
+архитектурно в §2 ниже: `_SKIP_TRANSLATION_TAGS` физически не пускает их в LLM).
+
+### 0.2 Что всё равно уронило документ в глобальный per-segment
+
+Прогон 2026-04-18 11:59, файл `Wang et al. - 2017 … LC Sensor.html`:
+
+```
+[FALLBACK] reason=window_failed core=[84:86) extended=[83:87)
+           reason=retry_failed id_mismatch missing=[3,4] extra=[]
+                              | id_mismatch missing=[3,4] extra=[]
+```
+
+Картина:
+
+1. Внешнее окно (8 сегментов) сломалось → cascade запустил bisect.
+2. Bisect дошёл до core размером 2 (`[84:86)`, extended `[83:87)` из-за overlap=1).
+3. Обе попытки (L2 retry) вернули **один и тот же** `missing=[3,4]` —
+   модель остановилась на EOS после ids 1,2 (хвост окна обрезан).
+4. В `_try_windowed_batch_translate_with_reason` (translategemma.py:810)
+   срабатывает `if core_len <= 2: return False, "window_failed ..."` —
+   bisect дальше не идёт, ядро из 2 сегментов **не** обрабатывается
+   per-segment локально, и весь документ (306 сегментов) уходит в
+   глобальный per-segment fallback.
+
+### 0.3 Три корневые причины
+
+**C1. Bisect отказывается делить ядра размера ≤ 2.**
+Условие `core_len <= 2` → `window_failed`. Вместо локального L4 (перевести
+эти 1–2 сегмента per-segment и записать в `translated[core_start:core_end]`)
+cascade капитулирует и зовёт глобальный fallback для **всех** N сегментов.
+
+**C2. L2 retry с `temperature=0` бесполезен.**
+Декод детерминирован: при одинаковом промпте ответ побайтово одинаков.
+В логе это видно попарно: LLM 20/21, 23/24, 25/26 — все пары `chars=…`
+идентичны, обе «done» за близкое время, обе с тем же mismatch. Retry в
+текущем виде просто удваивает стоимость.
+
+**C3. Lenient recovery допускает пропуск только 1 id.**
+Here-and-now модель теряет **хвост** (ids 3,4 подряд — classic early-EOS).
+`lenient_missing_limit = len(segments) // 10` для окна из 4 = 0, и даже для
+окна из 10 разрешён только 1 пропуск. Когда модель детерминированно режет
+последний сегмент-два, lenient не включается.
+
+### 0.4 План Phase 2 (минимальный, в три шага)
+
+**Шаг A — локальный per-segment на дне bisect (obligatory).**
+В `_try_windowed_batch_translate_with_reason`, вместо
+`if core_len <= 2: return False, "window_failed"` делать:
+
+```
+for idx in range(core_start, core_end):
+    # перевести сегмент в одиночку, использовать существующий
+    # per-segment путь (mask/unmask, refusal-guard и т. п.)
+    translated[idx] = _translate_single_segment(segments[idx], translate_text)
+return True, "ok_leaf_per_segment"
+```
+
+Эффект: срыв окна теряет **до 2 сегментов** (которые всё равно переведутся,
+просто в изоляции), а не весь документ. `per_segment_fallback_rate` у
+документа становится долей 2/N вместо 1.0. Это и есть оригинальный
+L4, но локальный, как и задумывалось в §5 исходного плана.
+
+**Шаг B — убрать холостой L2 retry.**
+Заменить `for _ in range(2): …` на один вызов. Retry добавить обратно
+**только** если появится источник реальной вариативности: либо
+`do_sample=True, temperature=0.2–0.4` на второй попытке, либо переформулировка
+промпта (например, явно перечислить ожидаемые ids в инструкции). Без этого
+retry — чистая потеря времени и токенов.
+
+**Шаг C — Lenient для trailing-EOS.**
+Расширить lenient-ветку: если `missing_ids` — это суффикс
+`[len-K+1, …, len]` (подряд идущие последние K ids), `extra_ids` пусто,
+и `K ≤ max(1, len(segments) // 3)` — подставить оригиналы для этих ids и
+пометить `ok_lenient_trailing_eos k={K}`. Логика безопасна: оригинал
+сегмента валиден как fallback (как и в существующем single-missing
+lenient пути).
+
+### 0.5 Опциональные улучшения (если после A+B+C fallback > 5%)
+
+- Снизить `_WINDOW_BATCH_TARGET_SEGMENTS` с 8 до 5–6. Вероятность
+  early-EOS на хвосте растёт с длиной окна.
+- Добавить терминатор `<z2m-end/>` после последнего сегмента в промпте.
+  Модели легче «дождаться» эксплицитного маркера, чем угадывать
+  момент остановки.
+- Sampling retry (`temperature=0.3`, `top_p=0.9`) как Шаг B-alt.
+
+### 0.6 Acceptance criteria Phase 2
+
+| Метрика | v2 сейчас | Цель Phase 2 |
+|---|---|---|
+| Глобальный per-segment fallback на документ | возможен при ≥1 failed leaf | **0** (только локальные leaf-перевод) |
+| Сегментов, переведённых per-segment | весь документ при срыве | ≤ 2 × (число упавших окон) |
+| Лишних LLM-вызовов от L2 retry | +1 на каждый упавший batch | 0 (retry убран) |
+| `ok_lenient_trailing_eos` | недоступно | работает при потере ≤ ⅓ хвоста |
+
+### 0.7 Тесты
+
+Расширить `tests/test_translategemma_html.py`:
+
+1. Fake `translate_text`, который для окна из 4 сегментов возвращает
+   ответ только с ids 1,2 → ожидаем, что итоговый результат содержит все
+   4 перевода (2 от batch + 2 от leaf per-segment), не `None`.
+2. Fake, возвращающий trailing `missing=[N-1,N]` для окна из 6 → ожидаем
+   `ok_lenient_trailing_eos k=2`.
+3. Fake, всегда роняющий batch (любой id_mismatch) → ожидаем, что функция
+   возвращает **полный** результат через leaf per-segment, а не `None`.
+4. Retry-счётчик: fake считает число вызовов; для окна, которое сразу
+   успешно парсится, число вызовов = 1 (а не 1 успех + 1 холостой).
 
 ---
 
 ## 1. Проблема: позиционная хрупкость `<z2m-sep/>`
+(исторический раздел: описывает v1-протокол до коммита `4a43d65`.)
+
 
 ### 1.1 Что происходит сегодня
 
