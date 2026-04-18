@@ -232,6 +232,28 @@ def _artifact_signature(path: Path) -> tuple[bool, int, int]:
     return True, int(stat.st_size), int(stat.st_mtime_ns)
 
 
+def _empty_pipeline_summary(
+    *,
+    discovery: PdfDiscoveryResult,
+    output_dir: Path,
+    export_mode: str,
+    skipped_existing: int = 0,
+) -> PipelineSummary:
+    return PipelineSummary(
+        collection_key=discovery.collection_key,
+        collection_name=discovery.collection_name,
+        attachments_total=discovery.attachments_total,
+        pdfs_resolved=len(discovery.candidates),
+        staged_total=0,
+        converted_total=0,
+        skipped_existing=skipped_existing,
+        failed_total=0,
+        output_dir=output_dir,
+        filename_map_path=output_dir / FILENAME_MAP_NAME,
+        export_mode=export_mode,
+    )
+
+
 def run_pipeline(
     options: PipelineOptions,
     runner: MarkerRunner,
@@ -278,7 +300,12 @@ def run_pipeline(
 
         resolved = [c.resolved_attachment for c in discovery.candidates]
         if not resolved:
-            raise RuntimeError("No local PDF attachments found for selected collection.")
+            log("No local PDF attachments found for selected collection. Nothing to process.")
+            return _empty_pipeline_summary(
+                discovery=discovery,
+                output_dir=output_dir,
+                export_mode=options.export_mode,
+            )
 
         if options.selected_source_pdf_paths:
             started_at = perf_counter()
@@ -286,16 +313,38 @@ def run_pipeline(
                 normalize_source_path(Path(path))
                 for path in options.selected_source_pdf_paths
             }
+            available_norm = {
+                normalize_source_path(item.source_pdf_path)
+                for item in resolved
+            }
+            skipped_without_pdf = selected_norm - available_norm
+            if skipped_without_pdf:
+                log(
+                    "Selected entries without local PDF were skipped: "
+                    f"{len(skipped_without_pdf)}"
+                )
             before = len(resolved)
-            resolved = [
+            selected_resolved = [
                 item for item in resolved
                 if normalize_source_path(item.source_pdf_path) in selected_norm
             ]
+            if selected_resolved:
+                resolved = selected_resolved
+            else:
+                log(
+                    "Selection did not include local PDFs. "
+                    "Processing all resolved PDFs from the collection."
+                )
             _log_elapsed(log, "pipeline.apply_gui_selection_filter", started_at)
             log(f"Selected in GUI: {len(resolved)} of {before}")
 
         if not resolved:
-            raise RuntimeError("No PDFs selected for processing.")
+            log("No PDFs selected for processing. Nothing to do.")
+            return _empty_pipeline_summary(
+                discovery=discovery,
+                output_dir=output_dir,
+                export_mode=options.export_mode,
+            )
 
         skipped_existing = 0
         started_at = perf_counter()
@@ -329,19 +378,11 @@ def run_pipeline(
                 log(f"Already present in output folder, skipped before run: {skipped_existing}")
 
         if not resolved:
-            filename_map_path = output_dir / FILENAME_MAP_NAME
-            return PipelineSummary(
-                collection_key=discovery.collection_key,
-                collection_name=discovery.collection_name,
-                attachments_total=discovery.attachments_total,
-                pdfs_resolved=len(discovery.candidates),
-                staged_total=0,
-                converted_total=0,
-                skipped_existing=skipped_existing,
-                failed_total=0,
+            return _empty_pipeline_summary(
+                discovery=discovery,
                 output_dir=output_dir,
-                filename_map_path=filename_map_path,
                 export_mode=options.export_mode,
+                skipped_existing=skipped_existing,
             )
 
         if ExportMode.ZOTERO in export_modes_list:
