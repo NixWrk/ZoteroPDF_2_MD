@@ -487,6 +487,20 @@ def _try_batch_translate(
     *,
     max_batch_chars: int = _MAX_BATCH_CHARS,
 ) -> list[str] | None:
+    result, _ = _try_batch_translate_with_reason(
+        segments,
+        translate_text,
+        max_batch_chars=max_batch_chars,
+    )
+    return result
+
+
+def _try_batch_translate_with_reason(
+    segments: list[str],
+    translate_text: Callable[[str], str],
+    *,
+    max_batch_chars: int = _MAX_BATCH_CHARS,
+) -> tuple[list[str] | None, str]:
     """Translate all *segments* in a single model call.
 
     Masks mathematical formulas, joins segments with ``<z2m-sep/>`` separator,
@@ -501,7 +515,7 @@ def _try_batch_translate(
     * or the separator count in the output does not match the input.
     """
     if len(segments) < 2:
-        return None
+        return None, f"single_segment count={len(segments)}"
 
     # Mask formulas so the model does not try to translate LaTeX/math notation.
     masked_segs: list[str] = []
@@ -513,12 +527,15 @@ def _try_batch_translate(
 
     batch_text = _BATCH_SEPARATOR.join(masked_segs)
     if len(batch_text) > max_batch_chars:
-        return None
+        return None, f"batch_too_long chars={len(batch_text)} max={max_batch_chars}"
 
     try:
         translated_batch = translate_text(batch_text)
-    except Exception:
-        return None
+    except Exception as exc:
+        message = str(exc).replace("\n", " ").strip()
+        if len(message) > 200:
+            message = message[:200] + "..."
+        return None, f"llm_exception type={type(exc).__name__} msg={message!r}"
 
     # Clean byte-token artefacts before splitting.
     translated_batch = _BYTE_TOKEN_CITATION_PATTERN.sub(r'<sup>\1</sup>', translated_batch)
@@ -527,7 +544,10 @@ def _try_batch_translate(
     translated_parts = _BATCH_SEP_PATTERN.split(translated_batch)
     if len(translated_parts) != len(segments):
         # Model ate or duplicated separators — result is not trustworthy.
-        return None
+        return None, (
+            "separator_mismatch "
+            f"expected={len(segments)} got={len(translated_parts)}"
+        )
 
     result: list[str] = []
     for orig, t_seg, fmap in zip(segments, translated_parts, fmaps):
@@ -541,7 +561,7 @@ def _try_batch_translate(
             t_seg = f"{lead}{core}{tail}"
         result.append(t_seg)
 
-    return result
+    return result, "ok"
 
 
 def _try_windowed_batch_translate(
@@ -552,9 +572,27 @@ def _try_windowed_batch_translate(
     overlap_segments: int = _WINDOW_BATCH_OVERLAP_SEGMENTS,
     max_window_chars: int = _MAX_WINDOW_BATCH_CHARS,
 ) -> list[str] | None:
+    result, _ = _try_windowed_batch_translate_with_reason(
+        segments,
+        translate_text,
+        window_segments=window_segments,
+        overlap_segments=overlap_segments,
+        max_window_chars=max_window_chars,
+    )
+    return result
+
+
+def _try_windowed_batch_translate_with_reason(
+    segments: list[str],
+    translate_text: Callable[[str], str],
+    *,
+    window_segments: int = _WINDOW_BATCH_TARGET_SEGMENTS,
+    overlap_segments: int = _WINDOW_BATCH_OVERLAP_SEGMENTS,
+    max_window_chars: int = _MAX_WINDOW_BATCH_CHARS,
+) -> tuple[list[str] | None, str]:
     """Translate in overlapping windows to balance context quality and GPU load."""
     if len(segments) < 2:
-        return None
+        return None, f"single_segment count={len(segments)}"
 
     window_segments = max(2, int(window_segments))
     overlap_segments = max(0, int(overlap_segments))
@@ -567,13 +605,18 @@ def _try_windowed_batch_translate(
         ext_start = max(0, core_start - overlap_segments)
         ext_end = min(n, core_end + overlap_segments)
 
-        window_result = _try_batch_translate(
+        window_result, reason = _try_batch_translate_with_reason(
             segments[ext_start:ext_end],
             translate_text,
             max_batch_chars=max_window_chars,
         )
         if window_result is None:
-            return None
+            return None, (
+                "window_failed "
+                f"core=[{core_start}:{core_end}) "
+                f"extended=[{ext_start}:{ext_end}) "
+                f"reason={reason}"
+            )
 
         local_start = core_start - ext_start
         for idx in range(core_start, core_end):
@@ -581,8 +624,8 @@ def _try_windowed_batch_translate(
         core_start = core_end
 
     if any(item is None for item in translated):
-        return None
-    return [item for item in translated if item is not None]
+        return None, "window_postcheck_none_entries"
+    return [item for item in translated if item is not None], "ok"
 
 
 def _translate_plain_fragment(
@@ -932,6 +975,7 @@ def translate_html_text_nodes(
     max_chunk_chars: int = 1800,
     on_segment_start: Callable[[int, int], None] | None = None,
     on_progress: Callable[[int, int], None] | None = None,
+    on_batch_fallback: Callable[[str], None] | None = None,
 ) -> tuple[str, int]:
     """Translate all translatable text nodes in *html*, leaving markup intact.
 
@@ -982,7 +1026,7 @@ def translate_html_text_nodes(
     # Primary path: batch translation                                      #
     # ------------------------------------------------------------------ #
     source_texts = [parts[i] for i in translatable_indices]
-    batch_result = _try_windowed_batch_translate(
+    batch_result, batch_reason = _try_windowed_batch_translate_with_reason(
         source_texts,
         translate_text,
         window_segments=_WINDOW_BATCH_TARGET_SEGMENTS,
@@ -1006,6 +1050,12 @@ def translate_html_text_nodes(
         # Clean up any residual U+E001 separators that weren't split (safety net).
         parts = [p.replace("\uE001", " ") for p in parts]
         return "".join(p for p in parts if p) + references_tail, translated_segments
+
+    if on_batch_fallback is not None:
+        try:
+            on_batch_fallback(batch_reason)
+        except Exception:
+            pass
 
     # ------------------------------------------------------------------ #
     # Fallback: per-segment translation (original behaviour)              #
@@ -1434,12 +1484,19 @@ class TranslateGemmaTranslator:
                 f"(elapsed={perf_counter() - translate_started_at:.1f}s)"
             )
 
+        def on_batch_fallback(reason: str) -> None:
+            self._log_line(
+                "TranslateGemma batch fallback: "
+                f"{reason} for {html_path.name}"
+            )
+
         translated_html, translated_segments = translate_html_text_nodes(
             source_html,
             translate_text=translate_text_with_progress,
             max_chunk_chars=max(256, self._config.max_chunk_chars),
             on_segment_start=on_segment_start,
             on_progress=on_progress,
+            on_batch_fallback=on_batch_fallback,
         )
         self._log_line(
             f"[timer] translategemma.translate_html: {perf_counter() - translate_started_at:.2f}s"

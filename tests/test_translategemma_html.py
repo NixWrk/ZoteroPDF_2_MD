@@ -397,6 +397,7 @@ def test_translate_html_text_nodes_falls_back_on_separator_loss() -> None:
     """When the model eats the separator, fall back to per-segment translation."""
     html = "<html><body><p>Hello.</p><p>World.</p></body></html>"
     call_count = [0]
+    fallback_reasons: list[str] = []
 
     def eating_translate(text: str) -> str:
         call_count[0] += 1
@@ -404,10 +405,17 @@ def test_translate_html_text_nodes_falls_back_on_separator_loss() -> None:
         result = text.replace("<z2m-sep/>", "").replace("<Z2M-SEP/>", "")
         return result.replace("Hello", "Привет").replace("World", "Мир")
 
-    translated, _ = translate_html_text_nodes(html, translate_text=eating_translate)
+    translated, _ = translate_html_text_nodes(
+        html,
+        translate_text=eating_translate,
+        on_batch_fallback=lambda reason: fallback_reasons.append(reason),
+    )
 
     # Fallback: 2 per-segment calls (after 1 failed batch attempt)
     assert call_count[0] >= 2
+    assert fallback_reasons
+    assert "window_failed" in fallback_reasons[0]
+    assert "separator_mismatch" in fallback_reasons[0]
     assert "Привет" in translated
     assert "Мир" in translated
 
