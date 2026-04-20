@@ -708,7 +708,7 @@ def test_try_batch_translate_translates_text_around_abbreviations() -> None:
     assert "использует" in result[0]
 
 
-def test_try_batch_translate_reports_abbrev_placeholder_mismatch() -> None:
+def test_try_batch_translate_recovers_when_abbrev_tokens_are_partially_dropped() -> None:
     segments = ["LC sensor uses VNA calibration.", "Control sample."]
 
     def dropping_abbrev_token_translate(text: str) -> str:
@@ -717,8 +717,10 @@ def test_try_batch_translate_reports_abbrev_placeholder_mismatch() -> None:
 
     result, reason = _try_batch_translate_with_reason(segments, dropping_abbrev_token_translate)
 
-    assert result is None
-    assert "abbrev_placeholder_mismatch" in reason
+    assert result is not None
+    assert "ok_lenient_abbrev_recovered" in reason
+    assert "LC" in result[0]
+    assert "VNA" in result[0]
 
 
 def test_try_batch_translate_recovers_when_all_abbrev_tokens_are_dropped() -> None:
