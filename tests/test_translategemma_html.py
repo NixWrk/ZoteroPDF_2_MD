@@ -721,6 +721,22 @@ def test_try_batch_translate_reports_abbrev_placeholder_mismatch() -> None:
     assert "abbrev_placeholder_mismatch" in reason
 
 
+def test_try_batch_translate_recovers_when_all_abbrev_tokens_are_dropped() -> None:
+    segments = ["LC sensor uses VNA calibration.", "Control sample."]
+
+    def drop_all_abbrev_tokens_translate(text: str) -> str:
+        text = re.sub(r"@@Z2M_A0@@", "", text, flags=re.IGNORECASE)
+        text = re.sub(r"@@Z2M_A1@@", "", text, flags=re.IGNORECASE)
+        return text.replace("uses", "использует")
+
+    result, reason = _try_batch_translate_with_reason(segments, drop_all_abbrev_tokens_translate)
+
+    assert result is not None
+    assert "ok_lenient_abbrev_recovered" in reason
+    assert "LC" in result[0]
+    assert "VNA" in result[0]
+
+
 def test_try_batch_translate_accepts_case_variants_for_abbrev_tokens() -> None:
     segments = ["GAI sensor uses VNA calibration.", "Control sample."]
 

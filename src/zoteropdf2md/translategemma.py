@@ -788,6 +788,8 @@ def _try_batch_translate_with_reason(
 
     translated_parts = [parsed_by_id[item_id] for item_id in expected_ids]
     result: list[str] = []
+    lenient_abbrev_recovered = 0
+    seg_recovery_cache: dict[str, str] = {}
     for seg_idx, (orig, t_seg, fmap, amap) in enumerate(
         zip(segments, translated_parts, fmaps, amaps),
         start=1,
@@ -801,6 +803,24 @@ def _try_batch_translate_with_reason(
                 int(m.group(1)) for m in _ABBREV_TOKEN_PATTERN.finditer(core)
             )
             if found_abbrev_ids != expected_abbrev_ids:
+                if expected_abbrev_ids and not found_abbrev_ids:
+                    # Model rewrote the segment and dropped all abbrev sentinels.
+                    # Recover this segment locally instead of failing the whole window.
+                    recovered_seg = _translate_text_segment(
+                        orig,
+                        translate_text=translate_text,
+                        cache=seg_recovery_cache,
+                        max_chunk_chars=1800,
+                    )
+                    result.append(recovered_seg)
+                    lenient_abbrev_recovered += 1
+                    _cascade_debug(
+                        "batch_lenient reason=abbrev_tokens_fully_dropped "
+                        f"seg={seg_idx} "
+                        f"expected={_format_int_list(expected_abbrev_ids)} "
+                        "got=[] action=local_segment_recovery"
+                    )
+                    continue
                 _cascade_debug(
                     "batch_fail reason=abbrev_placeholder_mismatch "
                     f"seg={seg_idx} "
@@ -840,6 +860,8 @@ def _try_batch_translate_with_reason(
         return result, f"ok_lenient_missing_id={lenient_missing_id}"
     if lenient_trailing_eos_k > 0:
         return result, f"ok_lenient_trailing_eos k={lenient_trailing_eos_k}"
+    if lenient_abbrev_recovered > 0:
+        return result, f"ok_lenient_abbrev_recovered count={lenient_abbrev_recovered}"
     return result, "ok"
 
 
