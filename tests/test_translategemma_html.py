@@ -12,6 +12,7 @@ from zoteropdf2md.translategemma import (
     _restore_formula_mask,
     _try_batch_translate,
     _try_batch_translate_with_reason,
+    _translate_text_segment,
     _try_windowed_batch_translate,
     _try_windowed_batch_translate_with_reason,
     language_name_for_code,
@@ -662,6 +663,47 @@ def test_try_batch_translate_reports_abbrev_placeholder_mismatch() -> None:
 
     assert result is None
     assert "abbrev_placeholder_mismatch" in reason
+
+
+def test_translate_text_segment_preserves_abbrev_in_single_segment_path() -> None:
+    segment = "ICP monitoring uses VNA calibration."
+
+    def abbreviation_expanding_translate(text: str) -> str:
+        return (
+            text
+            .replace("uses", "использует")
+            .replace("ICP", "внутричерепное давление")
+            .replace("VNA", "векторный анализатор цепей")
+        )
+
+    translated = _translate_text_segment(
+        segment,
+        translate_text=abbreviation_expanding_translate,
+        cache={},
+        max_chunk_chars=512,
+    )
+
+    assert "ICP" in translated
+    assert "VNA" in translated
+    assert "внутричерепное давление" not in translated
+    assert "векторный анализатор цепей" not in translated
+    assert "использует" in translated
+
+
+def test_translate_text_segment_falls_back_when_abbrev_token_is_lost() -> None:
+    segment = "LC sensor."
+
+    def token_losing_translate(text: str) -> str:
+        return re.sub(r'<z2m-a\s+id\s*=\s*"0"\s*/?>', "", text, count=1, flags=re.IGNORECASE)
+
+    translated = _translate_text_segment(
+        segment,
+        translate_text=token_losing_translate,
+        cache={},
+        max_chunk_chars=512,
+    )
+
+    assert translated == segment
 
 
 def test_apply_abbrev_mask_does_not_mask_long_uppercase_section_titles() -> None:

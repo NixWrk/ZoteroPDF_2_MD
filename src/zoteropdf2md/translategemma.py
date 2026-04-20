@@ -1042,6 +1042,37 @@ def _translate_with_chunk_fallback(
     return "".join(translated_parts)
 
 
+def _translate_plain_fragment_preserving_abbrev(
+    text: str,
+    *,
+    translate_text: Callable[[str], str],
+    cache: dict[str, str],
+    max_chunk_chars: int,
+) -> str:
+    if not text or not text.strip():
+        return text
+
+    masked_text, amap = _apply_abbrev_mask(text)
+    translated_masked = _translate_plain_fragment(
+        masked_text,
+        translate_text=translate_text,
+        cache=cache,
+        max_chunk_chars=max_chunk_chars,
+    )
+
+    if not amap:
+        return translated_masked
+
+    expected_abbrev_ids = list(range(len(amap)))
+    found_abbrev_ids = sorted(
+        int(m.group(1)) for m in _ABBREV_TOKEN_PATTERN.finditer(translated_masked)
+    )
+    if found_abbrev_ids != expected_abbrev_ids:
+        # The model altered abbreviation placeholders; safest fallback is source text.
+        return text
+    return _restore_abbrev_mask(translated_masked, amap)
+
+
 def _translate_text_segment(
     segment: str,
     translate_text: Callable[[str], str],
@@ -1060,7 +1091,7 @@ def _translate_text_segment(
 
     spans = _formula_spans(core)
     if not spans:
-        translated_core = _translate_plain_fragment(
+        translated_core = _translate_plain_fragment_preserving_abbrev(
             core,
             translate_text=translate_text,
             cache=cache,
@@ -1073,7 +1104,7 @@ def _translate_text_segment(
     for start, end in spans:
         if start > cursor:
             translated_parts.append(
-                _translate_plain_fragment(
+                _translate_plain_fragment_preserving_abbrev(
                     core[cursor:start],
                     translate_text=translate_text,
                     cache=cache,
@@ -1085,7 +1116,7 @@ def _translate_text_segment(
 
     if cursor < len(core):
         translated_parts.append(
-            _translate_plain_fragment(
+            _translate_plain_fragment_preserving_abbrev(
                 core[cursor:],
                 translate_text=translate_text,
                 cache=cache,
