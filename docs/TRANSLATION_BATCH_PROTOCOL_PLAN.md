@@ -1,15 +1,23 @@
 # Translation Batch Protocol Hardening Plan
 
-**Last updated:** 2026-04-20 (Phase 2 marked implemented; Phase 3 remains planned)
+**Last updated:** 2026-04-20 (Phase 2 implemented; Phase 3 X1+X2 implemented, X3 pending)
 **Scope:** `src/zoteropdf2md/translategemma.py`
 **Status:**
 - **Phase 1 (v2 id-protocol + cascade):** implemented in commits `4a43d65`, `5cce8e0`.
 - **Phase 2 (cascade hardening):** implemented in commit `e8a7435`. См. §0.
-- **Phase 3 (abbreviation mask wiring + heading separator):** design, not yet implemented. См. §-1 ниже (новый, критический).
+- **Phase 3 (abbreviation mask wiring + heading separator):**
+  - **X1 (abbrev mask in batch + integrity checks):** implemented in `9adf70b`.
+  - **X1-extension (abbrev mask in single-segment fallback):** implemented in `5b86567`.
+  - **X2 (heading separator `@@Z2M_HSEP@@`):** implemented in `e8efbcf`.
+  - **Regression tests bundle:** added in `6a4a024`.
+  - **X3 (reverse-grep guard):** planned, not yet implemented.
 
 ---
 
 ## -1. Phase 3: регрессия защиты аббревиатур и сепаратора heading-merge
+
+**Status update (2026-04-20):** Шаги X1 и X2 реализованы, покрыты тестами.
+Шаг X3 оставлен как опциональный follow-up.
 
 ### -1.1 Симптом (прогон 2026-04-19 по Wang LC Sensor)
 
