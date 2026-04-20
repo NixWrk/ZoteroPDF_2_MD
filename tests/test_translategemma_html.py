@@ -274,6 +274,24 @@ def test_translate_html_text_nodes_strips_appended_source_echo() -> None:
     assert "Hello world." not in translated
 
 
+def test_translate_html_text_nodes_heading_separator_does_not_leak() -> None:
+    html = (
+        "<html><body>"
+        "<h1>A Novel Passive Wireless <i>LC</i> Sensor</h1>"
+        "<p>Second paragraph.</p>"
+        "</body></html>"
+    )
+
+    translated, _ = translate_html_text_nodes(
+        html,
+        translate_text=lambda text: text,
+        max_chunk_chars=512,
+    )
+
+    assert "<i>LC</i>" in translated
+    assert "@@Z2M_HSEP@@" not in translated
+
+
 # ---------------------------------------------------------------------------
 # Batch translation helpers
 # ---------------------------------------------------------------------------
