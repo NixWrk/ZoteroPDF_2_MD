@@ -683,6 +683,53 @@ def test_try_batch_translate_reports_abbrev_placeholder_mismatch() -> None:
     assert "abbrev_placeholder_mismatch" in reason
 
 
+def test_try_batch_translate_keeps_lc_abbreviation() -> None:
+    segments = ["A novel LC sensor operating at 5 MHz.", "Control sample."]
+
+    def lc_expanding_translate(text: str) -> str:
+        return text.replace("LC", "Индуктивно-ёмкостная цепь")
+
+    result = _try_batch_translate(segments, lc_expanding_translate)
+
+    assert result is not None
+    assert "LC" in result[0]
+    assert "Индуктивно-ёмкостная цепь" not in result[0]
+
+
+def test_try_windowed_batch_translate_recovers_from_abbrev_token_loss_locally() -> None:
+    segments = [
+        "LC sensor calibration.",
+        "VNA setup details.",
+        "Control segment.",
+    ]
+
+    def abbrev_token_losing_translate(text: str) -> str:
+        marker_count = len(re.findall(r"<z2m-i\d+\s*/>", text, flags=re.IGNORECASE))
+        if marker_count > 1:
+            return re.sub(
+                r'<z2m-a\s+id\s*=\s*"0"\s*/?>',
+                "",
+                text,
+                count=1,
+                flags=re.IGNORECASE,
+            )
+        return text
+
+    result, reason = _try_windowed_batch_translate_with_reason(
+        segments,
+        abbrev_token_losing_translate,
+        window_segments=3,
+        overlap_segments=0,
+        max_window_chars=4096,
+    )
+
+    assert result is not None
+    assert reason == "ok"
+    assert result[0] == segments[0]
+    assert result[1] == segments[1]
+    assert result[2] == segments[2]
+
+
 def test_translate_text_segment_preserves_abbrev_in_single_segment_path() -> None:
     segment = "ICP monitoring uses VNA calibration."
 
