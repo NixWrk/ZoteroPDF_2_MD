@@ -789,6 +789,7 @@ def _try_batch_translate_with_reason(
     translated_parts = [parsed_by_id[item_id] for item_id in expected_ids]
     result: list[str] = []
     lenient_abbrev_recovered = 0
+    lenient_formula_recovered = 0
     seg_recovery_cache: dict[str, str] = {}
     for seg_idx, (orig, t_seg, fmap, amap) in enumerate(
         zip(segments, translated_parts, fmaps, amaps),
@@ -836,12 +837,30 @@ def _try_batch_translate_with_reason(
                 int(m.group(1)) for m in _FORMULA_TOKEN_PATTERN.finditer(core)
             )
             if found_token_ids != expected_token_ids:
-                return None, (
-                    "placeholder_mismatch "
+                missing_formula_ids = sorted(
+                    set(expected_token_ids) - set(found_token_ids)
+                )
+                extra_formula_ids = sorted(
+                    set(found_token_ids) - set(expected_token_ids)
+                )
+                recovered_seg = _translate_text_segment(
+                    orig,
+                    translate_text=translate_text,
+                    cache=seg_recovery_cache,
+                    max_chunk_chars=1800,
+                )
+                result.append(recovered_seg)
+                lenient_formula_recovered += 1
+                _cascade_debug(
+                    "batch_lenient reason=formula_tokens_altered "
                     f"seg={seg_idx} "
                     f"expected={_format_int_list(expected_token_ids)} "
-                    f"got={_format_int_list(found_token_ids)}"
+                    f"got={_format_int_list(found_token_ids)} "
+                    f"missing={_format_int_list(missing_formula_ids)} "
+                    f"extra={_format_int_list(extra_formula_ids)} "
+                    "action=local_segment_recovery"
                 )
+                continue
 
         if _is_translator_refusal(core.strip()):
             t_seg = orig
@@ -856,6 +875,8 @@ def _try_batch_translate_with_reason(
         return result, f"ok_lenient_missing_id={lenient_missing_id}"
     if lenient_trailing_eos_k > 0:
         return result, f"ok_lenient_trailing_eos k={lenient_trailing_eos_k}"
+    if lenient_formula_recovered > 0:
+        return result, f"ok_lenient_formula_recovered count={lenient_formula_recovered}"
     if lenient_abbrev_recovered > 0:
         return result, f"ok_lenient_abbrev_recovered count={lenient_abbrev_recovered}"
     return result, "ok"

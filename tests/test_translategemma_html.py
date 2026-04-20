@@ -409,6 +409,22 @@ def test_try_batch_translate_accepts_formula_token_case_variants() -> None:
     assert "Мир" in result[1]
 
 
+def test_try_batch_translate_recovers_when_formula_tokens_are_altered() -> None:
+    segments = [r"Hello \frac{a}{b} and \omega.", "World."]
+
+    def drop_formula_token_translate(text: str) -> str:
+        text = re.sub(r"@@Z2MF1@@", "", text, count=1, flags=re.IGNORECASE)
+        return text.replace("Hello", "Привет").replace("World", "Мир")
+
+    result, reason = _try_batch_translate_with_reason(segments, drop_formula_token_translate)
+
+    assert result is not None
+    assert "ok_lenient_formula_recovered" in reason
+    assert r"\frac{a}{b}" in result[0]
+    assert r"\omega" in result[0]
+    assert "Мир" in result[1]
+
+
 def test_try_windowed_batch_translate_makes_multiple_calls_for_many_segments() -> None:
     calls: list[str] = []
 
