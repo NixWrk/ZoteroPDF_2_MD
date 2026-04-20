@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import re
+import os
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from time import perf_counter
@@ -54,7 +56,10 @@ _BYTE_TOKEN_CITATION_PATTERN = re.compile(
 # ADC, VNA, RF) are typically ≤5 characters and will be protected.
 _ABBREV_PATTERN = re.compile(r'\b[A-Z]{2,5}\d*\b')
 # Placeholder tokens used to protect abbreviations during model calls.
-_ABBREV_TOKEN_PATTERN = re.compile(r'<z2m-a\s+id\s*=\s*"(\d+)"\s*/?>', re.IGNORECASE)
+_ABBREV_TOKEN_PATTERN = re.compile(
+    r"""<z2m-a\s+id\s*=\s*(?:["'])?(\d+)(?:["'])?\s*/?>""",
+    re.IGNORECASE,
+)
 
 # Additional patterns for protecting specific abbreviations from translation
 _LATIN_ABBREV_PATTERNS = [re.compile(pattern, re.IGNORECASE) for pattern in LATIN_ABBREV_TO_RU.keys()]
@@ -352,6 +357,13 @@ _WINDOW_BATCH_TARGET_SEGMENTS = 8
 _WINDOW_BATCH_OVERLAP_SEGMENTS = 1
 _MAX_WINDOW_BATCH_CHARS = 40_000
 _HEADING_MERGE_SEPARATOR = "@@Z2M_HSEP@@"
+
+
+def _cascade_debug(message: str) -> None:
+    flag = os.getenv("Z2M_DEBUG_CASCADE", "").strip().lower()
+    if flag not in {"1", "true", "yes", "on"}:
+        return
+    print(f"[cascade] {message}", file=sys.stderr, flush=True)
 
 
 def _format_int_list(values: list[int], *, max_items: int = 8) -> str:
@@ -698,6 +710,7 @@ def _try_batch_translate_with_reason(
         parsed_by_id[item_id] = item_text
 
     if duplicate_ids:
+        _cascade_debug(f"batch_fail reason=duplicate_ids ids={_format_int_list(sorted(duplicate_ids))}")
         return None, (
             "duplicate_ids "
             f"ids={_format_int_list(sorted(duplicate_ids))}"
@@ -735,12 +748,22 @@ def _try_batch_translate_with_reason(
                 for missing_id in missing_ids:
                     parsed_by_id[missing_id] = segments[missing_id - 1]
             else:
+                _cascade_debug(
+                    "batch_fail reason=id_mismatch "
+                    f"missing={_format_int_list(missing_ids)} "
+                    f"extra={_format_int_list(extra_ids)}"
+                )
                 return None, (
                     "id_mismatch "
                     f"missing={_format_int_list(missing_ids)} "
                     f"extra={_format_int_list(extra_ids)}"
                 )
         else:
+            _cascade_debug(
+                "batch_fail reason=id_mismatch "
+                f"missing={_format_int_list(missing_ids)} "
+                f"extra={_format_int_list(extra_ids)}"
+            )
             return None, (
                 "id_mismatch "
                 f"missing={_format_int_list(missing_ids)} "
@@ -762,6 +785,12 @@ def _try_batch_translate_with_reason(
                 int(m.group(1)) for m in _ABBREV_TOKEN_PATTERN.finditer(core)
             )
             if found_abbrev_ids != expected_abbrev_ids:
+                _cascade_debug(
+                    "batch_fail reason=abbrev_placeholder_mismatch "
+                    f"seg={seg_idx} "
+                    f"expected={_format_int_list(expected_abbrev_ids)} "
+                    f"got={_format_int_list(found_abbrev_ids)}"
+                )
                 return None, (
                     "abbrev_placeholder_mismatch "
                     f"seg={seg_idx} "
@@ -843,9 +872,21 @@ def _try_windowed_batch_translate_with_reason(
                 window_result=window_result,
             )
             return True, "ok"
+        _cascade_debug(
+            "window_fail "
+            f"core=[{core_start}:{core_end}) "
+            f"extended=[{ext_start}:{ext_end}) "
+            f"reason={reason}"
+        )
 
         core_len = core_end - core_start
         if core_len <= 2:
+            _cascade_debug(
+                "leaf_per_segment "
+                f"core=[{core_start}:{core_end}) "
+                f"extended=[{ext_start}:{ext_end}) "
+                f"reason={reason}"
+            )
             for idx in range(core_start, core_end):
                 translated[idx] = _translate_text_segment(
                     segments[idx],

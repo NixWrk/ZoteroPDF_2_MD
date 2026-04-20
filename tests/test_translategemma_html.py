@@ -683,6 +683,25 @@ def test_try_batch_translate_reports_abbrev_placeholder_mismatch() -> None:
     assert "abbrev_placeholder_mismatch" in reason
 
 
+def test_try_batch_translate_accepts_abbrev_tokens_with_quote_variants() -> None:
+    segments = ["GAI sensor uses VNA calibration.", "Control sample."]
+
+    def token_variant_translate(text: str) -> str:
+        return (
+            text
+            .replace('<z2m-a id="0"/>', "<z2m-a id='0'/>")
+            .replace('<z2m-a id="1"/>', "<z2m-a id=1/>")
+            .replace("uses", "использует")
+        )
+
+    result = _try_batch_translate(segments, token_variant_translate)
+
+    assert result is not None
+    assert "GAI" in result[0]
+    assert "VNA" in result[0]
+    assert "использует" in result[0]
+
+
 def test_try_batch_translate_keeps_lc_abbreviation() -> None:
     segments = ["A novel LC sensor operating at 5 MHz.", "Control sample."]
 
