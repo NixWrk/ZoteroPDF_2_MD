@@ -56,10 +56,8 @@ _BYTE_TOKEN_CITATION_PATTERN = re.compile(
 # ADC, VNA, RF) are typically ≤5 characters and will be protected.
 _ABBREV_PATTERN = re.compile(r'\b[A-Z]{2,5}\d*\b')
 # Placeholder tokens used to protect abbreviations during model calls.
-_ABBREV_TOKEN_PATTERN = re.compile(
-    r"""<z2m-a\s+id\s*=\s*(?:["'])?(\d+)(?:["'])?\s*/?>""",
-    re.IGNORECASE,
-)
+# ASCII sentinel is more robust than XML-style tags in free-form generation.
+_ABBREV_TOKEN_PATTERN = re.compile(r"@@Z2M_A(\d+)@@", re.IGNORECASE)
 
 # Additional patterns for protecting specific abbreviations from translation
 _LATIN_ABBREV_PATTERNS = [re.compile(pattern, re.IGNORECASE) for pattern in LATIN_ABBREV_TO_RU.keys()]
@@ -466,7 +464,7 @@ def _apply_custom_abbrev_mask(text: str) -> tuple[str, dict[str, str]]:
             # Get the replacement from our mapping
             for key_pattern, replacement in LATIN_ABBREV_TO_RU.items():
                 if re.match(key_pattern, original, re.IGNORECASE):
-                    token = f'<z2m-a id="{len(amap)}"/>'
+                    token = f"@@Z2M_A{len(amap)}@@"
                     amap[token] = original
                     return token
             return original
@@ -477,7 +475,7 @@ def _apply_custom_abbrev_mask(text: str) -> tuple[str, dict[str, str]]:
 
 
 def _apply_abbrev_mask(text: str) -> tuple[str, dict[str, str]]:
-    """Replace uppercase abbreviations with ``<z2m-a id="N"/>`` tokens.
+    """Replace uppercase abbreviations with ``@@Z2M_A{N}@@`` tokens.
 
     Protects sequences such as ``IEEE``, ``GAI``, ``LC``, ``ADC`` from being
     transliterated or "translated" by the model (e.g. GAI → ГАИ).
@@ -491,7 +489,7 @@ def _apply_abbrev_mask(text: str) -> tuple[str, dict[str, str]]:
     masked = text
     for j, (start, end) in enumerate(reversed(spans)):
         real_j = len(spans) - 1 - j
-        token = f'<z2m-a id="{real_j}"/>'
+        token = f"@@Z2M_A{real_j}@@"
         amap[token] = text[start:end]
         masked = masked[:start] + token + masked[end:]
     return masked, amap
@@ -507,17 +505,10 @@ def _restore_abbrev_mask(text: str, amap: dict[str, str]) -> str:
         return text
 
     def _replace(match: re.Match[str]) -> str:
-        token = f'<z2m-a id="{match.group(1)}"/>'
+        token = f"@@Z2M_A{int(match.group(1))}@@"
         return amap.get(token, match.group(0))
 
     restored = _ABBREV_TOKEN_PATTERN.sub(_replace, text)
-
-    # Also handle prompt leak protection tokens
-    def _replace_prompt_leak(match: re.Match[str]) -> str:
-        token = f'<z2m-p id="{match.group(1)}"/>'
-        return amap.get(token, match.group(0))
-
-    restored = re.compile(r'<z2m-p id="(\d+)"/>').sub(_replace_prompt_leak, restored)
 
     # Check that all tokens were consumed; orphaned tokens signal model interference.
     for token in amap:

@@ -694,7 +694,7 @@ def test_try_batch_translate_reports_abbrev_placeholder_mismatch() -> None:
 
     def dropping_abbrev_token_translate(text: str) -> str:
         # Drop one abbreviation token while keeping id markers intact.
-        return re.sub(r'<z2m-a\s+id\s*=\s*"1"\s*/?>', "", text, count=1, flags=re.IGNORECASE)
+        return re.sub(r"@@Z2M_A1@@", "", text, count=1, flags=re.IGNORECASE)
 
     result, reason = _try_batch_translate_with_reason(segments, dropping_abbrev_token_translate)
 
@@ -702,18 +702,18 @@ def test_try_batch_translate_reports_abbrev_placeholder_mismatch() -> None:
     assert "abbrev_placeholder_mismatch" in reason
 
 
-def test_try_batch_translate_accepts_abbrev_tokens_with_quote_variants() -> None:
+def test_try_batch_translate_accepts_case_variants_for_abbrev_tokens() -> None:
     segments = ["GAI sensor uses VNA calibration.", "Control sample."]
 
-    def token_variant_translate(text: str) -> str:
+    def token_case_variant_translate(text: str) -> str:
         return (
             text
-            .replace('<z2m-a id="0"/>', "<z2m-a id='0'/>")
-            .replace('<z2m-a id="1"/>', "<z2m-a id=1/>")
+            .replace("@@Z2M_A0@@", "@@z2m_a0@@")
+            .replace("@@Z2M_A1@@", "@@z2m_a1@@")
             .replace("uses", "использует")
         )
 
-    result = _try_batch_translate(segments, token_variant_translate)
+    result = _try_batch_translate(segments, token_case_variant_translate)
 
     assert result is not None
     assert "GAI" in result[0]
@@ -745,7 +745,7 @@ def test_try_windowed_batch_translate_recovers_from_abbrev_token_loss_locally() 
         marker_count = len(re.findall(r"<z2m-i\d+\s*/>", text, flags=re.IGNORECASE))
         if marker_count > 1:
             return re.sub(
-                r'<z2m-a\s+id\s*=\s*"0"\s*/?>',
+                r"@@Z2M_A0@@",
                 "",
                 text,
                 count=1,
@@ -797,7 +797,7 @@ def test_translate_text_segment_falls_back_when_abbrev_token_is_lost() -> None:
     segment = "LC sensor."
 
     def token_losing_translate(text: str) -> str:
-        return re.sub(r'<z2m-a\s+id\s*=\s*"0"\s*/?>', "", text, count=1, flags=re.IGNORECASE)
+        return re.sub(r"@@Z2M_A0@@", "", text, count=1, flags=re.IGNORECASE)
 
     translated = _translate_text_segment(
         segment,
