@@ -106,6 +106,28 @@ def test_polish_html_document_fixes_spaced_sup_and_backslash_artifacts() -> None
     assert "<sup>3</sup>" in polished
 
 
+def test_polish_html_document_inserts_space_after_z2m_links() -> None:
+    html = (
+        "<html><body>"
+        "<p>См. <a href=\"#ref-30\" class=\"z2m-ref-link\">[30]</a>Мы применили фильтр.</p>"
+        "</body></html>"
+    )
+
+    polished = polish_html_document(html)
+    assert '</a> Мы применили фильтр.' in polished
+
+
+def test_polish_html_document_fixes_lc_sensor_heading_artifact() -> None:
+    html = (
+        "<html><body>"
+        "<h1>Новая схема для пассивной беспроводной системы <i>LC</i> датчик</h1>"
+        "</body></html>"
+    )
+
+    polished = polish_html_document(html)
+    assert "<i>LC</i>-датчика" in polished
+
+
 def test_polish_html_document_repairs_split_url_before_autolink() -> None:
     html = (
         "<html><body>"

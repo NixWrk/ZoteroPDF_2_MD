@@ -362,6 +362,9 @@ _WINDOW_BATCH_TARGET_SEGMENTS = 8
 _WINDOW_BATCH_OVERLAP_SEGMENTS = 1
 _MAX_WINDOW_BATCH_CHARS = 40_000
 _HEADING_MERGE_SEPARATOR = "@@Z2M_HSEP@@"
+_TABLE_CAPTION_ALLCAPS_PATTERN = re.compile(
+    r"^\s*TABLE\s+([IVX]+)\s+([A-Z0-9][A-Z0-9\s,()/:+\-]{3,})\s*$"
+)
 
 
 def _cascade_debug(message: str) -> None:
@@ -558,7 +561,9 @@ def _is_identity_residual_segment(source_seg: str, translated_seg: str) -> bool:
         return False
 
     latin_words = re.findall(r"[A-Za-z]+", translated_core)
-    if len(latin_words) < 6:
+    all_caps_table_caption = bool(_TABLE_CAPTION_ALLCAPS_PATTERN.match(translated_core))
+    min_words = 4 if all_caps_table_caption else 6
+    if len(latin_words) < min_words:
         return False
 
     letters = re.findall(r"[A-Za-z\u0400-\u04FF]", translated_core)
@@ -1328,6 +1333,41 @@ def _translate_plain_fragment_preserving_abbrev(
     return _restore_abbrev_mask(translated_masked, amap)
 
 
+def _retry_table_caption_translation(
+    *,
+    source_core: str,
+    translated_core: str,
+    translate_text: Callable[[str], str],
+    cache: dict[str, str],
+    max_chunk_chars: int,
+) -> str:
+    """Retry all-caps TABLE captions with normalized casing when translation is identity."""
+    match = _TABLE_CAPTION_ALLCAPS_PATTERN.match(source_core)
+    if match is None:
+        return translated_core
+
+    source_norm = _normalize_ws(source_core).lower()
+    translated_norm = _normalize_ws(translated_core).lower()
+    if translated_norm != source_norm and re.search(r"[А-Яа-яЁё]", translated_core):
+        return translated_core
+
+    roman = match.group(1)
+    tail = match.group(2)
+    retry_source = f"Table {roman} {tail.lower()}"
+    retry_translated = _translate_plain_fragment(
+        retry_source,
+        translate_text=translate_text,
+        cache=cache,
+        max_chunk_chars=max_chunk_chars,
+    ).strip()
+
+    if not retry_translated:
+        return translated_core
+    if re.search(r"[А-Яа-яЁё]", retry_translated):
+        return retry_translated
+    return translated_core
+
+
 def _translate_text_segment(
     segment: str,
     translate_text: Callable[[str], str],
@@ -1348,6 +1388,13 @@ def _translate_text_segment(
     if not spans:
         translated_core = _translate_plain_fragment_preserving_abbrev(
             core,
+            translate_text=translate_text,
+            cache=cache,
+            max_chunk_chars=max_chunk_chars,
+        )
+        translated_core = _retry_table_caption_translation(
+            source_core=core,
+            translated_core=translated_core,
             translate_text=translate_text,
             cache=cache,
             max_chunk_chars=max_chunk_chars,
@@ -1380,6 +1427,13 @@ def _translate_text_segment(
         )
 
     translated_core = "".join(translated_parts)
+    translated_core = _retry_table_caption_translation(
+        source_core=core,
+        translated_core=translated_core,
+        translate_text=translate_text,
+        cache=cache,
+        max_chunk_chars=max_chunk_chars,
+    )
     return segment[:leading_len] + translated_core + segment[core_end:]
 
 

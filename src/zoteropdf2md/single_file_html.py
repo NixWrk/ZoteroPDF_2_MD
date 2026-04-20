@@ -68,6 +68,14 @@ _HEADING_PERIOD_BEFORE_ABBREV_PATTERN = re.compile(
     r'\.\s+(<(?:i|em|b|strong)\b[^>]*>\s*[A-Z]{2,})',
     re.IGNORECASE,
 )
+_HEADING_ACRONYM_SENSOR_PATTERN = re.compile(
+    r'(<(i|em|b|strong)\b[^>]*>\s*[A-Z0-9]{2,8}\s*</\2>)\s+датчик\b',
+    re.IGNORECASE,
+)
+_Z2M_LINK_GLUE_PATTERN = re.compile(
+    r'(<a\b[^>]*\bclass\s*=\s*["\']z2m-(?:ref|fig|section)-link["\'][^>]*>[\s\S]*?</a>)(?=[A-Za-zА-Яа-яЁё])',
+    re.IGNORECASE,
+)
 _SLASH_PIPE_ARTIFACT_PATTERN = re.compile(r"\s*\\\s*\|\s*\\\s*")
 # SentencePiece byte-fallback tokens emitted by Gemma when it encounters Unicode
 # near translation boundaries: e.g. <0xE2><0x82><0xA9> instead of a real character.
@@ -1226,10 +1234,20 @@ def _fix_heading_translation_breaks(html: str) -> str:
             fixed,
             flags=re.IGNORECASE
         )
+        # Fix 3: common title artefact "... <i>LC</i> датчик" -> "... <i>LC</i>-датчика"
+        fixed = _HEADING_ACRONYM_SENSOR_PATTERN.sub(
+            lambda m: f"{m.group(1)}-датчика",
+            fixed,
+        )
 
         return f"{open_tag}{fixed}{close_tag}"
 
     return _HEADING_TAG_PATTERN.sub(fix_heading, html)
+
+
+def _normalize_spacing_after_z2m_links(html: str) -> str:
+    """Insert a missing space when a z2m link is glued to the following word."""
+    return _Z2M_LINK_GLUE_PATTERN.sub(r"\1 ", html)
 
 
 def polish_html_document(html: str) -> str:
@@ -1252,6 +1270,7 @@ def polish_html_document(html: str) -> str:
     polished = _add_reference_ids_and_citation_links(polished)
     polished = _link_section_refs(polished, found_sections)
     polished = _link_figure_refs(polished, found_figures)
+    polished = _normalize_spacing_after_z2m_links(polished)
     polished = _autolink_plain_urls(polished)
     polished = _inject_utf8_charset(polished)
     polished = _inject_default_styles(polished)

@@ -862,6 +862,51 @@ def test_translate_text_segment_falls_back_when_abbrev_token_is_lost() -> None:
     assert translated == segment
 
 
+def test_translate_text_segment_retries_all_caps_table_caption_with_normalized_case() -> None:
+    segment = "TABLE I PARAMETERS FOR TWO ANTENNAS"
+    calls: list[str] = []
+
+    def caption_translate(text: str) -> str:
+        calls.append(text)
+        if text == "Table I parameters for two antennas":
+            return "Таблица I параметры двух антенн"
+        return text
+
+    translated = _translate_text_segment(
+        segment,
+        translate_text=caption_translate,
+        cache={},
+        max_chunk_chars=512,
+    )
+
+    assert translated == "Таблица I параметры двух антенн"
+    assert "Table I parameters for two antennas" in calls
+
+
+def test_try_batch_translate_recovers_all_caps_table_caption_identity_residual() -> None:
+    segments = [
+        "TABLE IV COMPARISON OF STATE OF ARTS",
+        "Control segment.",
+    ]
+
+    def caption_identity_translate(text: str) -> str:
+        if "<z2m-i1/>" in text and "<z2m-i2/>" in text:
+            return (
+                "<z2m-i1/>TABLE IV COMPARISON OF STATE OF ARTS"
+                "<z2m-i2/>Контрольный сегмент переведен."
+            )
+        if text == "Table IV comparison of state of arts":
+            return "Таблица IV сравнение существующих решений"
+        return text.replace("Control segment.", "Контрольный сегмент переведен.")
+
+    result, reason = _try_batch_translate_with_reason(segments, caption_identity_translate)
+
+    assert result is not None
+    assert reason.startswith("ok_lenient_abbrev_recovered") or reason.startswith("ok_leak_recovery")
+    assert result[0] == "Таблица IV сравнение существующих решений"
+    assert result[1] == "Контрольный сегмент переведен."
+
+
 def test_apply_abbrev_mask_does_not_mask_long_uppercase_section_titles() -> None:
     """All-caps section title words (>5 letters) must NOT be masked.
 
