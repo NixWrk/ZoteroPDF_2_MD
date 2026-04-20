@@ -10,6 +10,7 @@ from zoteropdf2md.translategemma import (
     _mark_author_line_notranslate,
     _restore_abbrev_mask,
     _restore_formula_mask,
+    _sanitize_generation_config_for_greedy,
     _try_batch_translate,
     _try_batch_translate_with_reason,
     _translate_text_segment,
@@ -31,6 +32,24 @@ def test_normalize_language_code_supports_code_and_name() -> None:
 def test_translated_html_output_path_uses_language_suffix() -> None:
     source = Path("D:/tmp/paper.html")
     assert translated_html_output_path(source, "de").name == "paper.de.html"
+
+
+def test_sanitize_generation_config_for_greedy_sets_sampling_defaults() -> None:
+    class DummyConfig:
+        do_sample = True
+        top_p = 0.95
+        top_k = 64
+        temperature = 0.7
+        typical_p = 0.8
+
+    cfg = DummyConfig()
+    _sanitize_generation_config_for_greedy(cfg)
+
+    assert cfg.do_sample is False
+    assert cfg.top_p == 1.0
+    assert cfg.top_k == 50
+    assert cfg.temperature == 1.0
+    assert cfg.typical_p == 1.0
 
 
 def test_translate_html_text_nodes_preserves_markup_and_skips_code_blocks() -> None:

@@ -366,6 +366,31 @@ def _cascade_debug(message: str) -> None:
     print(f"[cascade] {message}", file=sys.stderr, flush=True)
 
 
+def _sanitize_generation_config_for_greedy(generation_config: object | None) -> None:
+    """Align generation config with deterministic decoding.
+
+    Some model bundles ship sampling defaults (top_p/top_k/temperature) in
+    generation_config.json. We run with do_sample=False, so keep config in a
+    greedy-compatible state to avoid warnings and ambiguous behavior.
+    """
+    if generation_config is None:
+        return
+
+    def _set(attr: str, value: object) -> None:
+        if not hasattr(generation_config, attr):
+            return
+        try:
+            setattr(generation_config, attr, value)
+        except Exception:
+            return
+
+    _set("do_sample", False)
+    _set("top_p", 1.0)
+    _set("top_k", 50)
+    _set("temperature", 1.0)
+    _set("typical_p", 1.0)
+
+
 def _format_int_list(values: list[int], *, max_items: int = 8) -> str:
     if not values:
         return "[]"
@@ -1516,21 +1541,46 @@ class TranslateGemmaTranslator:
 
         model_load_started_at = perf_counter()
         self._log_line(f"TranslateGemma: loading model '{resolved_model_ref}'")
-        self._tokenizer = AutoTokenizer.from_pretrained(
-            resolved_model_ref,
-            token=token,
-            cache_dir=cache_dir,
-        )
-        self._model = AutoModelForCausalLM.from_pretrained(
-            resolved_model_ref,
-            token=token,
-            cache_dir=cache_dir,
-            torch_dtype=torch_dtype,
-            device_map=device_map,
-            low_cpu_mem_usage=True,
-        ).eval()
+        tokenizer_kwargs = {
+            "token": token,
+            "cache_dir": cache_dir,
+        }
+        try:
+            self._tokenizer = AutoTokenizer.from_pretrained(
+                resolved_model_ref,
+                fix_mistral_regex=True,
+                **tokenizer_kwargs,
+            )
+        except TypeError:
+            # Older transformers builds may not support this flag.
+            self._tokenizer = AutoTokenizer.from_pretrained(
+                resolved_model_ref,
+                **tokenizer_kwargs,
+            )
+
+        model_kwargs = {
+            "token": token,
+            "cache_dir": cache_dir,
+            "dtype": torch_dtype,
+            "device_map": device_map,
+            "low_cpu_mem_usage": True,
+        }
+        try:
+            self._model = AutoModelForCausalLM.from_pretrained(
+                resolved_model_ref,
+                **model_kwargs,
+            ).eval()
+        except TypeError:
+            # Backward compatibility for transformers versions that still use torch_dtype.
+            model_kwargs.pop("dtype", None)
+            model_kwargs["torch_dtype"] = torch_dtype
+            self._model = AutoModelForCausalLM.from_pretrained(
+                resolved_model_ref,
+                **model_kwargs,
+            ).eval()
         if self._tokenizer.pad_token_id is None and self._tokenizer.eos_token_id is not None:
             self._tokenizer.pad_token = self._tokenizer.eos_token
+        _sanitize_generation_config_for_greedy(getattr(self._model, "generation_config", None))
 
         self._context_window_tokens = None
         self._log_line(
