@@ -390,6 +390,25 @@ def test_try_batch_translate_preserves_formulas() -> None:
     assert "Привет" in result[0]
 
 
+def test_try_batch_translate_accepts_formula_token_case_variants() -> None:
+    segments = [r"Hello \frac{a}{b}.", "World."]
+
+    def token_case_variant_translate(text: str) -> str:
+        return (
+            text
+            .replace("@@Z2MF0@@", "@@z2mf0@@")
+            .replace("Hello", "Привет")
+            .replace("World", "Мир")
+        )
+
+    result = _try_batch_translate(segments, token_case_variant_translate)
+
+    assert result is not None
+    assert r"\frac{a}{b}" in result[0]
+    assert "Привет" in result[0]
+    assert "Мир" in result[1]
+
+
 def test_try_windowed_batch_translate_makes_multiple_calls_for_many_segments() -> None:
     calls: list[str] = []
 

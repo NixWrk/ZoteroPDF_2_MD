@@ -345,8 +345,8 @@ _BATCH_ITEM_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
-# Formula placeholder tokens: <z2m-f id="N"/>  — kept unchanged by the model.
-_FORMULA_TOKEN_PATTERN = re.compile(r'<z2m-f\s+id\s*=\s*"(\d+)"\s*/?>', re.IGNORECASE)
+# Formula placeholder tokens (ASCII sentinel) kept unchanged by the model.
+_FORMULA_TOKEN_PATTERN = re.compile(r"@@Z2MF(\d+)@@", re.IGNORECASE)
 
 # Safety limit: skip batch mode if the combined text exceeds this many characters
 # (rough estimate 4 chars ≈ 1 token, limit ≈ 50k tokens input).
@@ -399,7 +399,7 @@ def _format_int_list(values: list[int], *, max_items: int = 8) -> str:
 
 
 def _apply_formula_mask(text: str) -> tuple[str, dict[str, str]]:
-    """Replace formula spans with ``<z2m-f id="N"/>`` tokens.
+    """Replace formula spans with ``@@Z2MF{N}@@`` tokens.
 
     Returns ``(masked_text, token_map)`` where *token_map* maps each token
     back to the original formula string so it can be restored after translation.
@@ -412,7 +412,7 @@ def _apply_formula_mask(text: str) -> tuple[str, dict[str, str]]:
     # Replace right-to-left so positions stay valid.
     for j, (start, end) in enumerate(reversed(spans)):
         real_j = len(spans) - 1 - j
-        token = f'<z2m-f id="{real_j}"/>'
+        token = f"@@Z2MF{real_j}@@"
         fmap[token] = text[start:end]
         masked = masked[:start] + token + masked[end:]
     return masked, fmap
@@ -424,7 +424,7 @@ def _restore_formula_mask(text: str, fmap: dict[str, str]) -> str:
         return text
 
     def _replace(match: re.Match[str]) -> str:
-        token = f'<z2m-f id="{match.group(1)}"/>'
+        token = f"@@Z2MF{int(match.group(1))}@@"
         return fmap.get(token, match.group(0))
 
     restored = _FORMULA_TOKEN_PATTERN.sub(_replace, text)
