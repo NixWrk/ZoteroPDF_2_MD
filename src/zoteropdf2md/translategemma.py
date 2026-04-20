@@ -347,6 +347,13 @@ _BATCH_ITEM_PATTERN = re.compile(
 
 # Formula placeholder tokens (ASCII sentinel) kept unchanged by the model.
 _FORMULA_TOKEN_PATTERN = re.compile(r"@@Z2MF(\d+)@@", re.IGNORECASE)
+# Any internal protocol marker leaking into the final translated text means the
+# reconstructed batch output is not trustworthy and the segment should be
+# recovered locally through single-segment translation.
+_INTERNAL_MARKER_LEAK_PATTERN = re.compile(
+    r"<\s*z2m-[^>]*>|@@Z2M_[A-Z0-9_]+@@",
+    re.IGNORECASE,
+)
 
 # Safety limit: skip batch mode if the combined text exceeds this many characters
 # (rough estimate 4 chars ≈ 1 token, limit ≈ 50k tokens input).
@@ -521,6 +528,117 @@ def _split_outer_ws(text: str) -> tuple[str, str, str]:
     trailing_len = len(text) - len(text.rstrip())
     core_end = len(text) - trailing_len if trailing_len else len(text)
     return text[:leading_len], text[leading_len:core_end], text[core_end:]
+
+
+def _segment_core_text(text: str) -> str:
+    _, core, _ = _split_outer_ws(text)
+    return core
+
+
+def _is_duplicate_neighbor_segment(candidate: str, neighbor: str | None) -> bool:
+    if neighbor is None:
+        return False
+    cand_norm = _normalize_ws(_segment_core_text(candidate)).lower()
+    neigh_norm = _normalize_ws(_segment_core_text(neighbor)).lower()
+    if len(cand_norm) < 40 or len(neigh_norm) < 40:
+        return False
+
+    span = min(30, len(cand_norm), len(neigh_norm))
+    if span < 12:
+        return False
+
+    same_prefix = cand_norm[:span] == neigh_norm[:span]
+    same_suffix = cand_norm[-span:] == neigh_norm[-span:]
+    return same_prefix and same_suffix
+
+
+def _is_identity_residual_segment(source_seg: str, translated_seg: str) -> bool:
+    translated_core = _normalize_ws(_segment_core_text(translated_seg))
+    if not translated_core:
+        return False
+
+    latin_words = re.findall(r"[A-Za-z]+", translated_core)
+    if len(latin_words) < 6:
+        return False
+
+    letters = re.findall(r"[A-Za-z\u0400-\u04FF]", translated_core)
+    if not letters:
+        return False
+    latin_chars = sum(1 for char in letters if ("A" <= char <= "Z") or ("a" <= char <= "z"))
+    latin_ratio = latin_chars / len(letters)
+    if latin_ratio < 0.8:
+        return False
+
+    source_core = _normalize_ws(_segment_core_text(source_seg)).lower()
+    if not source_core:
+        return False
+
+    return translated_core.lower() == source_core
+
+
+def _post_reassembly_guard_reason(
+    *,
+    source_seg: str,
+    translated_seg: str,
+    prev_translated: str | None,
+    next_translated: str | None,
+) -> str | None:
+    translated_core = _segment_core_text(translated_seg)
+    if _INTERNAL_MARKER_LEAK_PATTERN.search(translated_core):
+        return "marker_leak"
+    if _is_identity_residual_segment(source_seg, translated_seg):
+        return "identity_residual"
+    if _is_duplicate_neighbor_segment(translated_seg, prev_translated):
+        return "duplicate_leak"
+    if _is_duplicate_neighbor_segment(translated_seg, next_translated):
+        return "duplicate_leak"
+    return None
+
+
+def _apply_post_reassembly_guards(
+    *,
+    source_segments: list[str],
+    translated_segments: list[str],
+    translate_text: Callable[[str], str],
+    cache: dict[str, str],
+    max_chunk_chars: int,
+    context_label: str,
+) -> tuple[list[str], dict[str, int]]:
+    if len(source_segments) != len(translated_segments):
+        return translated_segments, {}
+
+    snapshot = list(translated_segments)
+    result = list(translated_segments)
+    recovery_counts: dict[str, int] = {}
+
+    for idx, (source_seg, translated_seg) in enumerate(
+        zip(source_segments, snapshot),
+        start=1,
+    ):
+        prev_seg = snapshot[idx - 2] if idx > 1 else None
+        next_seg = snapshot[idx] if idx < len(snapshot) else None
+        reason = _post_reassembly_guard_reason(
+            source_seg=source_seg,
+            translated_seg=translated_seg,
+            prev_translated=prev_seg,
+            next_translated=next_seg,
+        )
+        if reason is None:
+            continue
+
+        result[idx - 1] = _translate_text_segment(
+            source_seg,
+            translate_text=translate_text,
+            cache=cache,
+            max_chunk_chars=max_chunk_chars,
+        )
+        recovery_counts[reason] = recovery_counts.get(reason, 0) + 1
+        _cascade_debug(
+            f"{context_label}_lenient "
+            f"reason={reason} seg={idx} action=local_segment_recovery"
+        )
+
+    return result, recovery_counts
 
 
 def _try_batch_translate(
@@ -871,6 +989,26 @@ def _try_batch_translate_with_reason(
             t_seg = f"{lead}{core}{tail}"
         result.append(t_seg)
 
+    result, guard_recovery_counts = _apply_post_reassembly_guards(
+        source_segments=segments,
+        translated_segments=result,
+        translate_text=translate_text,
+        cache=seg_recovery_cache,
+        max_chunk_chars=1800,
+        context_label="batch",
+    )
+    guard_recovered = sum(guard_recovery_counts.values())
+    if guard_recovered > 0:
+        details = ",".join(
+            f"{name}={count}"
+            for name, count in sorted(guard_recovery_counts.items())
+            if count > 0
+        )
+        return result, (
+            "ok_leak_recovery "
+            f"count={guard_recovered} details={details}"
+        )
+
     if lenient_missing_id is not None:
         return result, f"ok_lenient_missing_id={lenient_missing_id}"
     if lenient_trailing_eos_k > 0:
@@ -975,7 +1113,27 @@ def _try_windowed_batch_translate_with_reason(
 
     if any(item is None for item in translated):
         return None, "window_postcheck_none_entries"
-    return [item for item in translated if item is not None], "ok"
+    translated_full = [item for item in translated if item is not None]
+    translated_full, guard_recovery_counts = _apply_post_reassembly_guards(
+        source_segments=segments,
+        translated_segments=translated_full,
+        translate_text=translate_text,
+        cache=leaf_cache,
+        max_chunk_chars=leaf_max_chunk_chars,
+        context_label="window",
+    )
+    guard_recovered = sum(guard_recovery_counts.values())
+    if guard_recovered > 0:
+        details = ",".join(
+            f"{name}={count}"
+            for name, count in sorted(guard_recovery_counts.items())
+            if count > 0
+        )
+        return translated_full, (
+            "ok_window_leak_recovery "
+            f"count={guard_recovered} details={details}"
+        )
+    return translated_full, "ok"
 
 
 def _translate_plain_fragment(

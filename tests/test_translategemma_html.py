@@ -895,3 +895,144 @@ def test_apply_abbrev_mask_still_protects_short_abbreviations() -> None:
 
     restored = _restore_abbrev_mask(masked, amap)
     assert restored == text
+
+
+def test_try_batch_translate_recovers_when_internal_marker_leaks_into_segment() -> None:
+    segments = [
+        "First segment should be recovered.",
+        "Second segment can stay from batch.",
+    ]
+
+    def marker_leak_translate(text: str) -> str:
+        if "<z2m-i1/>" in text and "<z2m-i2/>" in text:
+            return (
+                "<z2m-i1/>Batch output with leaked marker <z2m-i99>tail</z2m-i99>"
+                "<z2m-i2/>Второй сегмент из батча."
+            )
+        return (
+            text
+            .replace("First segment should be recovered.", "Первый сегмент восстановлен локально.")
+            .replace("Second segment can stay from batch.", "Второй сегмент из батча.")
+        )
+
+    result, reason = _try_batch_translate_with_reason(segments, marker_leak_translate)
+
+    assert result is not None
+    assert reason.startswith("ok_leak_recovery")
+    assert "marker_leak=1" in reason
+    assert result[0] == "Первый сегмент восстановлен локально."
+    assert result[1] == "Второй сегмент из батча."
+    assert "<z2m-" not in "".join(result)
+
+
+def test_try_batch_translate_recovers_neighbor_duplicates_locally() -> None:
+    segments = [
+        "Alpha segment source text should remain unique after recovery.",
+        "Beta segment source text should remain unique after recovery.",
+    ]
+    duplicate_text = (
+        "Одинаковый длинный фрагмент для проверки duplicate guard в соседних "
+        "сегментах после reassembly."
+    )
+
+    def duplicate_batch_translate(text: str) -> str:
+        if "<z2m-i1/>" in text and "<z2m-i2/>" in text:
+            return f"<z2m-i1/>{duplicate_text}<z2m-i2/>{duplicate_text}"
+        return (
+            text
+            .replace(
+                "Alpha segment source text should remain unique after recovery.",
+                "Альфа сегмент восстановлен локально.",
+            )
+            .replace(
+                "Beta segment source text should remain unique after recovery.",
+                "Бета сегмент восстановлен локально.",
+            )
+        )
+
+    result, reason = _try_batch_translate_with_reason(segments, duplicate_batch_translate)
+
+    assert result is not None
+    assert reason.startswith("ok_leak_recovery")
+    assert "duplicate_leak=2" in reason
+    assert result[0] == "Альфа сегмент восстановлен локально."
+    assert result[1] == "Бета сегмент восстановлен локально."
+
+
+def test_try_batch_translate_recovers_identity_residual_segment() -> None:
+    segments = [
+        "This paragraph remains in English and should be recovered by guard logic.",
+        "Second segment can stay translated.",
+    ]
+
+    def identity_residual_translate(text: str) -> str:
+        if "<z2m-i1/>" in text and "<z2m-i2/>" in text:
+            return (
+                "<z2m-i1/>This paragraph remains in English and should be recovered by guard logic."
+                "<z2m-i2/>Второй сегмент уже переведен."
+            )
+        return (
+            text
+            .replace(
+                "This paragraph remains in English and should be recovered by guard logic.",
+                "Этот абзац восстановлен локально и переведен на русский.",
+            )
+            .replace("Second segment can stay translated.", "Второй сегмент уже переведен.")
+        )
+
+    result, reason = _try_batch_translate_with_reason(segments, identity_residual_translate)
+
+    assert result is not None
+    assert reason.startswith("ok_leak_recovery")
+    assert "identity_residual=1" in reason
+    assert result[0] == "Этот абзац восстановлен локально и переведен на русский."
+    assert result[1] == "Второй сегмент уже переведен."
+
+
+def test_try_windowed_batch_translate_recovers_cross_window_duplicate_boundary() -> None:
+    segments = [
+        "S1 source paragraph one.",
+        "S2 source paragraph two.",
+        "S3 source paragraph three.",
+        "S4 source paragraph four.",
+    ]
+    duplicate_boundary_text = (
+        "Длинный дублированный фрагмент на границе окон для проверки window guard "
+        "после объединения результата."
+    )
+
+    def cross_window_duplicate_translate(text: str) -> str:
+        if "<z2m-i1/>" in text and "<z2m-i2/>" in text:
+            if "S1 source paragraph one." in text:
+                return (
+                    "<z2m-i1/>RU1 уникальный сегмент первого окна."
+                    f"<z2m-i2/>{duplicate_boundary_text}"
+                )
+            if "S3 source paragraph three." in text:
+                return (
+                    f"<z2m-i1/>{duplicate_boundary_text}"
+                    "<z2m-i2/>RU4 уникальный сегмент второго окна."
+                )
+        return (
+            text
+            .replace("S1 source paragraph one.", "RU1 уникальный сегмент первого окна.")
+            .replace("S2 source paragraph two.", "RU2 локально восстановлен.")
+            .replace("S3 source paragraph three.", "RU3 локально восстановлен.")
+            .replace("S4 source paragraph four.", "RU4 уникальный сегмент второго окна.")
+        )
+
+    result, reason = _try_windowed_batch_translate_with_reason(
+        segments,
+        cross_window_duplicate_translate,
+        window_segments=2,
+        overlap_segments=0,
+        max_window_chars=4096,
+    )
+
+    assert result is not None
+    assert reason.startswith("ok_window_leak_recovery")
+    assert "duplicate_leak=2" in reason
+    assert result[0] == "RU1 уникальный сегмент первого окна."
+    assert result[1] == "RU2 локально восстановлен."
+    assert result[2] == "RU3 локально восстановлен."
+    assert result[3] == "RU4 уникальный сегмент второго окна."
