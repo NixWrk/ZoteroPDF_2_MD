@@ -628,23 +628,40 @@ def test_apply_abbrev_mask_handles_roman_numerals() -> None:
 
 
 def test_try_batch_translate_translates_text_around_abbreviations() -> None:
-    """Batch translate must pass abbreviations through to the model unchanged.
+    """Batch path must preserve abbreviations via hard mask, not prompt goodwill."""
 
-    Abbreviation protection is via the model prompt instruction, not code masking.
-    A well-behaved translate function (simulating a prompt-obedient model) keeps
-    uppercase abbreviations as-is while translating surrounding text.
-    """
-    def prompt_obedient_translate(text: str) -> str:
-        # Simulate a model that follows the 'keep abbreviations' instruction
-        return text.replace("uses", "использует")
+    def abbreviation_expanding_translate(text: str) -> str:
+        # Simulate a model that eagerly expands abbreviations when it sees them.
+        # With hard masking wired in, raw abbreviations should not be visible here.
+        return (
+            text
+            .replace("uses", "использует")
+            .replace("GAI", "ГАИ")
+            .replace("VNA", "векторный анализатор цепей")
+        )
 
     segments = ["The GAI sensor uses VNA calibration.", "Standard test method."]
-    result = _try_batch_translate(segments, prompt_obedient_translate)
+    result = _try_batch_translate(segments, abbreviation_expanding_translate)
 
     assert result is not None
     assert "GAI" in result[0]
     assert "VNA" in result[0]
+    assert "ГАИ" not in result[0]
+    assert "векторный анализатор цепей" not in result[0]
     assert "использует" in result[0]
+
+
+def test_try_batch_translate_reports_abbrev_placeholder_mismatch() -> None:
+    segments = ["LC sensor uses VNA calibration.", "Control sample."]
+
+    def dropping_abbrev_token_translate(text: str) -> str:
+        # Drop one abbreviation token while keeping id markers intact.
+        return re.sub(r'<z2m-a\s+id\s*=\s*"1"\s*/?>', "", text, count=1, flags=re.IGNORECASE)
+
+    result, reason = _try_batch_translate_with_reason(segments, dropping_abbrev_token_translate)
+
+    assert result is None
+    assert "abbrev_placeholder_mismatch" in reason
 
 
 def test_apply_abbrev_mask_does_not_mask_long_uppercase_section_titles() -> None:

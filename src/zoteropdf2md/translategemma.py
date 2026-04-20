@@ -54,7 +54,7 @@ _BYTE_TOKEN_CITATION_PATTERN = re.compile(
 # ADC, VNA, RF) are typically ≤5 characters and will be protected.
 _ABBREV_PATTERN = re.compile(r'\b[A-Z]{2,5}\d*\b')
 # Placeholder tokens used to protect abbreviations during model calls.
-_ABBREV_TOKEN_PATTERN = re.compile(r'<z2m-a id="(\d+)"/>')
+_ABBREV_TOKEN_PATTERN = re.compile(r'<z2m-a\s+id\s*=\s*"(\d+)"\s*/?>', re.IGNORECASE)
 
 # Additional patterns for protecting specific abbreviations from translation
 _LATIN_ABBREV_PATTERNS = [re.compile(pattern, re.IGNORECASE) for pattern in LATIN_ABBREV_TO_RU.keys()]
@@ -656,10 +656,13 @@ def _try_batch_translate_with_reason(
 
     masked_segs: list[str] = []
     fmaps: list[dict[str, str]] = []
+    amaps: list[dict[str, str]] = []
     for seg in segments:
         masked, fmap = _apply_formula_mask(seg)
+        masked, amap = _apply_abbrev_mask(masked)
         masked_segs.append(masked)
         fmaps.append(fmap)
+        amaps.append(amap)
 
     batch_text = "".join(
         f"<z2m-i{idx}/>{seg}"
@@ -745,12 +748,25 @@ def _try_batch_translate_with_reason(
 
     translated_parts = [parsed_by_id[item_id] for item_id in expected_ids]
     result: list[str] = []
-    for seg_idx, (orig, t_seg, fmap) in enumerate(
-        zip(segments, translated_parts, fmaps),
+    for seg_idx, (orig, t_seg, fmap, amap) in enumerate(
+        zip(segments, translated_parts, fmaps, amaps),
         start=1,
     ):
         lead, core, tail = _split_outer_ws(t_seg)
         _, orig_core, _ = _split_outer_ws(orig)
+
+        if amap:
+            expected_abbrev_ids = list(range(len(amap)))
+            found_abbrev_ids = sorted(
+                int(m.group(1)) for m in _ABBREV_TOKEN_PATTERN.finditer(core)
+            )
+            if found_abbrev_ids != expected_abbrev_ids:
+                return None, (
+                    "abbrev_placeholder_mismatch "
+                    f"seg={seg_idx} "
+                    f"expected={_format_int_list(expected_abbrev_ids)} "
+                    f"got={_format_int_list(found_abbrev_ids)}"
+                )
 
         if fmap:
             expected_token_ids = list(range(len(fmap)))
@@ -769,6 +785,7 @@ def _try_batch_translate_with_reason(
             t_seg = orig
         else:
             core = _strip_source_echo(core, orig_core)
+            core = _restore_abbrev_mask(core, amap)
             core = _restore_formula_mask(core, fmap)
             t_seg = f"{lead}{core}{tail}"
         result.append(t_seg)
