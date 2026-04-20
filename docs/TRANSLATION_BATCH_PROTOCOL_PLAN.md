@@ -1,14 +1,293 @@
 # Translation Batch Protocol Hardening Plan
 
-**Last updated:** 2026-04-18 (revised after v2 field test)
+**Last updated:** 2026-04-20 (Phase 2 marked implemented; Phase 3 remains planned)
 **Scope:** `src/zoteropdf2md/translategemma.py`
 **Status:**
 - **Phase 1 (v2 id-protocol + cascade):** implemented in commits `4a43d65`, `5cce8e0`.
-- **Phase 2 (cascade hardening):** design, not yet implemented. См. §0 ниже.
+- **Phase 2 (cascade hardening):** implemented in commit `e8a7435`. См. §0.
+- **Phase 3 (abbreviation mask wiring + heading separator):** design, not yet implemented. См. §-1 ниже (новый, критический).
 
 ---
 
-## 0. Phase 2: результаты v2 и план доработки
+## -1. Phase 3: регрессия защиты аббревиатур и сепаратора heading-merge
+
+### -1.1 Симптом (прогон 2026-04-19 по Wang LC Sensor)
+
+Заголовок статьи перевёлся как:
+
+> «Новая схема считывания внутричерепного давления для пассивной беспроводной
+> **передачи данных Индуктивно-ёмкостная цепь датчик**»
+
+Оригинал: `A Novel Intracranial Pressure Readout Circuit for Passive Wireless LC Sensor`
+(в HTML `<h1>…Passive Wireless <i>LC</i> Sensor</h1>` — 3 текстовых узла).
+
+Три отдельных дефекта в одном заголовке:
+
+1. **«LC» развернулось в «Индуктивно-ёмкостная цепь».** Модель сама расшифровала
+   аббревиатуру LC (= Inductor-Capacitor), хотя она должна была остаться как
+   `LC` (защищённая Latin-аббревиатура).
+2. **«передачи данных» — галлюцинация.** В оригинале после «Passive Wireless»
+   идёт «LC Sensor», никаких «data transmission» нет. Модель дописала свой
+   smooth-завершение фразы, потому что не получила непрерывного контекста.
+3. **«датчик» висит в конце оторванно.** После «Индуктивно-ёмкостная цепь»
+   должно было идти согласование (родительный падеж, единое словосочетание),
+   но «датчик» пришёл отдельным хвостом — как будто переводился изолированно.
+
+### -1.2 Корневые причины (проверено чтением кода)
+
+**RC1: `_apply_abbrev_mask` определена, но НИГДЕ НЕ ВЫЗЫВАЕТСЯ.**
+
+`src/zoteropdf2md/translategemma.py:441` — функция `_apply_abbrev_mask(text)`
+маскирует `\b[A-Z]{2,5}\d*\b` (регексп `_ABBREV_PATTERN`, строка 55) в токены
+`<z2m-a id="N"/>`, где N — индекс в сохранённом маппинге. Есть также
+`_restore_abbrev_mask` (строка 462) для обратной подстановки. Обе функции —
+мёртвый код: `grep '_apply_abbrev_mask|_restore_abbrev_mask'` по файлу даёт
+**только определения**, ни одного call-site.
+
+В batch-пути v2 (строки 657-662) применяется только `_apply_formula_mask`:
+
+```python
+# translategemma.py:657-662
+masked_segs: list[str] = []
+fmaps: list[dict[str, str]] = []
+for seg in segments:
+    masked, fmap = _apply_formula_mask(seg)   # ← только формулы
+    masked_segs.append(masked)
+    fmaps.append(fmap)
+```
+
+Результат: **LC, SNR, ICP, IEEE, VNA, MEMS, FPGA, ADC, GAI, RF, DC, AC, USB,
+MIMO и любые другие 2-5-буквенные латинские аббревиатуры физически попадают
+в LLM** в исходном виде. Инструкция в промпте («keep uppercase Latin
+acronyms») — просьба, а не гарантия; Gemma-4B регулярно её нарушает.
+
+**RC2: U+E001 как сепаратор heading-merge — ненадёжен на выходе модели.**
+
+`_merge_heading_text_nodes` (строка 1083) склеивает текстовые узлы заголовка
+через `\uE001` (Private Use Area). Для Wang h1 получается:
+
+```
+"A Novel ... Passive Wireless\uE001LC\uE001Sensor"
+```
+
+Это **один** сегмент, его батчит id-протокол. Проблема: U+E001 — символ PUA,
+не имеющий ни смысла, ни закреплённого токена. Поведение модели на нём
+непредсказуемо:
+
+- может выдать его как unknown-token (≈ пустая строка);
+- может «склеить» слева и справа текст без сепаратора;
+- может интерпретировать как soft-разрыв и породить parallel-перевод
+  (именно это и произошло в Wang — модель потеряла связку между фрагментами
+  и «дописала» «передачи данных» как окончание первого фрагмента).
+
+При расщеплении в `_split_heading_text_nodes` (строка 1159) код проверяет
+`"\uE001" not in merged_text` → значит, если сепаратор потерян, вся
+heading-merge гирлянда падает в safety-net:
+
+```python
+# translategemma.py:1287
+parts = [p.replace("\uE001", " ") for p in parts]
+```
+
+→ все три узла Wang получают склеенный-и-плохо-переведённый текст, разнесённый
+пробелами. Визуально это и есть «передачи данных Индуктивно-ёмкостная цепь
+датчик».
+
+**RC3: `_merge_heading_text_nodes` игнорирует содержимое inline-тегов.**
+
+Функция собирает только **текстовые узлы** между heading-тегами. Для
+`<h1>…Passive Wireless <i>LC</i> Sensor</h1>` в обход попадают текстовые
+узлы «…Passive Wireless», «LC», «Sensor», но **сам тег `<i>` теряется**
+при merge (ведь merged_text = join of text-only). После расщепления
+оригинальная структура `<i>LC</i>` восстанавливается только если сепаратор
+выжил; иначе inline-тег вставится не туда. Это амплифицирует RC2.
+
+### -1.3 Почему prompt-инструкция не спасает
+
+В `translategemma.py:1500` инструкция просит «keep every sequence of 2 or
+more uppercase Latin letters». Но:
+
+- Gemma-4B по-разному слушается на разных входах (особенно на коротких
+  фрагментах типа «LC»).
+- Расшифровка LC = «Inductor-Capacitor» — устойчивый паттерн в корпусе
+  модели; soft-constraint из prompt его не перевешивает.
+- Отдельный узел длиной 2 символа («LC») — deadly: модель интерпретирует
+  его как «переведи аббревиатуру».
+
+**Hard-маска (токен-плейсхолдер) — единственный надёжный способ.** Она уже
+реализована (`_apply_abbrev_mask`), но не подключена. Подключение —
+одностраничная правка.
+
+### -1.4 План исправления (Phase 3, три шага)
+
+**Шаг X1 — подключить `_apply_abbrev_mask` в batch-путь (obligatory).**
+
+В `_try_batch_translate_with_reason` (строки 648-758) после `_apply_formula_mask`
+применять `_apply_abbrev_mask`. Соответственно — в обратном порядке при
+восстановлении. Порядок важен: формулы маскируются первыми (внутри них
+могут быть capitalised latin tokens, которые не должны трактоваться как
+аббревиатуры).
+
+```python
+# Новый цикл preparation (на месте строк 657-662):
+masked_segs: list[str] = []
+fmaps: list[dict[str, str]] = []
+amaps: list[dict[str, str]] = []
+for seg in segments:
+    masked, fmap = _apply_formula_mask(seg)
+    masked, amap = _apply_abbrev_mask(masked)   # ← новое
+    masked_segs.append(masked)
+    fmaps.append(fmap)
+    amaps.append(amap)
+
+# В пост-обработке (переработать существующий зависимый код):
+#   core = _restore_abbrev_mask(core, amap)     ← новое, ПЕРЕД formula-restore
+#   core = _restore_formula_mask(core, fmap)
+```
+
+Также надо добавить валидацию placeholder-integrity для abbrev-токенов
+(аналогично существующей валидации `_FORMULA_TOKEN_PATTERN` в строках
+736-746): если модель дропнула/продублировала `<z2m-a id="N"/>` — fail
+окно c reason `abbrev_placeholder_mismatch`, чтобы cascade мог бисекцией
+свернуть в leaf per-segment.
+
+Аналогично подключить в fallback-путь `_translate_single_segment` (строки,
+где вызывается formula-маска на одиночный сегмент). Это закроет дыру и
+для per-segment режима, не только batch.
+
+**Шаг X2 — заменить U+E001 heading separator на защищённый XML-токен.**
+
+Заменить `"\uE001"` на `"<z2m-h-sep/>"` (или `<z2m-h{idx}/>` с id,
+аналогично id-протоколу). Причины:
+
+- Gemma-4B уже умеет сохранять самозакрывающиеся XML-теги (это её
+  повседневный вход с `<z2m-i{n}/>`).
+- Self-closing XML-тег не ломает lattice токенизации (он токенизируется
+  как 4-5 обычных ASCII-токенов, которые модель уважает).
+- Вероятность дропа на порядок ниже, чем у PUA-символа.
+
+Изменения:
+
+```python
+# translategemma.py:1144 (_merge_heading_text_nodes)
+merged_text = "<z2m-hsep/>".join(texts_to_merge)
+
+# translategemma.py:1187 (_split_heading_text_nodes)
+if not merged_text or "<z2m-hsep/>" not in merged_text:
+    ...
+split_texts = merged_text.split("<z2m-hsep/>")
+
+# safety-net (строки 1287, 1342):
+parts = [re.sub(r"<z2m-hsep\s*/>", " ", p) for p in parts]
+```
+
+Поскольку `<z2m-hsep/>` — это уже XML-подобный токен, он пройдёт через
+split-regex `_TAG_SPLIT_PATTERN` как обычный тег. Значит надо
+**исключить** его из `_TAG_SPLIT_PATTERN` split (или обрабатывать до split),
+чтобы он не считался структурным тегом. Вариант: склеивать через текст
+`@@Z2M_HSEP@@` (plain ASCII, тоже стабильно токенизируется, но не лезет
+в tag-aware regex).
+
+**Рекомендую: `@@Z2M_HSEP@@`** — ASCII-sentinel, не попадает под
+`<[^>]+>`, не требует корректировки других regex'ов, имеет уникальную
+форму «@@» которую модель почти не производит спонтанно.
+
+**Шаг X3 — валидация на post-translation: обратный grep.**
+
+После восстановления масок добавить пост-чек: если в переведённом сегменте
+встречается одна из Russian-развёрток защищённых аббревиатур (например
+«Индуктивно-ёмкостная цепь», «виртуальный сетевой анализатор»,
+«внутричерепное давление» ← осторожно, ICP = intracranial pressure,
+тут развёртка — **валидна**), **И** соответствующая аббревиатура отсутствует
+в оригинальном сегменте, — flag как прошедшая через prompt-leak, вызвать
+pre-segment fallback.
+
+Этот шаг менее приоритетный, потому что Шаг X1 должен закрыть подавляющее
+большинство кейсов. Включить, если после X1+X2 в логах всё ещё появляются
+Russian-развёртки.
+
+### -1.5 Явный invariants
+
+1. **Abbrev-маска применяется ПЕРЕД id-обёрткой.** Порядок:
+   `segment → formula-mask → abbrev-mask → id-wrap → LLM → parse → abbrev-restore → formula-restore`.
+2. **`<z2m-a id="N"/>` и `<z2m-i{n}/>` — раздельные namespaces.** Парсер
+   id-протокола (`_BATCH_ITEM_PATTERN`, строка 341) не должен случайно
+   матчить abbrev-токены. Текущий regex `<z2m-i(\d+)\s*/>` это уже
+   обеспечивает (разные префиксы `-a` vs `-i`).
+3. **Heading-separator `@@Z2M_HSEP@@` не конфликтует с `_TAG_SPLIT_PATTERN`.**
+   ASCII-sentinel не попадает под `<[^>]+>`, split работает как раньше.
+4. **Валидация placeholder-integrity — в том же месте, что и
+   formula-integrity.** Если any abbrev-токен потерян/дублирован — fail
+   окно, дать cascade свернуться в leaf-per-segment.
+
+### -1.6 Acceptance criteria Phase 3
+
+| Метрика | Сейчас | Цель |
+|---|---|---|
+| `grep -c 'LC Индуктивно\|Индуктивно-ёмкостная' RU HTML` | ≥1 в Wang | 0 |
+| `grep -c 'виртуальный сетевой анализатор' RU HTML` (VNA) | возможен | 0 |
+| `grep -E '\b(LC\|SNR\|ICP\|VNA\|IEEE\|FPGA\|MEMS\|ADC)\b' RU HTML` | < ожидаемого | ≥ числа вхождений в EN |
+| Заголовок Wang `<h1>` | «LC Индуктивно-ёмкостная цепь датчик» | содержит подстроку «LC» или «LC-датчик(а)» |
+| Логи cascade на Wang | 0 инцидентов (но качество плохое) | 0 инцидентов (качество OK) |
+
+### -1.7 Тесты (`tests/test_translategemma_html.py`)
+
+1. Вход `"A novel LC sensor operating at 5 MHz"`, fake `translate_text`
+   который возвращает вход буквально → ожидать, что в результате `LC`
+   осталась `LC` (а не «Индуктивно-ёмкостная цепь»).
+2. Вход `"<h1>Wang <i>LC</i> sensor</h1>"` через полный путь
+   `translate_html_text_nodes` с fake, сохраняющим все токены →
+   ожидать, что `<i>LC</i>` остаётся в результирующем HTML, а
+   `@@Z2M_HSEP@@` нигде не утекает в вывод.
+3. Fake `translate_text`, дропающий `<z2m-a id="N"/>` у одного из
+   segment'ов → ожидать reason `abbrev_placeholder_mismatch` и
+   срабатывание cascade (свёртка в leaf per-segment для этого сегмента,
+   но не глобальный fallback).
+4. Регресс: `"ICP monitoring"` (ICP — защищённая) должно остаться как
+   «ICP мониторинг», а НЕ превратиться в «внутричерепное давление
+   мониторинг» (сейчас так и происходит в ряде мест Teo).
+
+### -1.8 Критические файлы
+
+- `src/zoteropdf2md/translategemma.py:441-476` — существующие
+  `_apply_abbrev_mask` / `_restore_abbrev_mask` (готовы, надо подключить).
+- `src/zoteropdf2md/translategemma.py:648-758` —
+  `_try_batch_translate_with_reason` (Шаг X1: добавить abbrev-маску в
+  prep-цикл + restore в post-loop + placeholder-integrity check).
+- `src/zoteropdf2md/translategemma.py:1083-1200` —
+  `_merge_heading_text_nodes`/`_split_heading_text_nodes` (Шаг X2:
+  заменить `\uE001` на `@@Z2M_HSEP@@`).
+- `src/zoteropdf2md/translategemma.py:1287, 1342` — safety-net
+  replace (Шаг X2: обновить).
+- `src/zoteropdf2md/abbreviations.py` — словарь (если нужно расширить
+  защиту: добавить LC, SNR, ICP, VNA, IEEE, FPGA, MEMS если их там
+  ещё нет).
+- `tests/test_translategemma_html.py` — 4 теста (§-1.7).
+
+### -1.9 Порядок работ Phase 3 относительно Phase 2
+
+Два Phase'а **независимы**:
+
+- Phase 2 чинит **устойчивость** cascade (не роняться глобально).
+- Phase 3 чинит **качество** перевода (не терять смысл аббревиатур).
+
+Рекомендуемый порядок:
+
+1. **Phase 3 первой** — она выше по impact на пользовательский результат.
+   Один прогон без fallback, но с «Индуктивно-ёмкостная цепь» в заголовке
+   хуже, чем прогон с fallback, но с правильным «LC».
+2. **Phase 2 второй** — подчищает оставшийся риск срыва cascade.
+
+Оба Phase можно мерджить раздельно, тесты изолированы.
+
+---
+
+
+## 0. Phase 2: результаты v2 и статус реализации
+
+**Status update (2026-04-20):** Шаги A+B+C из §0.4 реализованы в коммите
+`e8a7435` (`Harden windowed translation cascade and add trailing-eos lenient recovery`).
+План в этом разделе сохраняется как дизайн-обоснование и acceptance-база.
 
 ### 0.1 Что подтвердилось
 
