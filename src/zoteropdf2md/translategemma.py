@@ -148,7 +148,8 @@ class TranslateGemmaConfig:
     # Used only as a fallback when a full-segment translation does not fit context/memory.
     max_chunk_chars: int = 1800
     max_new_tokens: int = 65536
-    enable_heading_mt: bool = True
+    enable_heading_mt: bool = False
+    enable_heading_oov_guard: bool = False
     heading_mt_model_ref: str = "facebook/nllb-200-distilled-600M"
     heading_mt_max_chars: int = 80
 
@@ -943,6 +944,9 @@ def _is_heading_context_leak_candidate(
     candidate_norm = _normalize_ws(_segment_core_text(candidate))
     context_norm = _normalize_ws(context_text)
     if not candidate_norm:
+        return True
+    # Heading retry should never emit raw block tags (<h1>, <p>, ...).
+    if re.search(r"<[^>]+>", candidate):
         return True
 
     # If source heading starts with an enumerated token (A., IV., ...), keep it.
@@ -2733,6 +2737,7 @@ def translate_html_text_nodes(
     max_chunk_chars: int = 1800,
     target_language_code: str = DEFAULT_TRANSLATEGEMMA_TARGET_LANGUAGE,
     translate_heading_text: Callable[[str], str] | None = None,
+    enable_heading_oov_guard: bool = False,
     heading_mt_max_chars: int = 80,
     on_segment_start: Callable[[int, int], None] | None = None,
     on_progress: Callable[[int, int], None] | None = None,
@@ -2812,6 +2817,7 @@ def translate_html_text_nodes(
     if total_segments == 0:
         return "".join(p for p in parts if p) + references_tail, 0
     target_language_code = normalize_language_code(target_language_code)
+    enable_heading_oov_guard = bool(enable_heading_oov_guard)
     heading_mt_max_chars = max(8, int(heading_mt_max_chars))
 
     # ------------------------------------------------------------------ #
@@ -3014,10 +3020,13 @@ def translate_html_text_nodes(
             candidate = _restore_heading_caps_style(candidate, preserve_allcaps_style)
             candidate = _apply_heading_glossary_postedit(source_seg, candidate)
 
-            needs_oov_retry = _heading_has_oov_confabulation(
-                source_seg,
-                candidate,
-                target_language_code=target_language_code,
+            needs_oov_retry = (
+                enable_heading_oov_guard
+                and _heading_has_oov_confabulation(
+                    source_seg,
+                    candidate,
+                    target_language_code=target_language_code,
+                )
             )
             needs_identity_retry = _is_identity_residual(source_seg, candidate)
             if needs_oov_retry:
@@ -3057,10 +3066,13 @@ def translate_html_text_nodes(
                             _restore_heading_caps_style(cached_heading, preserve_allcaps_style),
                         )
 
-            if _heading_has_oov_confabulation(
-                source_seg,
-                candidate,
-                target_language_code=target_language_code,
+            if (
+                enable_heading_oov_guard
+                and _heading_has_oov_confabulation(
+                    source_seg,
+                    candidate,
+                    target_language_code=target_language_code,
+                )
             ):
                 heading_oov_unresolved += 1
 
@@ -3174,10 +3186,13 @@ def translate_html_text_nodes(
                     translated = cached_heading
             translated = _restore_heading_caps_style(translated, preserve_allcaps_style)
             translated = _apply_heading_glossary_postedit(source_seg, translated)
-            if _heading_has_oov_confabulation(
-                source_seg,
-                translated,
-                target_language_code=target_language_code,
+            if (
+                enable_heading_oov_guard
+                and _heading_has_oov_confabulation(
+                    source_seg,
+                    translated,
+                    target_language_code=target_language_code,
+                )
             ):
                 heading_oov_retry_count += 1
                 recovered = _recover_single_segment_with_tag_mask(
@@ -3193,10 +3208,13 @@ def translate_html_text_nodes(
                     _restore_heading_caps_style(recovered, preserve_allcaps_style),
                 )
                 translated = recovered
-                if _heading_has_oov_confabulation(
-                    source_seg,
-                    translated,
-                    target_language_code=target_language_code,
+                if (
+                    enable_heading_oov_guard
+                    and _heading_has_oov_confabulation(
+                        source_seg,
+                        translated,
+                        target_language_code=target_language_code,
+                    )
                 ):
                     heading_oov_unresolved += 1
         if translated != part:
@@ -3825,6 +3843,7 @@ class TranslateGemmaTranslator:
                 if self._config.enable_heading_mt
                 else None
             ),
+            enable_heading_oov_guard=self._config.enable_heading_oov_guard,
             heading_mt_max_chars=max(8, int(self._config.heading_mt_max_chars)),
             on_segment_start=on_segment_start,
             on_progress=on_progress,
