@@ -128,6 +128,24 @@ def test_polish_html_document_fixes_lc_sensor_heading_artifact() -> None:
     assert "<i>LC</i>-датчика" in polished
 
 
+def test_polish_html_document_normalizes_table_caption_style() -> None:
+    html = (
+        "<html><body>"
+        "<p>TABLE I PARAMETERS FOR TWO ANTENNAS</p>"
+        "<p>TABLE II. PARAMETERS OF SENSOR</p>"
+        "<p>Таблица III параметры антенны</p>"
+        "<p>Таблица IV: COMPARISON OF STATE OF ARTS.</p>"
+        "</body></html>"
+    )
+
+    polished = polish_html_document(html)
+
+    assert "<p>Таблица I. Parameters for two antennas.</p>" in polished
+    assert "<p>Таблица II. Parameters of sensor.</p>" in polished
+    assert "<p>Таблица III. Параметры антенны.</p>" in polished
+    assert "<p>Таблица IV. Comparison of state of arts.</p>" in polished
+
+
 def test_polish_html_document_repairs_split_url_before_autolink() -> None:
     html = (
         "<html><body>"

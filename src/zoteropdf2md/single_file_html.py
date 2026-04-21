@@ -125,6 +125,10 @@ _FIG_REF_PATTERN = re.compile(
     r'\b((?:Fig|Рис|рис|Фиг|фиг|FIG)\.?)\s*(\d+)\b(?!\s*\.\s)',
     re.IGNORECASE,
 )
+_TABLE_CAPTION_PARA_PATTERN = re.compile(
+    r'(<p\b[^>]*>\s*)(?:TABLE|Таблица)\s+([IVXLCM\d]+)\s*[\.\-:]?\s*([^<]*?)(\s*</p>)',
+    re.IGNORECASE,
+)
 _LEADING_SPACED_BACKSLASH_PATTERN = re.compile(r"(^|\s)\\\s+")
 _TRAILING_SPACED_BACKSLASH_PATTERN = re.compile(r"\s+\\(?=\s|$)")
 # Backslash immediately before a quote mark: word\" → word"  (Marker OCR artefact)
@@ -1250,6 +1254,27 @@ def _normalize_spacing_after_z2m_links(html: str) -> str:
     return _Z2M_LINK_GLUE_PATTERN.sub(r"\1 ", html)
 
 
+def _normalize_table_caption_style(html: str) -> str:
+    """Normalize table caption paragraphs to a single style.
+
+    Target form: ``Таблица N. Хвост.`` where ``N`` is Roman/digit index and
+    ``Хвост`` is sentence-case caption text.
+    """
+    def _normalize(m: re.Match[str]) -> str:
+        p_open, table_no, tail, p_close = m.group(1), m.group(2), m.group(3), m.group(4)
+        number = table_no.upper()
+        cleaned_tail = re.sub(r"\s+", " ", tail).strip()
+        cleaned_tail = cleaned_tail.strip(" .;:,")
+
+        if cleaned_tail:
+            sentence_tail = cleaned_tail.lower()
+            sentence_tail = sentence_tail[:1].upper() + sentence_tail[1:]
+            return f"{p_open}Таблица {number}. {sentence_tail}.{p_close}"
+        return f"{p_open}Таблица {number}.{p_close}"
+
+    return _TABLE_CAPTION_PARA_PATTERN.sub(_normalize, html)
+
+
 def polish_html_document(html: str) -> str:
     polished = _unwrap_spurious_math_captions(html)  # before all else: free captions from <math>
     polished = drop_repeated_phrases(polished)
@@ -1270,6 +1295,7 @@ def polish_html_document(html: str) -> str:
     polished = _add_reference_ids_and_citation_links(polished)
     polished = _link_section_refs(polished, found_sections)
     polished = _link_figure_refs(polished, found_figures)
+    polished = _normalize_table_caption_style(polished)
     polished = _normalize_spacing_after_z2m_links(polished)
     polished = _autolink_plain_urls(polished)
     polished = _inject_utf8_charset(polished)
