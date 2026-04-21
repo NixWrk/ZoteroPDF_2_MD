@@ -8,11 +8,13 @@ from zoteropdf2md.translategemma import (
     _apply_post_reassembly_guards,
     _apply_wide_paragraph_recovery,
     _apply_formula_mask,
+    _apply_tag_mask,
     _is_identity_residual,
     _is_translator_refusal,
     _mark_author_line_notranslate,
     _restore_abbrev_mask,
     _restore_formula_mask,
+    _restore_tag_mask,
     _sanitize_generation_config_for_greedy,
     _try_batch_translate,
     _try_batch_translate_with_reason,
@@ -684,6 +686,30 @@ def test_apply_abbrev_mask_replaces_uppercase_sequences() -> None:
     assert len(amap) == 3
 
     restored = _restore_abbrev_mask(masked, amap)
+    assert restored == text
+
+
+def test_restore_abbrev_mask_accepts_markdown_escaped_sentinels() -> None:
+    text = "The ADC block drives RF output."
+    masked, amap = _apply_abbrev_mask(text)
+    escaped = masked.replace("_", r"\_")
+    restored = _restore_abbrev_mask(escaped, amap)
+    assert restored == text
+
+
+def test_restore_tag_mask_accepts_markdown_escaped_sentinels() -> None:
+    text = 'See <a href="#fig-1">Fig. 1</a> for details.'
+    masked, tmap = _apply_tag_mask(text)
+    escaped = masked.replace("_", r"\_")
+    restored = _restore_tag_mask(escaped, tmap)
+    assert restored == text
+
+
+def test_restore_formula_mask_accepts_markdown_escaped_sentinels() -> None:
+    text = r"Coupling uses L_{\rm m}."
+    masked, fmap = _apply_formula_mask(text)
+    escaped = masked.replace("@@Z2MF", r"@@Z2M\F")
+    restored = _restore_formula_mask(escaped, fmap)
     assert restored == text
 
 
@@ -1584,5 +1610,6 @@ def test_translate_html_text_nodes_reports_en_residual_warning() -> None:
     assert any(item.startswith("identity_terminal_count=") for item in warnings)
     assert any(item.startswith("wide_paragraph_recovery_count=") for item in warnings)
     assert any(item.startswith("wide_recovery_split_fail_count=") for item in warnings)
-    assert warnings[-1].startswith("en_residual_segments=")
+    assert any(item.startswith("en_residual_segments=") for item in warnings)
+    assert any(item.startswith("sentinel_leak_segments=") for item in warnings)
 

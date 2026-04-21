@@ -1126,3 +1126,21 @@ re.compile(
 - `Z2M_DEBUG_CASCADE=1`
 
 и сохранять stdout/stderr в единый лог-файл, чтобы reason-строки не терялись.
+
+### 11.6 Sentinel Escape Defect (Phase 7.3)
+
+Observed in Wang run: unresolved placeholders leaked as escaped sentinels (`@@Z2M\_A0@@ ... @@Z2M\_A10@@`) inside RU HTML.
+
+Root cause:
+- model output may escape `_` in sentinel tokens (markdown bias),
+- restore regex previously matched only canonical forms (for example `@@Z2M_A0@@`),
+- escaped variants were not normalized before restore.
+
+Fix implemented:
+- sentinel token patterns for abbrev/tag/formula now accept escaped variants,
+- added pre-restore normalization helper (`_normalize_sentinel_escapes`) applied in `_restore_abbrev_mask`, `_restore_tag_mask`, `_restore_formula_mask`,
+- added file-level warning counter: `sentinel_leak_segments`.
+
+Acceptance criteria:
+- no unresolved `@@Z2M...@@` tokens (canonical or escaped) in final RU HTML,
+- warning `sentinel_leak_segments=0` on successful full-file run.

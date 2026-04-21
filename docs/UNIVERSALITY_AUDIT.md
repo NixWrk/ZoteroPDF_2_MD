@@ -547,3 +547,16 @@ user-defined `\mycommand`.
   — id-протокол, cascade.
 - [`docs/IMPLEMENTATION_PLAN.md`](./IMPLEMENTATION_PLAN.md) — общий
   backlog проекта.
+
+## 8. Sentinel Robustness Addendum (2026-04-21)
+
+New protocol invariant: sentinel restore must be robust to markdown-escaped variants emitted by LLMs.
+
+Examples of equivalent forms that must restore identically:
+- `@@Z2M_A0@@` and `@@Z2M\_A0@@`
+- `@@Z2M_T0@@` and `@@Z2M\_T0@@`
+- `@@Z2MF0@@` and `@@Z2M\F0@@`
+
+Implementation note:
+- normalize escaped sentinel prefixes before restore (`_normalize_sentinel_escapes`),
+- keep leak telemetry via `sentinel_leak_segments` at file level.

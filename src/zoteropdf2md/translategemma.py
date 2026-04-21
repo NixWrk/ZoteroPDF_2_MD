@@ -57,8 +57,8 @@ _BYTE_TOKEN_CITATION_PATTERN = re.compile(
 _ABBREV_PATTERN = re.compile(r'\b[A-Z]{2,5}\d*\b')
 # Placeholder tokens used to protect abbreviations during model calls.
 # ASCII sentinel is more robust than XML-style tags in free-form generation.
-_ABBREV_TOKEN_PATTERN = re.compile(r"@@Z2M_A(\d+)@@", re.IGNORECASE)
-_TAG_TOKEN_PATTERN = re.compile(r"@@Z2M_T(\d+)@@", re.IGNORECASE)
+_ABBREV_TOKEN_PATTERN = re.compile(r"@@Z2M\\?_A(\d+)@@", re.IGNORECASE)
+_TAG_TOKEN_PATTERN = re.compile(r"@@Z2M\\?_T(\d+)@@", re.IGNORECASE)
 
 # Additional patterns for protecting specific abbreviations from translation
 _LATIN_ABBREV_PATTERNS = [re.compile(pattern, re.IGNORECASE) for pattern in LATIN_ABBREV_TO_RU.keys()]
@@ -405,12 +405,13 @@ _BATCH_ITEM_PATTERN = re.compile(
 )
 
 # Formula placeholder tokens (ASCII sentinel) kept unchanged by the model.
-_FORMULA_TOKEN_PATTERN = re.compile(r"@@Z2MF(\d+)@@", re.IGNORECASE)
+_FORMULA_TOKEN_PATTERN = re.compile(r"@@Z2M(?:\\?_)?F(\d+)@@", re.IGNORECASE)
+_UNRESOLVED_SENTINEL_PATTERN = re.compile(r"@@Z2M(?:\\?_)?[A-Z0-9_]+@@", re.IGNORECASE)
 # Any internal protocol marker leaking into the final translated text means the
 # reconstructed batch output is not trustworthy and the segment should be
 # recovered locally through single-segment translation.
 _INTERNAL_MARKER_LEAK_PATTERN = re.compile(
-    r"<\s*z2m-[^>]*>|@@Z2M_[A-Z0-9_]+@@",
+    r"<\s*z2m-[^>]*>|@@Z2M(?:\\?_)?[A-Z0-9_]+@@",
     re.IGNORECASE,
 )
 
@@ -492,10 +493,22 @@ def _apply_formula_mask(text: str) -> tuple[str, dict[str, str]]:
     return masked, fmap
 
 
+def _normalize_sentinel_escapes(text: str) -> str:
+    """Normalize markdown-escaped protocol sentinels returned by LLMs.
+
+    Some models emit escaped variants such as ``@@Z2M\\_A0@@``.  Those must be
+    canonicalized before token-restore logic runs.
+    """
+    if "@@Z2M" not in text and "@@z2m" not in text:
+        return text
+    return re.sub(r"@@([zZ]2[mM])\\+(?=[A-Za-z_])", r"@@\1", text)
+
+
 def _restore_formula_mask(text: str, fmap: dict[str, str]) -> str:
     """Substitute formula placeholder tokens back with their original strings."""
     if not fmap:
         return text
+    text = _normalize_sentinel_escapes(text)
 
     def _replace(match: re.Match[str]) -> str:
         token = f"@@Z2MF{int(match.group(1))}@@"
@@ -577,6 +590,7 @@ def _restore_abbrev_mask(text: str, amap: dict[str, str]) -> str:
     """
     if not amap:
         return text
+    text = _normalize_sentinel_escapes(text)
 
     def _replace(match: re.Match[str]) -> str:
         token = f"@@Z2M_A{int(match.group(1))}@@"
@@ -615,6 +629,7 @@ def _restore_tag_mask(text: str, tmap: dict[str, str]) -> str:
     """Restore inline tag tokens after recovery translation."""
     if not tmap:
         return text
+    text = _normalize_sentinel_escapes(text)
 
     def _replace(match: re.Match[str]) -> str:
         token = f"@@Z2M_T{int(match.group(1))}@@"
@@ -2740,6 +2755,11 @@ def translate_html_text_nodes(
             for part_idx, source_seg in zip(translatable_indices, source_texts)
             if _is_identity_residual(source_seg, parts[part_idx])
         )
+        sentinel_leak_segments = sum(
+            1
+            for part_idx in translatable_indices
+            if _UNRESOLVED_SENTINEL_PATTERN.search(parts[part_idx])
+        )
         wide_recovery_total = (
             initial_wide_counts.get("wide_paragraph_recovery", 0)
             + final_wide_counts.get("wide_paragraph_recovery", 0)
@@ -2754,6 +2774,7 @@ def translate_html_text_nodes(
                 on_warning(f"wide_paragraph_recovery_count={wide_recovery_total}")
                 on_warning(f"wide_recovery_split_fail_count={wide_split_fail_total}")
                 on_warning(f"en_residual_segments={en_residual_segments}")
+                on_warning(f"sentinel_leak_segments={sentinel_leak_segments}")
             except Exception:
                 pass
         return "".join(p for p in parts if p) + references_tail, translated_segments
@@ -2821,11 +2842,17 @@ def translate_html_text_nodes(
             for source_seg, translated_seg in zip(fallback_source_segments, fallback_translated_segments)
             if _is_identity_residual(source_seg, translated_seg)
         )
+        sentinel_leak_segments = sum(
+            1
+            for translated_seg in fallback_translated_segments
+            if _UNRESOLVED_SENTINEL_PATTERN.search(translated_seg)
+        )
         try:
             on_warning("identity_terminal_count=0")
             on_warning("wide_paragraph_recovery_count=0")
             on_warning("wide_recovery_split_fail_count=0")
             on_warning(f"en_residual_segments={en_residual_segments}")
+            on_warning(f"sentinel_leak_segments={sentinel_leak_segments}")
         except Exception:
             pass
     return "".join(out) + references_tail, translated_segments
