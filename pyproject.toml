@@ -19,6 +19,8 @@ translategemma = [
   "transformers",
   "accelerate",
   "huggingface_hub",
+  "sentencepiece",
+  "pymorphy3",
 ]
 
 [project.scripts]

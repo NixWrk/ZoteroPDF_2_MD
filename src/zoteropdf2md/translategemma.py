@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import re
 import os
@@ -50,10 +50,10 @@ _BYTE_TOKEN_CITATION_PATTERN = re.compile(
 )
 
 # Uppercase Latin abbreviations that must survive translation unchanged.
-# Restricted to SHORT sequences (2–5 letters) so that all-caps section titles
-# such as INTRODUCTION, CONCLUSION, RESULTS (≥6 letters) are NOT masked and
+# Restricted to SHORT sequences (2вЂ“5 letters) so that all-caps section titles
+# such as INTRODUCTION, CONCLUSION, RESULTS (в‰Ґ6 letters) are NOT masked and
 # can still be translated normally.  Real abbreviations (IEEE, MEMS, GAI, LC,
-# ADC, VNA, RF) are typically ≤5 characters and will be protected.
+# ADC, VNA, RF) are typically в‰¤5 characters and will be protected.
 _ABBREV_PATTERN = re.compile(r'\b[A-Z]{2,5}\d*\b')
 # Placeholder tokens used to protect abbreviations during model calls.
 # ASCII sentinel is more robust than XML-style tags in free-form generation.
@@ -148,6 +148,9 @@ class TranslateGemmaConfig:
     # Used only as a fallback when a full-segment translation does not fit context/memory.
     max_chunk_chars: int = 1800
     max_new_tokens: int = 65536
+    enable_heading_mt: bool = True
+    heading_mt_model_ref: str = "facebook/nllb-200-distilled-600M"
+    heading_mt_max_chars: int = 80
 
 
 @dataclass(frozen=True)
@@ -416,7 +419,7 @@ _INTERNAL_MARKER_LEAK_PATTERN = re.compile(
 )
 
 # Safety limit: skip batch mode if the combined text exceeds this many characters
-# (rough estimate 4 chars ≈ 1 token, limit ≈ 50k tokens input).
+# (rough estimate 4 chars в‰€ 1 token, limit в‰€ 50k tokens input).
 _MAX_BATCH_CHARS = 80_000
 _WINDOW_BATCH_TARGET_SEGMENTS = 8
 _WINDOW_BATCH_OVERLAP_SEGMENTS = 1
@@ -430,10 +433,27 @@ _HEADING_MISTRANSLATION_FIXUPS_RU: dict[str, str] = {
     "МЕРОПРИЕМ": "ИЗМЕРЕНИЕ",
     "МЕРОПРИЁМ": "ИЗМЕРЕНИЕ",
 }
+_HEADING_ALLCAPS_WORD_PATTERN = re.compile(r"\b[A-Z\u0410-\u042F\u0401]{3,}\b")
+_HEADING_RU_WORD_PATTERN = re.compile(r"[\u0410-\u042F\u0430-\u044F\u0401\u0451]{4,}")
+_HEADING_RU_OOV_SKIP = {
+    "WI",
+    "USA",
+}
+_NLLB_TARGET_LANGUAGE_BY_CODE: dict[str, str] = {
+    "ru": "rus_Cyrl",
+    "en": "eng_Latn",
+    "de": "deu_Latn",
+    "fr": "fra_Latn",
+    "es": "spa_Latn",
+    "it": "ita_Latn",
+    "pt": "por_Latn",
+}
 _TABLE_CAPTION_ALLCAPS_PATTERN = re.compile(
     r"^\s*TABLE\s+([IVX]+)\s+([A-Z0-9][A-Z0-9\s,()/:+\-]{3,})\s*$"
 )
 _RECOVERY_CONTEXT_DEPTH = 0
+_PYMORPHY3_ANALYZER = None
+_PYMORPHY3_UNAVAILABLE = False
 
 
 def _cascade_debug(message: str) -> None:
@@ -573,7 +593,7 @@ def _apply_abbrev_mask(text: str) -> tuple[str, dict[str, str]]:
     """Replace uppercase abbreviations with ``@@Z2M_A{N}@@`` tokens.
 
     Protects sequences such as ``IEEE``, ``GAI``, ``LC``, ``ADC`` from being
-    transliterated or "translated" by the model (e.g. GAI → ГАИ).
+    transliterated or "translated" by the model (e.g. GAI в†’ Р“РђР).
     Single-letter identifiers are intentionally left unmasked to avoid
     interfering with normal sentence capitalisation.
     """
@@ -681,8 +701,8 @@ def _has_trailing_ellipsis_artifact(
     if not translated_core:
         return False
 
-    src_has_ellipsis = source_core.endswith(("...", "…"))
-    out_has_ellipsis = translated_core.endswith(("...", "…"))
+    src_has_ellipsis = source_core.endswith(("...", "вЂ¦"))
+    out_has_ellipsis = translated_core.endswith(("...", "вЂ¦"))
     if not out_has_ellipsis or src_has_ellipsis:
         return False
 
@@ -695,12 +715,12 @@ def _strip_unexpected_trailing_ellipsis(source_seg: str, translated_seg: str) ->
     trimmed_core = core.rstrip()
     if not trimmed_core:
         return translated_seg, False
-    if src_core.endswith(("...", "вЂ¦")):
+    if src_core.endswith(("...", "РІР‚В¦")):
         return translated_seg, False
-    if not trimmed_core.endswith(("...", "вЂ¦")):
+    if not trimmed_core.endswith(("...", "РІР‚В¦")):
         return translated_seg, False
 
-    stripped = re.sub(r"(?:\.\.\.|вЂ¦)+\s*$", "", trimmed_core).rstrip()
+    stripped = re.sub(r"(?:\.\.\.|РІР‚В¦)+\s*$", "", trimmed_core).rstrip()
     if not stripped:
         return translated_seg, False
     return f"{lead}{stripped}{tail}", True
@@ -974,6 +994,105 @@ def _apply_heading_glossary_postedit(source_seg: str, translated_seg: str) -> st
     return out
 
 
+def _normalize_heading_case_for_translation(source_seg: str) -> tuple[str, bool]:
+    """Normalize all-caps heading words before translation.
+
+    Returns normalized text and a flag indicating that output should be restored
+    to all-caps style.
+    """
+    lead, core, tail = _split_outer_ws(source_seg)
+    core_norm = _normalize_ws(core)
+    if not core_norm:
+        return source_seg, False
+
+    has_allcaps_words = _HEADING_ALLCAPS_WORD_PATTERN.search(core_norm) is not None
+    has_lowercase = re.search(r"[a-z\u0430-\u044F\u0451]", core_norm) is not None
+    preserve_allcaps_style = has_allcaps_words and not has_lowercase
+    if not preserve_allcaps_style:
+        return source_seg, False
+
+    def _title_word(match: re.Match[str]) -> str:
+        word = match.group(0)
+        return word.title()
+
+    normalized = _HEADING_ALLCAPS_WORD_PATTERN.sub(_title_word, core)
+    return f"{lead}{normalized}{tail}", preserve_allcaps_style
+
+
+def _restore_heading_caps_style(translated_seg: str, preserve_allcaps_style: bool) -> str:
+    if not preserve_allcaps_style:
+        return translated_seg
+    lead, core, tail = _split_outer_ws(translated_seg)
+    core_norm = _normalize_ws(core)
+    if not core_norm:
+        return translated_seg
+    return f"{lead}{core_norm.upper()}{tail}"
+
+
+def _get_pymorphy3_analyzer():
+    global _PYMORPHY3_ANALYZER, _PYMORPHY3_UNAVAILABLE
+    if _PYMORPHY3_ANALYZER is not None:
+        return _PYMORPHY3_ANALYZER
+    if _PYMORPHY3_UNAVAILABLE:
+        return None
+    try:
+        import pymorphy3  # type: ignore[import-not-found]
+    except Exception:
+        _PYMORPHY3_UNAVAILABLE = True
+        return None
+    try:
+        _PYMORPHY3_ANALYZER = pymorphy3.MorphAnalyzer()
+    except Exception:
+        _PYMORPHY3_UNAVAILABLE = True
+        return None
+    return _PYMORPHY3_ANALYZER
+
+
+def _is_unknown_ru_heading_word(word: str, analyzer) -> bool:
+    if not analyzer:
+        return False
+    if word.upper() in _HEADING_RU_OOV_SKIP:
+        return False
+    parses = analyzer.parse(word.lower())
+    if not parses:
+        return True
+    for parse in parses[:5]:
+        if "UNKN" not in str(getattr(parse, "tag", "")):
+            return False
+    return True
+
+
+def _heading_has_oov_confabulation(
+    source_seg: str,
+    translated_seg: str,
+    *,
+    target_language_code: str,
+) -> bool:
+    """Detect heading confabulation using morphology-driven OOV checks."""
+    if normalize_language_code(target_language_code) != "ru":
+        return False
+
+    source_norm = _normalize_ws(_segment_core_text(source_seg))
+    translated_norm = _normalize_ws(_segment_core_text(translated_seg))
+    if not source_norm or not translated_norm:
+        return False
+    if not re.search(r"[\u0410-\u042F\u0430-\u044F\u0401\u0451]", translated_norm):
+        return False
+
+    analyzer = _get_pymorphy3_analyzer()
+    if analyzer is None:
+        return False
+
+    words = _HEADING_RU_WORD_PATTERN.findall(translated_norm)
+    if not words:
+        return False
+    unknown_count = sum(1 for word in words if _is_unknown_ru_heading_word(word, analyzer))
+    if unknown_count <= 0:
+        return False
+    # Aggressive for short headings: one unknown lexical core is enough.
+    return unknown_count >= max(1, len(words) // 2)
+
+
 def _recover_segment_with_context_markers(
     source_seg: str,
     *,
@@ -1036,9 +1155,9 @@ def _recover_segment_with_forced_markers(
     marker_start = "zz2mforcestartzz"
     marker_end = "zz2mforceendzz"
     wrapped = (
-        "переведи текст между маркерами на целевой язык полностью. "
-        "не оставляй английские слова без перевода, кроме технических аббревиатур "
-        "и имен собственных.\n"
+        "РїРµСЂРµРІРµРґРё С‚РµРєСЃС‚ РјРµР¶РґСѓ РјР°СЂРєРµСЂР°РјРё РЅР° С†РµР»РµРІРѕР№ СЏР·С‹Рє РїРѕР»РЅРѕСЃС‚СЊСЋ. "
+        "РЅРµ РѕСЃС‚Р°РІР»СЏР№ Р°РЅРіР»РёР№СЃРєРёРµ СЃР»РѕРІР° Р±РµР· РїРµСЂРµРІРѕРґР°, РєСЂРѕРјРµ С‚РµС…РЅРёС‡РµСЃРєРёС… Р°Р±Р±СЂРµРІРёР°С‚СѓСЂ "
+        "Рё РёРјРµРЅ СЃРѕР±СЃС‚РІРµРЅРЅС‹С….\n"
         f"{marker_start}{source_seg}{marker_end}"
     )
     recovered = _recover_single_segment_with_tag_mask(
@@ -1180,7 +1299,7 @@ def _has_long_english_word_run(text: str, min_words: int = 8) -> bool:
         else:
             between = text[prev_end:match.start()]
             # Continue the run only when the gap has no alphabetic letters.
-            if not re.search(r"[A-Za-zА-Яа-яЁё]", between or ""):
+            if not re.search(r"[A-Za-z\u0400-\u04FF]", between or ""):
                 run_len += 1
             else:
                 run_len = 1
@@ -1691,8 +1810,8 @@ def _try_batch_translate_with_reason_legacy(
     Masks mathematical formulas, joins segments with ``<z2m-sep/>`` separator,
     calls ``translate_text`` once, then splits the result back.
 
-    Returns the translated list on success.  Returns ``None`` — signalling the
-    caller to fall back to per-segment translation — when:
+    Returns the translated list on success.  Returns ``None`` вЂ” signalling the
+    caller to fall back to per-segment translation вЂ” when:
 
     * there is only one segment (batch overhead not worth it),
     * the combined text exceeds ``max_batch_chars``,
@@ -1728,7 +1847,7 @@ def _try_batch_translate_with_reason_legacy(
 
     translated_parts = _BATCH_SEP_PATTERN.split(translated_batch)
     if len(translated_parts) != len(segments):
-        # Model ate or duplicated separators — result is not trustworthy.
+        # Model ate or duplicated separators вЂ” result is not trustworthy.
         return None, (
             "separator_mismatch "
             f"expected={len(segments)} got={len(translated_parts)}"
@@ -2377,7 +2496,7 @@ def _translate_plain_fragment_preserving_abbrev(
         # strict fallback to source text.
         if _is_recovery_context_active():
             restored_lenient = _restore_abbrev_mask(translated_masked, amap)
-            if re.search(r"[А-Яа-яЁё]", restored_lenient):
+            if re.search(r"[\u0410-\u042F\u0430-\u044F\u0401\u0451]", restored_lenient):
                 return restored_lenient
         return text
     return _restore_abbrev_mask(translated_masked, amap)
@@ -2398,7 +2517,7 @@ def _retry_table_caption_translation(
 
     source_norm = _normalize_ws(source_core).lower()
     translated_norm = _normalize_ws(translated_core).lower()
-    if translated_norm != source_norm and re.search(r"[А-Яа-яЁё]", translated_core):
+    if translated_norm != source_norm and re.search(r"[\u0410-\u042F\u0430-\u044F\u0401\u0451]", translated_core):
         return translated_core
 
     roman = match.group(1)
@@ -2413,7 +2532,7 @@ def _retry_table_caption_translation(
 
     if not retry_translated:
         return translated_core
-    if re.search(r"[А-Яа-яЁё]", retry_translated):
+    if re.search(r"[\u0410-\u042F\u0430-\u044F\u0401\u0451]", retry_translated):
         return retry_translated
     return translated_core
 
@@ -2536,7 +2655,7 @@ def _merge_heading_text_nodes(
     for depth in sorted(heading_text_indices.keys(), reverse=True):
         text_indices = heading_text_indices[depth]
         if len(text_indices) < 2:
-            # Single text node or no text in heading — skip merge
+            # Single text node or no text in heading вЂ” skip merge
             continue
 
         # Collect texts from all indices
@@ -2568,7 +2687,7 @@ def _split_heading_text_nodes(
     If heading separator was preserved, split and restore.
     If lost (model dropped it), keep merged in first index.
 
-    Safely handles index bounds — returns parts unchanged if indices are invalid.
+    Safely handles index bounds вЂ” returns parts unchanged if indices are invalid.
     """
     if not merges:
         return list(parts)
@@ -2588,7 +2707,7 @@ def _split_heading_text_nodes(
 
         # Check if separator was preserved
         if not merged_text or _HEADING_MERGE_SEPARATOR not in merged_text:
-            # Model dropped the separator — keep merged in first index
+            # Model dropped the separator вЂ” keep merged in first index
             # Secondary indices stay empty
             continue
 
@@ -2596,7 +2715,7 @@ def _split_heading_text_nodes(
         split_texts = merged_text.split(_HEADING_MERGE_SEPARATOR)
         expected_count = 1 + len(secondary_indices)
         if len(split_texts) != expected_count:
-            # Mismatch — keep merged
+            # Mismatch вЂ” keep merged
             continue
 
         # Distribute split texts
@@ -2612,6 +2731,9 @@ def translate_html_text_nodes(
     translate_text: Callable[[str], str],
     *,
     max_chunk_chars: int = 1800,
+    target_language_code: str = DEFAULT_TRANSLATEGEMMA_TARGET_LANGUAGE,
+    translate_heading_text: Callable[[str], str] | None = None,
+    heading_mt_max_chars: int = 80,
     on_segment_start: Callable[[int, int], None] | None = None,
     on_progress: Callable[[int, int], None] | None = None,
     on_batch_fallback: Callable[[str], None] | None = None,
@@ -2629,7 +2751,7 @@ def translate_html_text_nodes(
 
     The References / Bibliography section is never translated.
     """
-    # The References / Bibliography section must never be translated – author
+    # The References / Bibliography section must never be translated вЂ“ author
     # names, journal titles and DOIs should stay in the original language.
     heading_match = _REFERENCES_HEADING_PATTERN.search(html)
     if heading_match is not None:
@@ -2642,8 +2764,8 @@ def translate_html_text_nodes(
 
     # Pre-merge: combine text nodes within heading tags (h1-h6) to preserve context.
     # This fixes the issue where "Sensor" inside <h1>...<i>LC</i>Sensor</h1> was
-    # translated separately and incorrectly as "Датчик" (nominative) instead of
-    # "датчика" (genitive). The merge uses \x00 as separator, which the model never outputs.
+    # translated separately and incorrectly as "Р”Р°С‚С‡РёРє" (nominative) instead of
+    # "РґР°С‚С‡РёРєР°" (genitive). The merge uses \x00 as separator, which the model never outputs.
     parts, heading_merges = _merge_heading_text_nodes(parts)
 
     # Single pass: collect indices of translatable text nodes.
@@ -2689,14 +2811,29 @@ def translate_html_text_nodes(
     total_segments = len(translatable_indices)
     if total_segments == 0:
         return "".join(p for p in parts if p) + references_tail, 0
+    target_language_code = normalize_language_code(target_language_code)
+    heading_mt_max_chars = max(8, int(heading_mt_max_chars))
 
     # ------------------------------------------------------------------ #
     # Primary path: batch translation                                      #
     # ------------------------------------------------------------------ #
     source_parts = list(parts)
     source_texts = [parts[i] for i in translatable_indices]
+    source_texts_for_batch = list(source_texts)
+    heading_allcaps_style_flags: list[bool] = [False] * len(source_texts)
+    for idx, heading_group in enumerate(translatable_heading_groups):
+        if heading_group is None:
+            continue
+        normalized_heading, preserve_allcaps = _normalize_heading_case_for_translation(source_texts[idx])
+        source_texts_for_batch[idx] = normalized_heading
+        heading_allcaps_style_flags[idx] = preserve_allcaps
+
+    heading_mt_cache: dict[str, str] = {}
+    heading_oov_retry_count = 0
+    heading_oov_unresolved = 0
+
     batch_result, batch_reason = _try_windowed_batch_translate_with_reason(
-        source_texts,
+        source_texts_for_batch,
         translate_text,
         window_segments=_WINDOW_BATCH_TARGET_SEGMENTS,
         overlap_segments=_WINDOW_BATCH_OVERLAP_SEGMENTS,
@@ -2835,6 +2972,100 @@ def translate_html_text_nodes(
                 continue
             parts[part_idx] = _apply_heading_glossary_postedit(source_seg, parts[part_idx])
 
+        # Phase 8.8 abc: heading-specific stabilization.
+        # a) normalize all-caps heading input and restore caps style.
+        # b) detect RU OOV confabulation and retry in contextual mode.
+        # c) route short heading segments through a dedicated heading translator when provided.
+        for seg_no, (part_idx, source_seg, heading_group, preserve_allcaps_style) in enumerate(
+            zip(
+                translatable_indices,
+                source_texts,
+                translatable_heading_groups,
+                heading_allcaps_style_flags,
+            ),
+            start=1,
+        ):
+            if heading_group is None:
+                continue
+
+            candidate = parts[part_idx]
+            if _HEADING_MERGE_SEPARATOR in source_seg:
+                # Merged inline-heading fragments are handled by split/join path.
+                parts[part_idx] = _apply_heading_glossary_postedit(
+                    source_seg,
+                    _restore_heading_caps_style(candidate, preserve_allcaps_style),
+                )
+                continue
+
+            source_core = _segment_core_text(source_seg)
+            if translate_heading_text is not None and len(source_core) <= heading_mt_max_chars:
+                normalized_heading, _ = _normalize_heading_case_for_translation(source_seg)
+                cache_key = f"{target_language_code}\x1f{normalized_heading}"
+                cached_heading = heading_mt_cache.get(cache_key)
+                if cached_heading is None:
+                    try:
+                        cached_heading = translate_heading_text(normalized_heading)
+                    except Exception:
+                        cached_heading = ""
+                    heading_mt_cache[cache_key] = cached_heading
+                if cached_heading.strip():
+                    candidate = cached_heading
+
+            candidate = _restore_heading_caps_style(candidate, preserve_allcaps_style)
+            candidate = _apply_heading_glossary_postedit(source_seg, candidate)
+
+            needs_oov_retry = _heading_has_oov_confabulation(
+                source_seg,
+                candidate,
+                target_language_code=target_language_code,
+            )
+            needs_identity_retry = _is_identity_residual(source_seg, candidate)
+            if needs_oov_retry:
+                heading_oov_retry_count += 1
+
+            if needs_oov_retry or needs_identity_retry:
+                context_text = _extract_next_paragraph_context_text(source_parts, part_idx)
+                recovered_heading = _recover_heading_segment_with_context(
+                    source_seg,
+                    context_text=context_text,
+                    translate_text=translate_text,
+                    cache=final_cache,
+                    max_chunk_chars=max_chunk_chars,
+                    seg_index=seg_no,
+                )
+                recovered_heading = _restore_heading_caps_style(
+                    recovered_heading,
+                    preserve_allcaps_style,
+                )
+                recovered_heading = _apply_heading_glossary_postedit(source_seg, recovered_heading)
+                if not _is_identity_residual(source_seg, recovered_heading):
+                    candidate = recovered_heading
+                elif translate_heading_text is not None and len(source_core) <= heading_mt_max_chars:
+                    # One extra short-heading attempt in MT mode for stubborn identity results.
+                    normalized_heading, _ = _normalize_heading_case_for_translation(source_seg)
+                    cache_key = f"{target_language_code}\x1f{normalized_heading}"
+                    cached_heading = heading_mt_cache.get(cache_key)
+                    if cached_heading is None:
+                        try:
+                            cached_heading = translate_heading_text(normalized_heading)
+                        except Exception:
+                            cached_heading = ""
+                        heading_mt_cache[cache_key] = cached_heading
+                    if cached_heading.strip():
+                        candidate = _apply_heading_glossary_postedit(
+                            source_seg,
+                            _restore_heading_caps_style(cached_heading, preserve_allcaps_style),
+                        )
+
+            if _heading_has_oov_confabulation(
+                source_seg,
+                candidate,
+                target_language_code=target_language_code,
+            ):
+                heading_oov_unresolved += 1
+
+            parts[part_idx] = candidate
+
         translated_segments = sum(
             1
             for part_idx, source_seg in zip(translatable_indices, source_texts)
@@ -2865,6 +3096,8 @@ def translate_html_text_nodes(
                 on_warning(f"wide_recovery_split_fail_count={wide_split_fail_total}")
                 on_warning(f"en_residual_segments={en_residual_segments}")
                 on_warning(f"sentinel_leak_segments={sentinel_leak_segments}")
+                on_warning(f"heading_oov_retry_count={heading_oov_retry_count}")
+                on_warning(f"heading_oov_unresolved={heading_oov_unresolved}")
             except Exception:
                 pass
         return "".join(p for p in parts if p) + references_tail, translated_segments
@@ -2910,6 +3143,62 @@ def translate_html_text_nodes(
             cache=cache,
             max_chunk_chars=max_chunk_chars,
         )
+        heading_group = (
+            translatable_heading_groups[processed_segments]
+            if processed_segments < len(translatable_heading_groups)
+            else None
+        )
+        if heading_group is not None:
+            preserve_allcaps_style = (
+                heading_allcaps_style_flags[processed_segments]
+                if processed_segments < len(heading_allcaps_style_flags)
+                else False
+            )
+            source_seg = part
+            source_core = _segment_core_text(source_seg)
+            if (
+                translate_heading_text is not None
+                and _HEADING_MERGE_SEPARATOR not in source_seg
+                and len(source_core) <= heading_mt_max_chars
+            ):
+                normalized_heading, _ = _normalize_heading_case_for_translation(source_seg)
+                cache_key = f"{target_language_code}\x1f{normalized_heading}"
+                cached_heading = heading_mt_cache.get(cache_key)
+                if cached_heading is None:
+                    try:
+                        cached_heading = translate_heading_text(normalized_heading)
+                    except Exception:
+                        cached_heading = ""
+                    heading_mt_cache[cache_key] = cached_heading
+                if cached_heading.strip():
+                    translated = cached_heading
+            translated = _restore_heading_caps_style(translated, preserve_allcaps_style)
+            translated = _apply_heading_glossary_postedit(source_seg, translated)
+            if _heading_has_oov_confabulation(
+                source_seg,
+                translated,
+                target_language_code=target_language_code,
+            ):
+                heading_oov_retry_count += 1
+                recovered = _recover_single_segment_with_tag_mask(
+                    source_seg,
+                    translate_text=translate_text,
+                    cache=cache,
+                    max_chunk_chars=max_chunk_chars,
+                    context_label="heading_oov",
+                    seg_index=current_segment,
+                )
+                recovered = _apply_heading_glossary_postedit(
+                    source_seg,
+                    _restore_heading_caps_style(recovered, preserve_allcaps_style),
+                )
+                translated = recovered
+                if _heading_has_oov_confabulation(
+                    source_seg,
+                    translated,
+                    target_language_code=target_language_code,
+                ):
+                    heading_oov_unresolved += 1
         if translated != part:
             translated_segments += 1
         out.append(translated)
@@ -2943,6 +3232,8 @@ def translate_html_text_nodes(
             on_warning("wide_recovery_split_fail_count=0")
             on_warning(f"en_residual_segments={en_residual_segments}")
             on_warning(f"sentinel_leak_segments={sentinel_leak_segments}")
+            on_warning(f"heading_oov_retry_count={heading_oov_retry_count}")
+            on_warning(f"heading_oov_unresolved={heading_oov_unresolved}")
         except Exception:
             pass
     return "".join(out) + references_tail, translated_segments
@@ -2963,6 +3254,10 @@ class TranslateGemmaTranslator:
         self._device = "cpu"
         self._context_window_tokens: int | None = None
         self._base_streamer_cls = None
+        self._heading_mt_tokenizer = None
+        self._heading_mt_model = None
+        self._heading_mt_device = "cpu"
+        self._heading_mt_unavailable = False
         self.recovery_calls_total = 0
         self.recovery_calls_time_s = 0.0
 
@@ -2972,6 +3267,10 @@ class TranslateGemmaTranslator:
 
     def _resolve_model_ref(self) -> str:
         model_ref = (self._config.model_ref or "").strip() or DEFAULT_TRANSLATEGEMMA_MODEL
+        return self._resolve_model_ref_by_name(model_ref)
+
+    def _resolve_model_ref_by_name(self, model_ref: str) -> str:
+        model_ref = (model_ref or "").strip() or DEFAULT_TRANSLATEGEMMA_MODEL
         candidate = Path(model_ref).expanduser()
         if candidate.exists():
             return str(candidate.resolve(strict=False))
@@ -2997,6 +3296,74 @@ class TranslateGemmaTranslator:
                 "Accept the model license on Hugging Face and provide a valid HF token "
                 f"(HF_TOKEN / HUGGINGFACE_HUB_TOKEN), model_ref='{model_ref}', details: {exc}"
             ) from exc
+
+    def _ensure_heading_mt_loaded(self) -> bool:
+        if not self._config.enable_heading_mt:
+            return False
+        if self._heading_mt_unavailable:
+            return False
+        if self._heading_mt_model is not None and self._heading_mt_tokenizer is not None:
+            return True
+
+        try:
+            import torch
+            from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
+        except Exception as exc:
+            self._heading_mt_unavailable = True
+            self._log_line(
+                f"[WARN] translategemma.heading_mt_unavailable dependencies_missing details={exc}"
+            )
+            return False
+
+        try:
+            resolved_model_ref = self._resolve_model_ref_by_name(self._config.heading_mt_model_ref)
+        except Exception as exc:
+            self._heading_mt_unavailable = True
+            self._log_line(
+                f"[WARN] translategemma.heading_mt_unavailable model_resolve_failed details={exc}"
+            )
+            return False
+
+        token = (self._config.hf_token or "").strip() or None
+        cache_dir = self._config.cache_dir
+        self._heading_mt_device = "cuda" if torch.cuda.is_available() else "cpu"
+        try:
+            self._heading_mt_tokenizer = AutoTokenizer.from_pretrained(
+                resolved_model_ref,
+                token=token,
+                cache_dir=cache_dir,
+            )
+            model_kwargs = {
+                "token": token,
+                "cache_dir": cache_dir,
+                "low_cpu_mem_usage": True,
+            }
+            try:
+                self._heading_mt_model = AutoModelForSeq2SeqLM.from_pretrained(
+                    resolved_model_ref,
+                    dtype=torch.float16 if self._heading_mt_device == "cuda" else torch.float32,
+                    **model_kwargs,
+                ).to(self._heading_mt_device).eval()
+            except TypeError:
+                self._heading_mt_model = AutoModelForSeq2SeqLM.from_pretrained(
+                    resolved_model_ref,
+                    torch_dtype=torch.float16 if self._heading_mt_device == "cuda" else torch.float32,
+                    **model_kwargs,
+                ).to(self._heading_mt_device).eval()
+        except Exception as exc:
+            self._heading_mt_unavailable = True
+            self._heading_mt_model = None
+            self._heading_mt_tokenizer = None
+            self._log_line(
+                f"[WARN] translategemma.heading_mt_unavailable load_failed details={exc}"
+            )
+            return False
+
+        self._log_line(
+            "TranslateGemma: heading MT model ready "
+            f"(device={self._heading_mt_device}, model='{resolved_model_ref}')"
+        )
+        return True
 
     def _ensure_loaded(self) -> None:
         if self._model is not None and self._tokenizer is not None:
@@ -3125,12 +3492,12 @@ class TranslateGemmaTranslator:
 
         source_language = (self._config.source_language or "Auto").strip()
         target_language = language_name_for_code(self._config.target_language_code)
-        # Constraints prevent transliteration of abbreviations (GAI→ГАИ, VNA→ВНА),
+        # Constraints prevent transliteration of abbreviations (GAIв†’Р“РђР, VNAв†’Р’РќРђ),
         # mangling of author names, and meta-commentary when the model is uncertain.
         _extra = (
             "Rules: "
             "(1) Keep every sequence of 2 or more uppercase Latin letters (acronyms) "
-            "letter-for-letter – never transliterate them into Cyrillic. "
+            "letter-for-letter вЂ“ never transliterate them into Cyrillic. "
             "(2) Do not translate or modify proper names, author names, or DOIs. "
             "(3) Leave unchanged only exact acronyms, proper names, and DOIs; "
             "do not keep full English sentences unchanged. "
@@ -3254,6 +3621,64 @@ class TranslateGemmaTranslator:
         translated = _PROMPT_LEAK_SIGNATURE.sub("", translated).strip()
         return translated or text
 
+    def translate_heading_text(self, text: str) -> str:
+        if not text.strip():
+            return text
+        if not self._config.enable_heading_mt:
+            return self.translate_text(text)
+
+        target_language_code = normalize_language_code(self._config.target_language_code)
+        target_lang_token = _NLLB_TARGET_LANGUAGE_BY_CODE.get(target_language_code)
+        if not target_lang_token:
+            return self.translate_text(text)
+
+        if not self._ensure_heading_mt_loaded():
+            return self.translate_text(text)
+        if self._heading_mt_model is None or self._heading_mt_tokenizer is None:
+            return self.translate_text(text)
+
+        try:
+            import torch
+        except Exception:
+            return self.translate_text(text)
+
+        source_lang_token = "eng_Latn"
+        source_language = (self._config.source_language or "").strip().lower()
+        if source_language and source_language not in {"auto", "auto-detect", "autodetect"}:
+            try:
+                source_lang_code = normalize_language_code(source_language)
+            except Exception:
+                source_lang_code = "en"
+            source_lang_token = _NLLB_TARGET_LANGUAGE_BY_CODE.get(source_lang_code, "eng_Latn")
+
+        tokenizer = self._heading_mt_tokenizer
+        model = self._heading_mt_model
+        if hasattr(tokenizer, "src_lang"):
+            tokenizer.src_lang = source_lang_token
+        forced_bos_token_id = tokenizer.convert_tokens_to_ids(target_lang_token)
+        if forced_bos_token_id is None or forced_bos_token_id < 0:
+            return self.translate_text(text)
+
+        inputs = tokenizer(text, return_tensors="pt")
+        if self._heading_mt_device == "cuda":
+            inputs = {k: v.to("cuda") for k, v in inputs.items()}
+        max_new_tokens = min(
+            max(32, int(self._config.max_new_tokens)),
+            256,
+        )
+        with torch.no_grad():
+            output = model.generate(
+                **inputs,
+                forced_bos_token_id=forced_bos_token_id,
+                max_new_tokens=max_new_tokens,
+                do_sample=False,
+            )
+        translated = tokenizer.decode(output[0], skip_special_tokens=True).strip()
+        if not translated:
+            return self.translate_text(text)
+        translated = _PROMPT_LEAK_SIGNATURE.sub("", translated).strip()
+        return translated or self.translate_text(text)
+
     def translate_html_file(self, html_path: Path) -> TranslatedHtmlArtifact:
         file_started_at = perf_counter()
         self._log_line(f"TranslateGemma: start file '{html_path.name}'")
@@ -3269,7 +3694,7 @@ class TranslateGemmaTranslator:
         )
         # Protect the author-line paragraph from translation before processing.
         # Use polished_source (not source_html_raw) so that section/figure anchors
-        # added by polish_html_document survive into the translated HTML — the
+        # added by polish_html_document survive into the translated HTML вЂ” the
         # translation engine only touches text nodes, not HTML attributes, so
         # id="section-II" and id="fig-3" are carried through intact.
         source_html = _mark_author_line_notranslate(polished_source)
@@ -3279,6 +3704,7 @@ class TranslateGemmaTranslator:
         progress_next_pct = 10
         progress_logged_first = False
         llm_calls = 0
+        heading_mt_calls = 0
         recovery_calls_total = 0
         recovery_calls_time_s = 0.0
 
@@ -3331,6 +3757,23 @@ class TranslateGemmaTranslator:
             )
             return translated
 
+        def translate_heading_text_with_progress(text: str) -> str:
+            nonlocal heading_mt_calls
+            heading_mt_calls += 1
+            call_started_at = perf_counter()
+            self._log_line(
+                "TranslateGemma progress: "
+                f"heading call {heading_mt_calls} start for {html_path.name} "
+                f"(chars={len(text)})"
+            )
+            translated = self.translate_heading_text(text)
+            self._log_line(
+                "TranslateGemma progress: "
+                f"heading call {heading_mt_calls} done for {html_path.name} "
+                f"(elapsed={perf_counter() - call_started_at:.2f}s)"
+            )
+            return translated
+
         def on_segment_start(segment_no: int, total: int) -> None:
             self._log_line(
                 "TranslateGemma progress: "
@@ -3376,6 +3819,13 @@ class TranslateGemmaTranslator:
             source_html,
             translate_text=translate_text_with_progress,
             max_chunk_chars=max(256, self._config.max_chunk_chars),
+            target_language_code=self._config.target_language_code,
+            translate_heading_text=(
+                translate_heading_text_with_progress
+                if self._config.enable_heading_mt
+                else None
+            ),
+            heading_mt_max_chars=max(8, int(self._config.heading_mt_max_chars)),
             on_segment_start=on_segment_start,
             on_progress=on_progress,
             on_batch_fallback=on_batch_fallback,
@@ -3411,6 +3861,9 @@ class TranslateGemmaTranslator:
             f"time={recovery_calls_time_s:.2f}s "
             f"avg={avg_recovery_s:.2f}s"
         )
+        self._log_line(
+            f"[timer] translategemma.heading_mt_calls: total={heading_mt_calls}"
+        )
 
         return TranslatedHtmlArtifact(
             source_html_path=html_path,
@@ -3419,3 +3872,4 @@ class TranslateGemmaTranslator:
             language_name=language_name,
             translated_segments=translated_segments,
         )
+

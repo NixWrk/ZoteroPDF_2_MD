@@ -10,9 +10,11 @@ from zoteropdf2md.translategemma import (
     _apply_formula_mask,
     _apply_heading_glossary_postedit,
     _apply_tag_mask,
+    _heading_has_oov_confabulation,
     _is_identity_residual,
     _is_translator_refusal,
     _mark_author_line_notranslate,
+    _normalize_heading_case_for_translation,
     _recover_heading_segment_with_context,
     _restore_abbrev_mask,
     _restore_formula_mask,
@@ -1293,6 +1295,18 @@ def test_heading_glossary_fixes_measurement_mistranslation() -> None:
     assert fixed_en == "IV. ИЗМЕРЕНИЕ"
 
 
+def test_normalize_heading_case_for_translation_only_for_all_caps() -> None:
+    normalized, preserve = _normalize_heading_case_for_translation("IV. MEASUREMENT")
+    assert preserve is True
+    assert normalized == "IV. Measurement"
+
+    mixed_normalized, mixed_preserve = _normalize_heading_case_for_translation(
+        "A novel <i>LC</i> sensor"
+    )
+    assert mixed_preserve is False
+    assert mixed_normalized == "A novel <i>LC</i> sensor"
+
+
 def test_translate_html_text_nodes_applies_heading_glossary_postedit() -> None:
     html = "<html><body><h2>IV. MEASUREMENT</h2><p>Body.</p></body></html>"
 
@@ -1302,6 +1316,50 @@ def test_translate_html_text_nodes_applies_heading_glossary_postedit() -> None:
     translated, _ = translate_html_text_nodes(html, translate_text=fake_translate)
     assert "IV. ИЗМЕРЕНИЕ" in translated
     assert "МЕРОПРИЕМ" not in translated
+
+
+def test_translate_html_text_nodes_uses_heading_router_callback() -> None:
+    html = "<html><body><h2>IV. MEASUREMENT</h2><p>Body.</p></body></html>"
+    heading_calls = [0]
+
+    def fake_translate(text: str) -> str:
+        return text.replace("Body.", "Тело.")
+
+    def fake_heading_translate(text: str) -> str:
+        heading_calls[0] += 1
+        return text.replace("Measurement", "Измерение")
+
+    translated, _ = translate_html_text_nodes(
+        html,
+        translate_text=fake_translate,
+        translate_heading_text=fake_heading_translate,
+        target_language_code="ru",
+        heading_mt_max_chars=80,
+    )
+
+    assert heading_calls[0] >= 1
+    assert "IV. ИЗМЕРЕНИЕ" in translated
+
+
+def test_heading_oov_detector_flags_unknown_word(monkeypatch: pytest.MonkeyPatch) -> None:
+    class _UnknownParse:
+        tag = "UNKN"
+
+    class _FakeAnalyzer:
+        def parse(self, word: str):
+            _ = word
+            return [_UnknownParse()]
+
+    monkeypatch.setattr(
+        "zoteropdf2md.translategemma._get_pymorphy3_analyzer",
+        lambda: _FakeAnalyzer(),
+    )
+
+    assert _heading_has_oov_confabulation(
+        "IV. METHODOLOGY",
+        "IV. МЕРОПРИЕМ",
+        target_language_code="ru",
+    )
 
 
 def test_identity_paragraph_recovery_uses_single_batch_for_full_paragraph() -> None:
