@@ -283,6 +283,36 @@ def _update_paragraph_stack(
     paragraph_stack.append(paragraph_counter[0])
 
 
+def _update_heading_stack(
+    tag_fragment: str,
+    heading_stack: list[int],
+    heading_counter: list[int],
+) -> None:
+    raw = tag_fragment.strip()
+    if not raw.startswith("<"):
+        return
+    if raw.startswith("<!--") or raw.startswith("<!"):
+        return
+
+    close_match = _CLOSE_TAG_PATTERN.match(raw)
+    if close_match is not None and close_match.group(1).lower() in {"h1", "h2", "h3", "h4", "h5", "h6"}:
+        if heading_stack:
+            heading_stack.pop()
+        return
+
+    if raw.endswith("/>"):
+        return
+
+    open_match = _OPEN_TAG_PATTERN.match(raw)
+    if open_match is None:
+        return
+    if open_match.group(1).lower() not in {"h1", "h2", "h3", "h4", "h5", "h6"}:
+        return
+
+    heading_counter[0] += 1
+    heading_stack.append(heading_counter[0])
+
+
 def _is_translator_refusal(text: str) -> bool:
     """Return True when *text* looks like a model refusal or meta-commentary."""
     return any(p.search(text) for p in _TRANSLATOR_REFUSAL_PATTERNS)
@@ -636,6 +666,229 @@ def _has_trailing_ellipsis_artifact(
     return _has_following_translatable(source_segments, source_index)
 
 
+def _strip_unexpected_trailing_ellipsis(source_seg: str, translated_seg: str) -> tuple[str, bool]:
+    lead, core, tail = _split_outer_ws(translated_seg)
+    src_core = _segment_core_text(source_seg).rstrip()
+    trimmed_core = core.rstrip()
+    if not trimmed_core:
+        return translated_seg, False
+    if src_core.endswith(("...", "вЂ¦")):
+        return translated_seg, False
+    if not trimmed_core.endswith(("...", "вЂ¦")):
+        return translated_seg, False
+
+    stripped = re.sub(r"(?:\.\.\.|вЂ¦)+\s*$", "", trimmed_core).rstrip()
+    if not stripped:
+        return translated_seg, False
+    return f"{lead}{stripped}{tail}", True
+
+
+def _redistribute_recovered_slice_to_parts(
+    source_slice: list[str],
+    recovered_chunk: str,
+) -> list[str] | None:
+    """Split *recovered_chunk* back to the exact shape of *source_slice*.
+
+    The source slice is a contiguous HTML fragment already split by ``_TAG_SPLIT_PATTERN``.
+    We require the same tag sequence in order and assign recovered text spans between
+    those tags back into the original text-part slots.
+    """
+    result: list[str] = []
+    pos = 0
+    total = len(source_slice)
+
+    for i, source_part in enumerate(source_slice):
+        if source_part.startswith("<"):
+            tag_pos = recovered_chunk.find(source_part, pos)
+            if tag_pos < 0:
+                return None
+            if tag_pos > pos:
+                leaked = recovered_chunk[pos:tag_pos]
+                if leaked.strip():
+                    if result and not result[-1].startswith("<"):
+                        result[-1] = result[-1] + leaked
+                    else:
+                        return None
+            result.append(source_part)
+            pos = tag_pos + len(source_part)
+            continue
+
+        next_tag = None
+        for j in range(i + 1, total):
+            candidate = source_slice[j]
+            if candidate.startswith("<"):
+                next_tag = candidate
+                break
+        if next_tag is None:
+            text_part = recovered_chunk[pos:]
+            pos = len(recovered_chunk)
+        else:
+            next_pos = recovered_chunk.find(next_tag, pos)
+            if next_pos < 0:
+                return None
+            text_part = recovered_chunk[pos:next_pos]
+            pos = next_pos
+        result.append(text_part)
+
+    if pos < len(recovered_chunk):
+        if recovered_chunk[pos:].strip():
+            return None
+    return result
+
+
+def _recover_parts_slice_with_tag_mask(
+    *,
+    source_parts: list[str],
+    start_part_idx: int,
+    end_part_idx: int,
+    translate_text: Callable[[str], str],
+    cache: dict[str, str],
+    max_chunk_chars: int,
+    context_label: str,
+    seg_index: int | None = None,
+) -> list[str] | None:
+    if start_part_idx < 0 or end_part_idx >= len(source_parts) or start_part_idx > end_part_idx:
+        return None
+    source_slice = source_parts[start_part_idx:end_part_idx + 1]
+    if not source_slice:
+        return None
+
+    source_chunk = "".join(source_slice)
+    recovered_chunk = _recover_single_segment_with_tag_mask(
+        source_chunk,
+        translate_text=translate_text,
+        cache=cache,
+        max_chunk_chars=max_chunk_chars,
+        context_label=context_label,
+        seg_index=seg_index,
+    )
+    return _redistribute_recovered_slice_to_parts(source_slice, recovered_chunk)
+
+
+def _find_contiguous_identity_runs(
+    indices: list[int],
+    *,
+    source_segments: list[str],
+    translated_segments: list[str],
+    min_total_chars: int = 100,
+) -> list[tuple[int, int]]:
+    if not indices:
+        return []
+    identity_indices = [
+        idx for idx in indices
+        if _is_identity_residual(source_segments[idx], translated_segments[idx])
+    ]
+    if not identity_indices:
+        return []
+
+    runs: list[tuple[int, int]] = []
+    run_start = identity_indices[0]
+    run_end = identity_indices[0]
+    run_chars = len(_segment_core_text(source_segments[run_start]))
+
+    for idx in identity_indices[1:]:
+        if idx == run_end + 1:
+            run_end = idx
+            run_chars += len(_segment_core_text(source_segments[idx]))
+            continue
+        if (run_end - run_start + 1) >= 2 or run_chars >= min_total_chars:
+            runs.append((run_start, run_end))
+        run_start = idx
+        run_end = idx
+        run_chars = len(_segment_core_text(source_segments[idx]))
+
+    if (run_end - run_start + 1) >= 2 or run_chars >= min_total_chars:
+        runs.append((run_start, run_end))
+    return runs
+
+
+def _extract_next_paragraph_context_text(parts: list[str], start_part_idx: int) -> str:
+    in_paragraph = False
+    chunks: list[str] = []
+
+    for part in parts[start_part_idx + 1:]:
+        if part.startswith("<"):
+            raw = part.strip()
+            open_match = _OPEN_TAG_PATTERN.match(raw)
+            close_match = _CLOSE_TAG_PATTERN.match(raw)
+            tag_name = ""
+            if open_match is not None:
+                tag_name = open_match.group(1).lower()
+            if close_match is not None:
+                tag_name = close_match.group(1).lower()
+
+            if not in_paragraph and open_match is not None and tag_name == "p" and not raw.endswith("/>"):
+                in_paragraph = True
+                continue
+            if in_paragraph and close_match is not None and tag_name == "p":
+                break
+            continue
+
+        if not in_paragraph:
+            continue
+        if not _TRANSLATABLE_TEXT_PATTERN.search(part):
+            continue
+        chunks.append(_normalize_ws(part))
+
+    paragraph = _normalize_ws(" ".join(chunks))
+    if not paragraph:
+        return ""
+    first_sentence = re.split(r"(?<=[.!?])\s+", paragraph, maxsplit=1)[0].strip()
+    if len(first_sentence) > 220:
+        return first_sentence[:220].rstrip() + "..."
+    return first_sentence
+
+
+def _recover_heading_segment_with_context(
+    source_seg: str,
+    *,
+    context_text: str,
+    translate_text: Callable[[str], str],
+    cache: dict[str, str],
+    max_chunk_chars: int,
+    seg_index: int,
+) -> str:
+    if not context_text:
+        return _recover_single_segment_with_tag_mask(
+            source_seg,
+            translate_text=translate_text,
+            cache=cache,
+            max_chunk_chars=max_chunk_chars,
+            context_label="heading",
+            seg_index=seg_index,
+        )
+
+    combined_source = f"[[hstart]]{source_seg}[[hend]]\n{context_text}"
+    recovered = _recover_single_segment_with_tag_mask(
+        combined_source,
+        translate_text=translate_text,
+        cache=cache,
+        max_chunk_chars=max_chunk_chars,
+        context_label="heading",
+        seg_index=seg_index,
+    )
+    match = re.search(r"\[\[hstart\]\](.*?)\[\[hend\]\]", recovered, flags=re.DOTALL | re.IGNORECASE)
+    if match is not None:
+        candidate = match.group(1).strip()
+        if candidate:
+            return candidate
+    for line in recovered.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        if line.lower().startswith("context"):
+            continue
+        return line
+    return _recover_single_segment_with_tag_mask(
+        source_seg,
+        translate_text=translate_text,
+        cache=cache,
+        max_chunk_chars=max_chunk_chars,
+        context_label="heading",
+        seg_index=seg_index,
+    )
+
+
 def _recover_single_segment_with_tag_mask(
     source_seg: str,
     *,
@@ -806,6 +1059,20 @@ def _apply_post_reassembly_guards(
             context_label=context_label,
             seg_index=idx,
         )
+        if reason == "trailing_ellipsis_artifact":
+            stripped_seg, stripped = _strip_unexpected_trailing_ellipsis(
+                source_seg,
+                result[idx - 1],
+            )
+            if stripped:
+                result[idx - 1] = stripped_seg
+                recovery_counts["trailing_ellipsis_stripped"] = (
+                    recovery_counts.get("trailing_ellipsis_stripped", 0) + 1
+                )
+                _cascade_debug(
+                    f"{context_label}_lenient reason=trailing_ellipsis_stripped "
+                    f"seg={idx} action=post_hoc_strip"
+                )
         recovery_counts[reason] = recovery_counts.get(reason, 0) + 1
         _cascade_debug(
             f"{context_label}_lenient "
@@ -864,6 +1131,107 @@ def _apply_post_reassembly_guards(
             )
 
     return result, recovery_counts
+
+
+def _apply_wide_paragraph_recovery(
+    *,
+    source_parts: list[str],
+    translated_parts: list[str],
+    translatable_indices: list[int],
+    source_segments: list[str],
+    paragraph_groups: list[int | None],
+    paragraph_part_ranges: dict[int, tuple[int, int]],
+    translate_text: Callable[[str], str],
+    cache: dict[str, str],
+    max_chunk_chars: int,
+) -> tuple[list[str], dict[str, int]]:
+    if (
+        len(translatable_indices) != len(source_segments)
+        or len(source_segments) != len(paragraph_groups)
+    ):
+        return translated_parts, {}
+
+    grouped_indices: dict[int, list[int]] = {}
+    for seg_idx, group_id in enumerate(paragraph_groups):
+        if group_id is None:
+            continue
+        grouped_indices.setdefault(group_id, []).append(seg_idx)
+
+    ellipsis_groups: set[int] = set()
+    identity_run_groups: dict[int, list[tuple[int, int]]] = {}
+
+    current_translated_segments = [translated_parts[idx] for idx in translatable_indices]
+    for group_id, indices in grouped_indices.items():
+        for seg_idx in indices:
+            if _has_trailing_ellipsis_artifact(
+                source_segments[seg_idx],
+                current_translated_segments[seg_idx],
+                source_segments,
+                seg_idx,
+            ):
+                ellipsis_groups.add(group_id)
+                break
+
+        runs = _find_contiguous_identity_runs(
+            indices,
+            source_segments=source_segments,
+            translated_segments=current_translated_segments,
+        )
+        if runs:
+            identity_run_groups[group_id] = runs
+
+    target_groups = sorted(set(ellipsis_groups) | set(identity_run_groups.keys()))
+    if not target_groups:
+        return translated_parts, {}
+
+    result_parts = list(translated_parts)
+    recovery_counts: dict[str, int] = {}
+
+    for group_id in target_groups:
+        part_range = paragraph_part_ranges.get(group_id)
+        if part_range is None:
+            continue
+        start_part_idx, end_part_idx = part_range
+        segs = grouped_indices.get(group_id, [])
+        seg_hint = segs[0] + 1 if segs else None
+        recovered_slice = _recover_parts_slice_with_tag_mask(
+            source_parts=source_parts,
+            start_part_idx=start_part_idx,
+            end_part_idx=end_part_idx,
+            translate_text=translate_text,
+            cache=cache,
+            max_chunk_chars=max_chunk_chars,
+            context_label="wide",
+            seg_index=seg_hint,
+        )
+        if recovered_slice is None:
+            recovery_counts["wide_recovery_split_fail"] = (
+                recovery_counts.get("wide_recovery_split_fail", 0) + 1
+            )
+            _cascade_debug(
+                "wide_lenient reason=wide_recovery_split_fail "
+                f"group={group_id} part_range=[{start_part_idx}:{end_part_idx}]"
+            )
+            continue
+
+        result_parts[start_part_idx:end_part_idx + 1] = recovered_slice
+        recovery_counts["wide_paragraph_recovery"] = recovery_counts.get("wide_paragraph_recovery", 0) + 1
+
+        run_details = identity_run_groups.get(group_id, [])
+        run_text = ",".join(f"[{a + 1}:{b + 1}]" for a, b in run_details) if run_details else "-"
+        reasons: list[str] = []
+        if group_id in ellipsis_groups:
+            reasons.append("trailing_ellipsis_artifact")
+        if run_details:
+            reasons.append("identity_run")
+        reason_text = "+".join(reasons) if reasons else "unknown"
+        _cascade_debug(
+            "wide_lenient reason=paragraph_wide_recovery "
+            f"group={group_id} reason_set={reason_text} runs={run_text} "
+            f"part_range=[{start_part_idx}:{end_part_idx}]"
+        )
+
+    return result_parts, recovery_counts
 
 
 def _try_batch_translate(
@@ -1841,18 +2209,41 @@ def translate_html_text_nodes(
     skip_stack: list[str] = []
     translatable_indices: list[int] = []
     translatable_paragraph_groups: list[int | None] = []
+    translatable_heading_groups: list[int | None] = []
     paragraph_stack: list[int] = []
     paragraph_counter = [0]
+    paragraph_part_ranges: dict[int, tuple[int, int]] = {}
+    heading_stack: list[int] = []
+    heading_counter = [0]
+    heading_part_ranges: dict[int, tuple[int, int]] = {}
     for i, part in enumerate(parts):
         if not part:
             continue
         if part.startswith("<"):
             _update_paragraph_stack(part, paragraph_stack, paragraph_counter)
+            _update_heading_stack(part, heading_stack, heading_counter)
+            if paragraph_stack:
+                group_id = paragraph_stack[-1]
+                start, end = paragraph_part_ranges.get(group_id, (i, i))
+                paragraph_part_ranges[group_id] = (min(start, i), max(end, i))
+            if heading_stack:
+                heading_id = heading_stack[-1]
+                start, end = heading_part_ranges.get(heading_id, (i, i))
+                heading_part_ranges[heading_id] = (min(start, i), max(end, i))
             _update_skip_stack(part, skip_stack)
             continue
+        if paragraph_stack:
+            group_id = paragraph_stack[-1]
+            start, end = paragraph_part_ranges.get(group_id, (i, i))
+            paragraph_part_ranges[group_id] = (min(start, i), max(end, i))
+        if heading_stack:
+            heading_id = heading_stack[-1]
+            start, end = heading_part_ranges.get(heading_id, (i, i))
+            heading_part_ranges[heading_id] = (min(start, i), max(end, i))
         if not skip_stack and _TRANSLATABLE_TEXT_PATTERN.search(part):
             translatable_indices.append(i)
             translatable_paragraph_groups.append(paragraph_stack[-1] if paragraph_stack else None)
+            translatable_heading_groups.append(heading_stack[-1] if heading_stack else None)
 
     total_segments = len(translatable_indices)
     if total_segments == 0:
@@ -1861,6 +2252,7 @@ def translate_html_text_nodes(
     # ------------------------------------------------------------------ #
     # Primary path: batch translation                                      #
     # ------------------------------------------------------------------ #
+    source_parts = list(parts)
     source_texts = [parts[i] for i in translatable_indices]
     batch_result, batch_reason = _try_windowed_batch_translate_with_reason(
         source_texts,
@@ -1874,6 +2266,18 @@ def translate_html_text_nodes(
     if batch_result is not None:
         for idx, src, tgt in zip(translatable_indices, source_texts, batch_result):
             parts[idx] = tgt
+        wide_cache: dict[str, str] = {}
+        parts, _ = _apply_wide_paragraph_recovery(
+            source_parts=source_parts,
+            translated_parts=parts,
+            translatable_indices=translatable_indices,
+            source_segments=source_texts,
+            paragraph_groups=translatable_paragraph_groups,
+            paragraph_part_ranges=paragraph_part_ranges,
+            translate_text=translate_text,
+            cache=wide_cache,
+            max_chunk_chars=max_chunk_chars,
+        )
         if on_progress is not None:
             try:
                 on_progress(total_segments, total_segments)
@@ -1895,15 +2299,56 @@ def translate_html_text_nodes(
             translated_seg = parts[part_idx]
             if not _is_identity_residual(source_seg, translated_seg):
                 continue
-            recovered_seg = _recover_single_segment_with_tag_mask(
-                source_seg,
-                translate_text=translate_text,
-                cache=final_cache,
-                max_chunk_chars=max_chunk_chars,
-                context_label="final",
-                seg_index=seg_no,
+
+            heading_group = (
+                translatable_heading_groups[seg_no - 1]
+                if (seg_no - 1) < len(translatable_heading_groups)
+                else None
             )
+            if heading_group is not None:
+                context_text = _extract_next_paragraph_context_text(source_parts, part_idx)
+                recovered_seg = _recover_heading_segment_with_context(
+                    source_seg,
+                    context_text=context_text,
+                    translate_text=translate_text,
+                    cache=final_cache,
+                    max_chunk_chars=max_chunk_chars,
+                    seg_index=seg_no,
+                )
+            else:
+                recovered_seg = _recover_single_segment_with_tag_mask(
+                    source_seg,
+                    translate_text=translate_text,
+                    cache=final_cache,
+                    max_chunk_chars=max_chunk_chars,
+                    context_label="final",
+                    seg_index=seg_no,
+                )
+            stripped_seg, stripped = _strip_unexpected_trailing_ellipsis(source_seg, recovered_seg)
+            if stripped:
+                recovered_seg = stripped_seg
+                _cascade_debug(
+                    f"final_lenient reason=trailing_ellipsis_stripped seg={seg_no} action=post_hoc_strip"
+                )
             parts[part_idx] = recovered_seg
+
+            if _is_identity_residual(source_seg, recovered_seg) and heading_group is not None:
+                heading_range = heading_part_ranges.get(heading_group)
+                if heading_range is not None:
+                    recovered_heading_slice = _recover_parts_slice_with_tag_mask(
+                        source_parts=source_parts,
+                        start_part_idx=heading_range[0],
+                        end_part_idx=heading_range[1],
+                        translate_text=translate_text,
+                        cache=final_cache,
+                        max_chunk_chars=max_chunk_chars,
+                        context_label="heading_wide",
+                        seg_index=seg_no,
+                    )
+                    if recovered_heading_slice is not None:
+                        parts[heading_range[0]:heading_range[1] + 1] = recovered_heading_slice
+                        recovered_seg = parts[part_idx]
+
             if _is_identity_residual(source_seg, recovered_seg):
                 _cascade_debug(
                     f"final_lenient reason=identity_terminal seg={seg_no} action=keep_recovered"

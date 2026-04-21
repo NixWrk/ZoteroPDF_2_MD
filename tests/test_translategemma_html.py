@@ -6,6 +6,7 @@ import pytest
 from zoteropdf2md.translategemma import (
     _apply_abbrev_mask,
     _apply_post_reassembly_guards,
+    _apply_wide_paragraph_recovery,
     _apply_formula_mask,
     _is_translator_refusal,
     _mark_author_line_notranslate,
@@ -1291,3 +1292,143 @@ def test_identity_terminal_does_not_loop() -> None:
     assert counts.get("identity_residual") == 1
     assert counts.get("identity_terminal") == 1
     assert result[0] == source_segments[0]
+
+
+def test_wide_recovery_fixes_marker_leak_shape_with_inline_anchor() -> None:
+    source_parts = [
+        "<p>",
+        "which is discussed in (",
+        '<a href="#section-III">Section III</a>',
+        "-D), we solved equations.",
+        "</p>",
+    ]
+    translated_parts = [
+        "<p>",
+        "который обсуждается в (...",
+        '<a href="#section-III">Section III</a>',
+        "-D), мы решили уравнения.",
+        "</p>",
+    ]
+
+    def fake_translate(text: str) -> str:
+        return (
+            text
+            .replace("which is discussed in (", "который обсуждается в (")
+            .replace("-D), we solved equations.", "-D), мы решили уравнения.")
+        )
+
+    result_parts, counts = _apply_wide_paragraph_recovery(
+        source_parts=source_parts,
+        translated_parts=translated_parts,
+        translatable_indices=[1, 3],
+        source_segments=[source_parts[1], source_parts[3]],
+        paragraph_groups=[1, 1],
+        paragraph_part_ranges={1: (0, 4)},
+        translate_text=fake_translate,
+        cache={},
+        max_chunk_chars=1800,
+    )
+
+    assert counts.get("wide_paragraph_recovery") == 1
+    joined = "".join(result_parts)
+    assert "(...<a href=\"#section-III\">" not in joined
+    assert "(<a href=\"#section-III\">Section III</a>-D)" in joined
+
+
+def test_trailing_ellipsis_is_stripped_after_failed_local_retry() -> None:
+    source_segments = [
+        "We define the frequency range.",
+        "Then process telemetry.",
+    ]
+    translated_segments = [
+        "Мы определяем диапазон частоты...",
+        "Затем обрабатываем телеметрию.",
+    ]
+
+    def fake_translate(text: str) -> str:
+        return text if text.endswith("...") else text + "..."
+
+    result, counts = _apply_post_reassembly_guards(
+        source_segments=source_segments,
+        translated_segments=translated_segments,
+        translate_text=fake_translate,
+        cache={},
+        max_chunk_chars=1800,
+        context_label="test",
+        segment_groups=[1, 1],
+    )
+
+    assert counts.get("trailing_ellipsis_artifact") == 1
+    assert counts.get("trailing_ellipsis_stripped") == 1
+    assert not result[0].rstrip().endswith("...")
+
+
+def test_heading_identity_recovery_uses_context_markers() -> None:
+    html = (
+        "<html><body>"
+        "<h2><i>B. Signal Generator and Controller</i></h2>"
+        "<p>This paragraph provides context for the heading retry path.</p>"
+        "</body></html>"
+    )
+    calls = [0]
+
+    def fake_translate(text: str) -> str:
+        calls[0] += 1
+        if "<z2m-i1/>" in text:
+            return text
+        if "[[hstart]]" in text and "[[hend]]" in text:
+            return text.replace(
+                "B. Signal Generator and Controller",
+                "B. Генератор сигнала и контроллер",
+            )
+        return text
+
+    translated, _ = translate_html_text_nodes(html, translate_text=fake_translate)
+
+    assert "B. Генератор сигнала и контроллер" in translated
+    assert calls[0] >= 2
+
+
+def test_wide_recovery_handles_contiguous_identity_run_in_paragraph() -> None:
+    source_parts = [
+        "<p>",
+        "A control chip drives telemetry ",
+        '<a href="#fig-8">Fig. 8</a>',
+        " and signal amplifier enhances quality ",
+        '<a href="#fig-9">Fig. 9</a>',
+        " while software processes output.",
+        "</p>",
+    ]
+    translated_parts = [
+        "<p>",
+        "A control chip drives telemetry ",
+        '<a href="#fig-8">Fig. 8</a>',
+        " and signal amplifier enhances quality ",
+        '<a href="#fig-9">Fig. 9</a>',
+        " в то время как программное обеспечение обрабатывает выход.",
+        "</p>",
+    ]
+
+    def fake_translate(text: str) -> str:
+        return (
+            text
+            .replace("A control chip drives telemetry", "Управляющая микросхема обеспечивает телеметрию")
+            .replace("signal amplifier enhances quality", "усилитель сигнала повышает качество")
+            .replace("while software processes output.", "в то время как программное обеспечение обрабатывает выход.")
+        )
+
+    result_parts, counts = _apply_wide_paragraph_recovery(
+        source_parts=source_parts,
+        translated_parts=translated_parts,
+        translatable_indices=[1, 3, 5],
+        source_segments=[source_parts[1], source_parts[3], source_parts[5]],
+        paragraph_groups=[1, 1, 1],
+        paragraph_part_ranges={1: (0, 6)},
+        translate_text=fake_translate,
+        cache={},
+        max_chunk_chars=1800,
+    )
+
+    assert counts.get("wide_paragraph_recovery") == 1
+    assert result_parts[1].startswith("Управляющая микросхема")
+    assert "усилитель сигнала повышает качество" in result_parts[3]
