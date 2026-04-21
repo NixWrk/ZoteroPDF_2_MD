@@ -1432,3 +1432,24 @@ def test_wide_recovery_handles_contiguous_identity_run_in_paragraph() -> None:
     assert counts.get("wide_paragraph_recovery") == 1
     assert result_parts[1].startswith("Управляющая микросхема")
     assert "усилитель сигнала повышает качество" in result_parts[3]
+
+
+def test_translate_html_text_nodes_reports_en_residual_warning() -> None:
+    html = (
+        "<html><body>"
+        "<p>First identity paragraph.</p>"
+        "<p>Second identity paragraph.</p>"
+        "</body></html>"
+    )
+    warnings: list[str] = []
+
+    translated, translated_segments = translate_html_text_nodes(
+        html,
+        translate_text=lambda text: text,
+        on_warning=warnings.append,
+    )
+
+    assert translated_segments == 0
+    assert translated
+    assert warnings
+    assert warnings[-1].startswith("en_residual_segments=")

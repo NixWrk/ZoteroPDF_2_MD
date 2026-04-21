@@ -2175,6 +2175,7 @@ def translate_html_text_nodes(
     on_segment_start: Callable[[int, int], None] | None = None,
     on_progress: Callable[[int, int], None] | None = None,
     on_batch_fallback: Callable[[str], None] | None = None,
+    on_warning: Callable[[str], None] | None = None,
 ) -> tuple[str, int]:
     """Translate all translatable text nodes in *html*, leaving markup intact.
 
@@ -2363,6 +2364,16 @@ def translate_html_text_nodes(
             for part_idx, source_seg in zip(translatable_indices, source_texts)
             if parts[part_idx] != source_seg
         )
+        en_residual_segments = sum(
+            1
+            for part_idx, source_seg in zip(translatable_indices, source_texts)
+            if _is_identity_residual(source_seg, parts[part_idx])
+        )
+        if on_warning is not None:
+            try:
+                on_warning(f"en_residual_segments={en_residual_segments}")
+            except Exception:
+                pass
         return "".join(p for p in parts if p) + references_tail, translated_segments
 
     if on_batch_fallback is not None:
@@ -2379,6 +2390,8 @@ def translate_html_text_nodes(
     processed_segments = 0
     out: list[str] = []
     fallback_skip_stack: list[str] = []
+    fallback_source_segments: list[str] = []
+    fallback_translated_segments: list[str] = []
 
     for part in parts:
         if not part:
@@ -2407,6 +2420,8 @@ def translate_html_text_nodes(
         if translated != part:
             translated_segments += 1
         out.append(translated)
+        fallback_source_segments.append(part)
+        fallback_translated_segments.append(translated)
         processed_segments += 1
         if on_progress is not None:
             try:
@@ -2418,6 +2433,16 @@ def translate_html_text_nodes(
     # are skipped), so index-based split is not applicable. Instead, clean up any
     # residual heading separators by replacing them with a space.
     out = [p.replace(_HEADING_MERGE_SEPARATOR, " ") for p in out]
+    if on_warning is not None:
+        en_residual_segments = sum(
+            1
+            for source_seg, translated_seg in zip(fallback_source_segments, fallback_translated_segments)
+            if _is_identity_residual(source_seg, translated_seg)
+        )
+        try:
+            on_warning(f"en_residual_segments={en_residual_segments}")
+        except Exception:
+            pass
     return "".join(out) + references_tail, translated_segments
 
 
@@ -2839,6 +2864,11 @@ class TranslateGemmaTranslator:
                 f"{reason} for {html_path.name}"
             )
 
+        def on_warning(message: str) -> None:
+            self._log_line(
+                f"[WARN] translategemma.{message} ({html_path.name})"
+            )
+
         translated_html, translated_segments = translate_html_text_nodes(
             source_html,
             translate_text=translate_text_with_progress,
@@ -2846,6 +2876,7 @@ class TranslateGemmaTranslator:
             on_segment_start=on_segment_start,
             on_progress=on_progress,
             on_batch_fallback=on_batch_fallback,
+            on_warning=on_warning,
         )
         self._log_line(
             f"[timer] translategemma.translate_html: {perf_counter() - translate_started_at:.2f}s"
