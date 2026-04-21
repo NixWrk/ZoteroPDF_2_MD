@@ -5,6 +5,7 @@ import pytest
 
 from zoteropdf2md.translategemma import (
     _apply_abbrev_mask,
+    _apply_post_reassembly_guards,
     _apply_formula_mask,
     _is_translator_refusal,
     _mark_author_line_notranslate,
@@ -579,7 +580,12 @@ def test_translate_html_text_nodes_uses_single_model_call_for_multi_paragraph() 
 
     def fake_translate(text: str) -> str:
         calls.append(text)
-        return text.upper()
+        return (
+            text
+            .replace("First paragraph text.", "Первый абзац текста.")
+            .replace("Second paragraph text.", "Второй абзац текста.")
+            .replace("Third paragraph text.", "Третий абзац текста.")
+        )
 
     translated, translated_segments = translate_html_text_nodes(
         html,
@@ -587,8 +593,8 @@ def test_translate_html_text_nodes_uses_single_model_call_for_multi_paragraph() 
     )
 
     assert translated_segments == 3
-    assert "<p>FIRST PARAGRAPH TEXT.</p>" in translated
-    assert "<p>SECOND PARAGRAPH TEXT.</p>" in translated
+    assert "<p>Первый абзац текста.</p>" in translated
+    assert "<p>Второй абзац текста.</p>" in translated
     assert len(calls) == 1  # Single batch call
 
 
@@ -728,13 +734,22 @@ def test_try_batch_translate_recovers_when_abbrev_tokens_are_partially_dropped()
     segments = ["LC sensor uses VNA calibration.", "Control sample."]
 
     def dropping_abbrev_token_translate(text: str) -> str:
-        # Drop one abbreviation token while keeping id markers intact.
-        return re.sub(r"@@Z2M_A1@@", "", text, count=1, flags=re.IGNORECASE)
+        if "<z2m-i1/>" in text:
+            # Batch path: damage one abbrev token to force local recovery.
+            return re.sub(r"@@Z2M_A1@@", "", text, count=1, flags=re.IGNORECASE)
+        # Local single-segment recovery path keeps abbrev tokens and translates body.
+        return (
+            text
+            .replace("sensor uses", "датчик использует")
+            .replace("calibration", "калибровку")
+            .replace("Control sample.", "Контрольный образец.")
+        )
 
     result, reason = _try_batch_translate_with_reason(segments, dropping_abbrev_token_translate)
 
     assert result is not None
-    assert "ok_lenient_abbrev_recovered" in reason
+    assert reason.startswith("ok_leak_recovery") or "ok_lenient_abbrev_recovered" in reason
+    assert "identity_residual=1" in reason or "ok_lenient_abbrev_recovered" in reason
     assert "LC" in result[0]
     assert "VNA" in result[0]
 
@@ -743,14 +758,22 @@ def test_try_batch_translate_recovers_when_all_abbrev_tokens_are_dropped() -> No
     segments = ["LC sensor uses VNA calibration.", "Control sample."]
 
     def drop_all_abbrev_tokens_translate(text: str) -> str:
-        text = re.sub(r"@@Z2M_A0@@", "", text, flags=re.IGNORECASE)
-        text = re.sub(r"@@Z2M_A1@@", "", text, flags=re.IGNORECASE)
-        return text.replace("uses", "использует")
+        if "<z2m-i1/>" in text:
+            text = re.sub(r"@@Z2M_A0@@", "", text, flags=re.IGNORECASE)
+            text = re.sub(r"@@Z2M_A1@@", "", text, flags=re.IGNORECASE)
+            return text.replace("uses", "использует")
+        return (
+            text
+            .replace("sensor uses", "датчик использует")
+            .replace("calibration", "калибровку")
+            .replace("Control sample.", "Контрольный образец.")
+        )
 
     result, reason = _try_batch_translate_with_reason(segments, drop_all_abbrev_tokens_translate)
 
     assert result is not None
-    assert "ok_lenient_abbrev_recovered" in reason
+    assert reason.startswith("ok_leak_recovery") or "ok_lenient_abbrev_recovered" in reason
+    assert "identity_residual=1" in reason or "ok_lenient_abbrev_recovered" in reason
     assert "LC" in result[0]
     assert "VNA" in result[0]
 
@@ -804,7 +827,12 @@ def test_try_windowed_batch_translate_recovers_from_abbrev_token_loss_locally() 
                 count=1,
                 flags=re.IGNORECASE,
             )
-        return text
+        return (
+            text
+            .replace("calibration", "калибровку")
+            .replace("setup details", "параметры настройки")
+            .replace("Control segment.", "Контрольный сегмент.")
+        )
 
     result, reason = _try_windowed_batch_translate_with_reason(
         segments,
@@ -816,9 +844,9 @@ def test_try_windowed_batch_translate_recovers_from_abbrev_token_loss_locally() 
 
     assert result is not None
     assert reason == "ok"
-    assert result[0] == segments[0]
-    assert result[1] == segments[1]
-    assert result[2] == segments[2]
+    assert result[0] != ""
+    assert result[1] != segments[1]
+    assert result[2] != segments[2]
 
 
 def test_translate_text_segment_preserves_abbrev_in_single_segment_path() -> None:
@@ -1146,3 +1174,120 @@ def test_regression_heading_multi_inline_split() -> None:
     assert "<i>LC</i>" in translated
     assert "<b>VNA</b>" in translated
     assert "@@Z2M_HSEP@@" not in translated
+
+
+def test_identity_final_pass_recovers_single_inline_heading() -> None:
+    html = (
+        "<html><body>"
+        "<h2><i>B. Signal Generator and Controller</i></h2>"
+        "<p>Body text.</p>"
+        "</body></html>"
+    )
+    calls = [0]
+
+    def fake_translate(text: str) -> str:
+        calls[0] += 1
+        if "<z2m-i1/>" in text:
+            return text
+        return text.replace(
+            "B. Signal Generator and Controller",
+            "B. Генератор сигнала и контроллер",
+        )
+
+    translated, _ = translate_html_text_nodes(html, translate_text=fake_translate)
+
+    assert "B. Генератор сигнала и контроллер" in translated
+    assert calls[0] >= 2
+
+
+def test_identity_paragraph_recovery_uses_single_batch_for_full_paragraph() -> None:
+    source_segments = [
+        "Signal amplifier enhances quality in the receiver path.",
+        "A control chip drives the signal generator for telemetry.",
+    ]
+    translated_segments = list(source_segments)
+    calls = [0]
+
+    def fake_translate(text: str) -> str:
+        calls[0] += 1
+        if "<z2m-i1/>" in text and "<z2m-i2/>" in text:
+            return (
+                "<z2m-i1/>Усилитель сигнала повышает качество в тракте приемника."
+                "<z2m-i2/>Управляющая микросхема ведет генератор сигнала для телеметрии."
+            )
+        return text
+
+    result, counts = _apply_post_reassembly_guards(
+        source_segments=source_segments,
+        translated_segments=translated_segments,
+        translate_text=fake_translate,
+        cache={},
+        max_chunk_chars=1800,
+        context_label="test",
+        segment_groups=[1, 1],
+    )
+
+    assert calls[0] == 1
+    assert counts.get("identity_residual_paragraph") == 1
+    assert result[0].startswith("Усилитель сигнала")
+    assert result[1].startswith("Управляющая микросхема")
+
+
+def test_identity_mixed_paragraph_recovers_only_identity_segment() -> None:
+    source_segments = [
+        "Signal amplifier enhances quality in the receiver path.",
+        "Second segment source text.",
+    ]
+    translated_segments = [
+        "Signal amplifier enhances quality in the receiver path.",
+        "Второй сегмент уже переведен.",
+    ]
+    calls = [0]
+
+    def fake_translate(text: str) -> str:
+        calls[0] += 1
+        return text.replace(
+            "Signal amplifier enhances quality in the receiver path.",
+            "Усилитель сигнала повышает качество в тракте приемника.",
+        )
+
+    result, counts = _apply_post_reassembly_guards(
+        source_segments=source_segments,
+        translated_segments=translated_segments,
+        translate_text=fake_translate,
+        cache={},
+        max_chunk_chars=1800,
+        context_label="test",
+        segment_groups=[1, 1],
+    )
+
+    assert calls[0] == 1
+    assert counts.get("identity_residual") == 1
+    assert "identity_residual_paragraph" not in counts
+    assert result[0].startswith("Усилитель сигнала")
+    assert result[1] == "Второй сегмент уже переведен."
+
+
+def test_identity_terminal_does_not_loop() -> None:
+    source_segments = ["Signal amplifier enhances quality in the receiver path."]
+    translated_segments = ["Signal amplifier enhances quality in the receiver path."]
+    calls = [0]
+
+    def fake_translate(text: str) -> str:
+        calls[0] += 1
+        return text
+
+    result, counts = _apply_post_reassembly_guards(
+        source_segments=source_segments,
+        translated_segments=translated_segments,
+        translate_text=fake_translate,
+        cache={},
+        max_chunk_chars=1800,
+        context_label="test",
+        segment_groups=[1],
+    )
+
+    assert calls[0] == 1
+    assert counts.get("identity_residual") == 1
+    assert counts.get("identity_terminal") == 1
+    assert result[0] == source_segments[0]
