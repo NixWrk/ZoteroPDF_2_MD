@@ -939,6 +939,94 @@ def _recover_segment_with_context_markers(
     )
 
 
+def _recover_segment_with_forced_markers(
+    source_seg: str,
+    *,
+    translate_text: Callable[[str], str],
+    cache: dict[str, str],
+    max_chunk_chars: int,
+    context_label: str,
+    seg_index: int,
+) -> str:
+    marker_start = "zz2mforcestartzz"
+    marker_end = "zz2mforceendzz"
+    wrapped = (
+        "переведи текст между маркерами на целевой язык полностью. "
+        "не оставляй английские слова без перевода, кроме технических аббревиатур "
+        "и имен собственных.\n"
+        f"{marker_start}{source_seg}{marker_end}"
+    )
+    recovered = _recover_single_segment_with_tag_mask(
+        wrapped,
+        translate_text=translate_text,
+        cache=cache,
+        max_chunk_chars=max_chunk_chars,
+        context_label=context_label,
+        seg_index=seg_index,
+    )
+    match = re.search(
+        rf"{re.escape(marker_start)}(.*?){re.escape(marker_end)}",
+        recovered,
+        flags=re.DOTALL | re.IGNORECASE,
+    )
+    if match is not None:
+        candidate = match.group(1).strip()
+        if candidate:
+            return candidate
+    return _recover_single_segment_with_tag_mask(
+        source_seg,
+        translate_text=translate_text,
+        cache=cache,
+        max_chunk_chars=max_chunk_chars,
+        context_label=context_label,
+        seg_index=seg_index,
+    )
+
+
+def _recover_segment_sentencewise(
+    source_seg: str,
+    *,
+    translate_text: Callable[[str], str],
+    cache: dict[str, str],
+    max_chunk_chars: int,
+    context_label: str,
+    seg_index: int,
+) -> str:
+    lead, core, tail = _split_outer_ws(source_seg)
+    core_text = core.strip()
+    if not core_text:
+        return source_seg
+    sentences = [chunk.strip() for chunk in re.split(r"(?<=[.!?])\s+", core_text) if chunk.strip()]
+    if len(sentences) < 2:
+        return source_seg
+
+    translated_sentences: list[str] = []
+    for sent in sentences:
+        translated = _recover_single_segment_with_tag_mask(
+            sent,
+            translate_text=translate_text,
+            cache=cache,
+            max_chunk_chars=max_chunk_chars,
+            context_label=context_label,
+            seg_index=seg_index,
+        )
+        if _is_identity_residual(sent, translated):
+            translated = _recover_segment_with_forced_markers(
+                sent,
+                translate_text=translate_text,
+                cache=cache,
+                max_chunk_chars=max_chunk_chars,
+                context_label=context_label,
+                seg_index=seg_index,
+            )
+        translated_sentences.append(_normalize_ws(_segment_core_text(translated)))
+
+    joined = " ".join(chunk for chunk in translated_sentences if chunk).strip()
+    if not joined:
+        return source_seg
+    return f"{lead}{joined}{tail}"
+
+
 def _recover_single_segment_with_tag_mask(
     source_seg: str,
     *,
@@ -1240,6 +1328,40 @@ def _apply_post_reassembly_guards(
         )
         if reason == "identity_residual" and _is_identity_residual(source_seg, result[idx - 1]):
             _try_context_recovery_for_index(idx - 1)
+        if reason == "identity_residual" and _is_identity_residual(source_seg, result[idx - 1]):
+            forced = _recover_segment_with_forced_markers(
+                source_seg,
+                translate_text=translate_text,
+                cache=cache,
+                max_chunk_chars=max_chunk_chars,
+                context_label=f"{context_label}_forced",
+                seg_index=idx,
+            )
+            result[idx - 1] = forced
+            if not _is_identity_residual(source_seg, result[idx - 1]):
+                recovery_counts["identity_forced_recovery"] = (
+                    recovery_counts.get("identity_forced_recovery", 0) + 1
+                )
+                _cascade_debug(
+                    f"{context_label}_lenient reason=identity_forced_recovery seg={idx}"
+                )
+        if reason == "identity_residual" and _is_identity_residual(source_seg, result[idx - 1]):
+            sent_recovered = _recover_segment_sentencewise(
+                source_seg,
+                translate_text=translate_text,
+                cache=cache,
+                max_chunk_chars=max_chunk_chars,
+                context_label=f"{context_label}_sent",
+                seg_index=idx,
+            )
+            result[idx - 1] = sent_recovered
+            if not _is_identity_residual(source_seg, result[idx - 1]):
+                recovery_counts["identity_sentence_recovery"] = (
+                    recovery_counts.get("identity_sentence_recovery", 0) + 1
+                )
+                _cascade_debug(
+                    f"{context_label}_lenient reason=identity_sentence_recovery seg={idx}"
+                )
         if _is_identity_residual(source_seg, result[idx - 1]):
             recovery_counts["identity_terminal"] = recovery_counts.get("identity_terminal", 0) + 1
             _cascade_debug(
@@ -1311,6 +1433,40 @@ def _apply_post_reassembly_guards(
                     result[seg_idx] = run_result[local_idx]
                     if _is_identity_residual(source_segments[seg_idx], result[seg_idx]):
                         _try_context_recovery_for_index(seg_idx)
+                    if _is_identity_residual(source_segments[seg_idx], result[seg_idx]):
+                        forced = _recover_segment_with_forced_markers(
+                            source_segments[seg_idx],
+                            translate_text=translate_text,
+                            cache=cache,
+                            max_chunk_chars=max_chunk_chars,
+                            context_label=f"{context_label}_forced",
+                            seg_index=seg_idx + 1,
+                        )
+                        result[seg_idx] = forced
+                        if not _is_identity_residual(source_segments[seg_idx], result[seg_idx]):
+                            recovery_counts["identity_forced_recovery"] = (
+                                recovery_counts.get("identity_forced_recovery", 0) + 1
+                            )
+                            _cascade_debug(
+                                f"{context_label}_lenient reason=identity_forced_recovery seg={seg_idx + 1}"
+                            )
+                    if _is_identity_residual(source_segments[seg_idx], result[seg_idx]):
+                        sent_recovered = _recover_segment_sentencewise(
+                            source_segments[seg_idx],
+                            translate_text=translate_text,
+                            cache=cache,
+                            max_chunk_chars=max_chunk_chars,
+                            context_label=f"{context_label}_sent",
+                            seg_index=seg_idx + 1,
+                        )
+                        result[seg_idx] = sent_recovered
+                        if not _is_identity_residual(source_segments[seg_idx], result[seg_idx]):
+                            recovery_counts["identity_sentence_recovery"] = (
+                                recovery_counts.get("identity_sentence_recovery", 0) + 1
+                            )
+                            _cascade_debug(
+                                f"{context_label}_lenient reason=identity_sentence_recovery seg={seg_idx + 1}"
+                            )
                     if _is_identity_residual(source_segments[seg_idx], result[seg_idx]):
                         recovery_counts["identity_terminal"] = recovery_counts.get("identity_terminal", 0) + 1
                         _cascade_debug(
@@ -2131,7 +2287,13 @@ def _translate_plain_fragment_preserving_abbrev(
         int(m.group(1)) for m in _ABBREV_TOKEN_PATTERN.finditer(translated_masked)
     )
     if found_abbrev_ids != expected_abbrev_ids:
-        # The model altered abbreviation placeholders; safest fallback is source text.
+        # The model altered abbreviation placeholders. In recovery context we
+        # accept translated text when it is clearly non-English; otherwise keep
+        # strict fallback to source text.
+        if _is_recovery_context_active():
+            restored_lenient = _restore_abbrev_mask(translated_masked, amap)
+            if re.search(r"[А-Яа-яЁё]", restored_lenient):
+                return restored_lenient
         return text
     return _restore_abbrev_mask(translated_masked, amap)
 

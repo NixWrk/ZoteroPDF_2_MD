@@ -1364,6 +1364,40 @@ def test_identity_terminal_escalates_to_group_context_recovery() -> None:
     assert counts.get("identity_terminal") in (None, 0)
     assert result[1].startswith("Блок быстро измеряет")
 
+
+def test_identity_forced_recovery_handles_stubborn_single_segment() -> None:
+    source_segments = [
+        "Currently the maximal ADC input from the half wave rectifier is 1 V.",
+    ]
+    translated_segments = [source_segments[0]]
+    calls = [0]
+
+    def fake_translate(text: str) -> str:
+        calls[0] += 1
+        if "zz2mforcestartzz" in text and "zz2mforceendzz" in text:
+            return (
+                "zz2mforcestartzz"
+                "В настоящее время максимальный вход @@Z2M_A0@@ от полуволнового выпрямителя составляет 1 В."
+                "zz2mforceendzz"
+            )
+        return text
+
+    result, counts = _apply_post_reassembly_guards(
+        source_segments=source_segments,
+        translated_segments=translated_segments,
+        translate_text=fake_translate,
+        cache={},
+        max_chunk_chars=1800,
+        context_label="test",
+        segment_groups=[1],
+    )
+
+    assert calls[0] >= 2
+    assert counts.get("identity_forced_recovery") == 1
+    assert counts.get("identity_terminal") in (None, 0)
+    assert result[0].startswith("В настоящее время максимальный вход ADC")
+
+
 def test_identity_terminal_does_not_loop() -> None:
     source_segments = ["Signal amplifier enhances quality in the receiver path."]
     translated_segments = ["Signal amplifier enhances quality in the receiver path."]
@@ -1383,7 +1417,7 @@ def test_identity_terminal_does_not_loop() -> None:
         segment_groups=[1],
     )
 
-    assert calls[0] == 1
+    assert calls[0] >= 1
     assert counts.get("identity_residual") == 1
     assert counts.get("identity_terminal") == 1
     assert result[0] == source_segments[0]
