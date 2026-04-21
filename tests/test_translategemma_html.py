@@ -1342,6 +1342,11 @@ def test_identity_terminal_escalates_to_group_context_recovery() -> None:
                 "<z2m-i2/>Блок быстро измеряет амплитуду выходного сигнала."
                 "<z2m-i3/>Контекстное предложение после сложного сегмента."
             )
+        if "zz2mtargetstartzz" in text and "zz2mtargetendzz" in text:
+            return text.replace(
+                "The block samples output amplitude quickly.",
+                "Блок быстро измеряет амплитуду выходного сигнала.",
+            )
         return text
 
     result, counts = _apply_post_reassembly_guards(

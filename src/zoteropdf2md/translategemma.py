@@ -889,6 +889,56 @@ def _recover_heading_segment_with_context(
     )
 
 
+def _recover_segment_with_context_markers(
+    source_seg: str,
+    *,
+    context_text: str,
+    translate_text: Callable[[str], str],
+    cache: dict[str, str],
+    max_chunk_chars: int,
+    context_label: str,
+    seg_index: int,
+) -> str:
+    if not context_text:
+        return _recover_single_segment_with_tag_mask(
+            source_seg,
+            translate_text=translate_text,
+            cache=cache,
+            max_chunk_chars=max_chunk_chars,
+            context_label=context_label,
+            seg_index=seg_index,
+        )
+
+    marker_start = "zz2mtargetstartzz"
+    marker_end = "zz2mtargetendzz"
+    wrapped = f"{marker_start}{source_seg}{marker_end}\n{context_text}"
+    recovered = _recover_single_segment_with_tag_mask(
+        wrapped,
+        translate_text=translate_text,
+        cache=cache,
+        max_chunk_chars=max_chunk_chars,
+        context_label=context_label,
+        seg_index=seg_index,
+    )
+    match = re.search(
+        rf"{re.escape(marker_start)}(.*?){re.escape(marker_end)}",
+        recovered,
+        flags=re.DOTALL | re.IGNORECASE,
+    )
+    if match is not None:
+        candidate = match.group(1).strip()
+        if candidate:
+            return candidate
+    return _recover_single_segment_with_tag_mask(
+        source_seg,
+        translate_text=translate_text,
+        cache=cache,
+        max_chunk_chars=max_chunk_chars,
+        context_label=context_label,
+        seg_index=seg_index,
+    )
+
+
 def _recover_single_segment_with_tag_mask(
     source_seg: str,
     *,
@@ -1044,7 +1094,7 @@ def _apply_post_reassembly_guards(
     paragraph_identity_runs: dict[int, list[tuple[int, int]]] = {}
     paragraph_identity_indices: set[int] = set()
     grouped_indices: dict[int, list[int]] = {}
-    context_recovered_spans: set[tuple[int, ...]] = set()
+    context_recovered_segments: set[int] = set()
 
     if segment_groups is not None and len(segment_groups) == len(source_segments):
         for seg_idx, group_id in enumerate(segment_groups):
@@ -1067,59 +1117,77 @@ def _apply_post_reassembly_guards(
                 for run_start, run_end in runs:
                     paragraph_identity_indices.update(range(run_start, run_end + 1))
 
+    def _build_neighbor_context_text(seg_idx: int) -> str:
+        snippets: list[str] = []
+
+        def _append_from_index(idx: int) -> None:
+            if idx < 0 or idx >= len(source_segments) or idx == seg_idx:
+                return
+            core = _normalize_ws(_segment_core_text(source_segments[idx]))
+            if not core:
+                return
+            if len(core) > 220:
+                core = core[:220].rstrip() + "..."
+            if core in snippets:
+                return
+            snippets.append(core)
+
+        if segment_groups is not None and len(segment_groups) == len(source_segments):
+            group_id = segment_groups[seg_idx]
+            if group_id is not None:
+                indices = grouped_indices.get(group_id, [])
+                if indices:
+                    try:
+                        local_pos = indices.index(seg_idx)
+                    except ValueError:
+                        local_pos = -1
+                    if local_pos >= 0:
+                        if local_pos > 0:
+                            _append_from_index(indices[local_pos - 1])
+                        if local_pos + 1 < len(indices):
+                            _append_from_index(indices[local_pos + 1])
+
+        if not snippets:
+            _append_from_index(seg_idx - 1)
+            _append_from_index(seg_idx + 1)
+
+        if not snippets:
+            return ""
+        return "Context (for consistency only): " + " ".join(snippets[:2])
+
     def _try_context_recovery_for_index(seg_idx: int) -> bool:
-        if (
-            not enable_identity_context_recovery
-            or segment_groups is None
-            or len(segment_groups) != len(source_segments)
-        ):
+        if not enable_identity_context_recovery:
             return False
-        group_id = segment_groups[seg_idx]
-        if group_id is None:
-            return False
-        indices = grouped_indices.get(group_id, [])
-        if len(indices) < 2:
-            return False
-        try:
-            local_pos = indices.index(seg_idx)
-        except ValueError:
+        if seg_idx in context_recovered_segments:
             return False
 
-        span_start = max(0, local_pos - 1)
-        span_end = min(len(indices), local_pos + 2)
-        span_indices = indices[span_start:span_end]
-        if len(span_indices) < 2:
-            return False
-        span_key = tuple(span_indices)
-        if span_key in context_recovered_spans:
+        context_text = _build_neighbor_context_text(seg_idx)
+        if not context_text:
             return False
 
-        span_sources = [source_segments[i] for i in span_indices]
-        span_result, span_reason = _try_batch_translate_with_reason(
-            span_sources,
-            translate_text,
-            max_batch_chars=max(_MAX_BATCH_CHARS, max_chunk_chars * 8),
-            segment_groups=[1] * len(span_sources),
-            enable_paragraph_identity_guard=False,
-            enable_identity_context_recovery=False,
+        recovered = _recover_segment_with_context_markers(
+            source_segments[seg_idx],
+            context_text=context_text,
+            translate_text=translate_text,
+            cache=cache,
+            max_chunk_chars=max_chunk_chars,
+            context_label=f"{context_label}_context",
+            seg_index=seg_idx + 1,
         )
-        if span_result is None:
+        context_recovered_segments.add(seg_idx)
+        if _is_identity_residual(source_segments[seg_idx], recovered):
             _cascade_debug(
                 f"{context_label}_lenient reason=identity_context_failed "
-                f"seg={seg_idx + 1} span={_format_int_list([i + 1 for i in span_indices])} "
-                f"detail={span_reason}"
+                f"seg={seg_idx + 1} detail=still_identity"
             )
             return False
 
-        for local_idx, real_idx in enumerate(span_indices):
-            result[real_idx] = span_result[local_idx]
-        context_recovered_spans.add(span_key)
+        result[seg_idx] = recovered
         recovery_counts["identity_context_recovery"] = (
             recovery_counts.get("identity_context_recovery", 0) + 1
         )
         _cascade_debug(
-            f"{context_label}_lenient reason=identity_context_recovery "
-            f"seg={seg_idx + 1} span={_format_int_list([i + 1 for i in span_indices])}"
+            f"{context_label}_lenient reason=identity_context_recovery seg={seg_idx + 1}"
         )
         return True
 
@@ -1180,18 +1248,32 @@ def _apply_post_reassembly_guards(
 
     if paragraph_identity_runs:
         for group_id, runs in sorted(paragraph_identity_runs.items()):
+            group_indices = grouped_indices.get(group_id, [])
             for run_start, run_end in runs:
                 run_indices = list(range(run_start, run_end + 1))
-                run_sources = [source_segments[i] for i in run_indices]
-                run_result, run_reason = _try_batch_translate_with_reason(
-                    run_sources,
+                context_indices = list(run_indices)
+                if len(run_indices) == 1 and len(group_indices) > 1:
+                    try:
+                        local_pos = group_indices.index(run_indices[0])
+                    except ValueError:
+                        local_pos = -1
+                    if local_pos >= 0:
+                        c_start = max(0, local_pos - 1)
+                        c_end = min(len(group_indices), local_pos + 2)
+                        expanded = group_indices[c_start:c_end]
+                        if len(expanded) > 1:
+                            context_indices = expanded
+
+                context_sources = [source_segments[i] for i in context_indices]
+                context_result, run_reason = _try_batch_translate_with_reason(
+                    context_sources,
                     translate_text,
                     max_batch_chars=max(_MAX_BATCH_CHARS, max_chunk_chars * 8),
-                    segment_groups=[1] * len(run_sources),
+                    segment_groups=[1] * len(context_sources),
                     enable_paragraph_identity_guard=False,
                     enable_identity_context_recovery=False,
                 )
-                if run_result is None:
+                if context_result is None:
                     run_result = [
                         _recover_single_segment_with_tag_mask(
                             source_segments[i],
@@ -1209,6 +1291,16 @@ def _apply_post_reassembly_guards(
                         f"action=local_segment_recovery reason_detail={run_reason}"
                     )
                 else:
+                    run_result = []
+                    for seg_idx in run_indices:
+                        try:
+                            mapped_pos = context_indices.index(seg_idx)
+                        except ValueError:
+                            mapped_pos = -1
+                        if mapped_pos < 0:
+                            run_result.append(source_segments[seg_idx])
+                        else:
+                            run_result.append(context_result[mapped_pos])
                     _cascade_debug(
                         f"{context_label}_lenient reason=identity_residual_paragraph "
                         f"group={group_id} segs={_format_int_list([i + 1 for i in run_indices])} "
