@@ -422,6 +422,14 @@ _WINDOW_BATCH_TARGET_SEGMENTS = 8
 _WINDOW_BATCH_OVERLAP_SEGMENTS = 1
 _MAX_WINDOW_BATCH_CHARS = 40_000
 _HEADING_MERGE_SEPARATOR = "@@Z2M_HSEP@@"
+_HEADING_PREFIX_TOKEN_PATTERN = re.compile(r"^\s*([A-Z]|[IVXLCM]{1,8})\.\s+", re.IGNORECASE)
+_HEADING_GLOSSARY_RU: dict[str, str] = {
+    "MEASUREMENT": "ИЗМЕРЕНИЕ",
+}
+_HEADING_MISTRANSLATION_FIXUPS_RU: dict[str, str] = {
+    "МЕРОПРИЕМ": "ИЗМЕРЕНИЕ",
+    "МЕРОПРИЁМ": "ИЗМЕРЕНИЕ",
+}
 _TABLE_CAPTION_ALLCAPS_PATTERN = re.compile(
     r"^\s*TABLE\s+([IVX]+)\s+([A-Z0-9][A-Z0-9\s,()/:+\-]{3,})\s*$"
 )
@@ -885,15 +893,15 @@ def _recover_heading_segment_with_context(
     match = re.search(r"\[\[hstart\]\](.*?)\[\[hend\]\]", recovered, flags=re.DOTALL | re.IGNORECASE)
     if match is not None:
         candidate = match.group(1).strip()
-        if candidate:
+        if candidate and not _is_heading_context_leak_candidate(
+            source_seg=source_seg,
+            candidate=candidate,
+            context_text=context_text,
+        ):
             return candidate
-    for line in recovered.splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        if line.lower().startswith("context"):
-            continue
-        return line
+        _cascade_debug(
+            f"heading_lenient reason=context_leak seg={seg_index} action=source_only_recovery"
+        )
     return _recover_single_segment_with_tag_mask(
         source_seg,
         translate_text=translate_text,
@@ -902,6 +910,68 @@ def _recover_heading_segment_with_context(
         context_label="heading",
         seg_index=seg_index,
     )
+
+
+def _is_heading_context_leak_candidate(
+    *,
+    source_seg: str,
+    candidate: str,
+    context_text: str,
+) -> bool:
+    """Detect when heading context recovery leaked paragraph content into heading slot."""
+    source_norm = _normalize_ws(_segment_core_text(source_seg))
+    candidate_norm = _normalize_ws(_segment_core_text(candidate))
+    context_norm = _normalize_ws(context_text)
+    if not candidate_norm:
+        return True
+
+    # If source heading starts with an enumerated token (A., IV., ...), keep it.
+    source_prefix = _HEADING_PREFIX_TOKEN_PATTERN.match(source_norm)
+    if source_prefix is not None:
+        prefix = source_prefix.group(1).lower() + "."
+        if not candidate_norm.lower().startswith(prefix):
+            return True
+
+    # Candidate that mostly repeats paragraph context indicates boundary leak.
+    if context_norm:
+        check_len = min(48, len(context_norm))
+        if check_len >= 20 and candidate_norm.lower().startswith(context_norm[:check_len].lower()):
+            return True
+
+    # Heading text should not balloon into a paragraph-sized sentence block.
+    if len(candidate_norm) > max(140, len(source_norm) * 3):
+        return True
+
+    return False
+
+
+def _apply_heading_glossary_postedit(source_seg: str, translated_seg: str) -> str:
+    """Apply deterministic glossary fixes for known unstable heading terms."""
+    source_norm = _normalize_ws(_segment_core_text(source_seg))
+    translated_norm = _normalize_ws(_segment_core_text(translated_seg))
+    if not source_norm or not translated_norm:
+        return translated_seg
+
+    out = translated_seg
+    source_upper = source_norm.upper()
+
+    for en_term, ru_term in _HEADING_GLOSSARY_RU.items():
+        if en_term not in source_upper:
+            continue
+        out = re.sub(
+            rf"\b{re.escape(en_term)}\b",
+            ru_term,
+            out,
+            flags=re.IGNORECASE,
+        )
+        for bad_ru, fixed_ru in _HEADING_MISTRANSLATION_FIXUPS_RU.items():
+            out = re.sub(
+                rf"\b{re.escape(bad_ru)}\b",
+                fixed_ru,
+                out,
+                flags=re.IGNORECASE,
+            )
+    return out
 
 
 def _recover_segment_with_context_markers(
@@ -2658,6 +2728,15 @@ def translate_html_text_nodes(
         parts = _split_heading_text_nodes(parts, heading_merges)
         # Clean up any residual heading separators that weren't split (safety net).
         parts = [p.replace(_HEADING_MERGE_SEPARATOR, " ") for p in parts]
+        # Deterministic heading glossary pass (quality guard for short all-caps headings).
+        for part_idx, source_seg, heading_group in zip(
+            translatable_indices,
+            source_texts,
+            translatable_heading_groups,
+        ):
+            if heading_group is None:
+                continue
+            parts[part_idx] = _apply_heading_glossary_postedit(source_seg, parts[part_idx])
         # Final identity pass (after heading split) catches single-inline headings
         # and any residual EN segments that escaped window-level guards.
         final_cache: dict[str, str] = {}
@@ -2730,6 +2809,9 @@ def translate_html_text_nodes(
                 _cascade_debug(
                     f"final_lenient reason=identity_residual seg={seg_no} action=local_segment_recovery"
                 )
+            if heading_group is not None:
+                recovered_seg = _apply_heading_glossary_postedit(source_seg, recovered_seg)
+                parts[part_idx] = recovered_seg
 
         # One more paragraph-wide pass after final per-segment retries helps when
         # isolated retries keep returning identity EN for technical text.
@@ -2744,6 +2826,14 @@ def translate_html_text_nodes(
             cache=wide_cache,
             max_chunk_chars=max_chunk_chars,
         )
+        for part_idx, source_seg, heading_group in zip(
+            translatable_indices,
+            source_texts,
+            translatable_heading_groups,
+        ):
+            if heading_group is None:
+                continue
+            parts[part_idx] = _apply_heading_glossary_postedit(source_seg, parts[part_idx])
 
         translated_segments = sum(
             1

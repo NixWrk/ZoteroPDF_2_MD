@@ -8,10 +8,12 @@ from zoteropdf2md.translategemma import (
     _apply_post_reassembly_guards,
     _apply_wide_paragraph_recovery,
     _apply_formula_mask,
+    _apply_heading_glossary_postedit,
     _apply_tag_mask,
     _is_identity_residual,
     _is_translator_refusal,
     _mark_author_line_notranslate,
+    _recover_heading_segment_with_context,
     _restore_abbrev_mask,
     _restore_formula_mask,
     _restore_tag_mask,
@@ -1226,6 +1228,80 @@ def test_identity_final_pass_recovers_single_inline_heading() -> None:
 
     assert "B. Генератор сигнала и контроллер" in translated
     assert calls[0] >= 2
+
+
+def test_heading_context_recovery_does_not_accept_paragraph_prefix_leak() -> None:
+    source_seg = "A. System Model"
+    context_text = "A passive pressure sensor is mounted externally. Figure 2 shows coupling."
+
+    def _nw(text: str) -> str:
+        return " ".join(text.split())
+
+    def fake_translate(text: str) -> str:
+        if "[[hstart]]" in text.lower():
+            # Simulate model dropping markers and returning paragraph text.
+            return "Пассивный датчик давления установлен снаружи. На рисунке 2 показана связь."
+        if _nw(text) == source_seg:
+            return "A. Модель системы"
+        return text
+
+    recovered = _recover_heading_segment_with_context(
+        source_seg,
+        context_text=context_text,
+        translate_text=fake_translate,
+        cache={},
+        max_chunk_chars=1800,
+        seg_index=1,
+    )
+
+    assert recovered == "A. Модель системы"
+
+
+def test_translate_html_text_nodes_recovers_heading_without_context_boundary_leak() -> None:
+    html = (
+        "<html><body>"
+        "<h2>A. System Model</h2>"
+        "<p>A passive pressure sensor is mounted externally. Figure 2 shows coupling.</p>"
+        "</body></html>"
+    )
+    ru_paragraph = "Пассивный датчик давления установлен снаружи. На рисунке 2 показана связь."
+
+    def _nw(text: str) -> str:
+        return " ".join(text.split())
+
+    def fake_translate(text: str) -> str:
+        if "[[hstart]]" in text.lower():
+            return ru_paragraph
+        if _nw(text) == "A. System Model":
+            return "A. Модель системы"
+        return text.replace(
+            "A passive pressure sensor is mounted externally. Figure 2 shows coupling.",
+            ru_paragraph,
+        )
+
+    translated, _ = translate_html_text_nodes(html, translate_text=fake_translate)
+
+    assert "A. Модель системы" in translated
+    assert translated.count(ru_paragraph) == 1
+
+
+def test_heading_glossary_fixes_measurement_mistranslation() -> None:
+    fixed = _apply_heading_glossary_postedit("IV. MEASUREMENT", "IV. МЕРОПРИЕМ")
+    assert fixed == "IV. ИЗМЕРЕНИЕ"
+
+    fixed_en = _apply_heading_glossary_postedit("IV. MEASUREMENT", "IV. MEASUREMENT")
+    assert fixed_en == "IV. ИЗМЕРЕНИЕ"
+
+
+def test_translate_html_text_nodes_applies_heading_glossary_postedit() -> None:
+    html = "<html><body><h2>IV. MEASUREMENT</h2><p>Body.</p></body></html>"
+
+    def fake_translate(text: str) -> str:
+        return text.replace("IV. MEASUREMENT", "IV. МЕРОПРИЕМ").replace("Body.", "Тело.")
+
+    translated, _ = translate_html_text_nodes(html, translate_text=fake_translate)
+    assert "IV. ИЗМЕРЕНИЕ" in translated
+    assert "МЕРОПРИЕМ" not in translated
 
 
 def test_identity_paragraph_recovery_uses_single_batch_for_full_paragraph() -> None:
