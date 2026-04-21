@@ -1144,3 +1144,222 @@ Fix implemented:
 Acceptance criteria:
 - no unresolved `@@Z2M...@@` tokens (canonical or escaped) in final RU HTML,
 - warning `sentinel_leak_segments=0` on successful full-file run.
+
+## 12. Phase 8 — аудит прогона 2026-04-21 20:20 (post Phase 7.1/7.2)
+
+### 12.1 Контекст прогона
+
+- Лог: `logs/translate_wang_full_20260421_202010.log` (UTF-16 LE BOM).
+- `TRANSLATED_SEGMENTS=324`, `file_total=1803.59 s`,
+  `recovery_calls: total=213 time=335.57s avg=1.58s`.
+- После коммитов `2a1eda7` (Phase 7.1 robust identity context
+  recovery), `dc8042e` (Phase 7.2 resilient identity fallback),
+  `8972661` (checkpoint + sentinel-escape fix per §11.6).
+
+### 12.2 Сводка статуса по старым дефектам
+
+| Класс | 08:57 | 20:20 | Статус |
+|---|---|---|---|
+| `<z2m-…>` marker leak | 0 | 0 | ✅ |
+| `@@Z2M…` sentinel leak в HTML | >0 | 0 | ✅ (Phase 7.3) |
+| E1 `(...<a>…</a>-D)` | есть | 0 | ✅ |
+| E6 EN heading `B. RF Signal…` | есть | 0 | ✅ |
+| E7/E8 крупные EN-абзацы | 5 | 0 | ✅ |
+| E2 трейлинг `…` на фрагментах | есть | **2** (L417 «Влияние…», L433 «Мы определяем…») | ❌ частично |
+| Новый N1 heading-content leak (H2 → префикс абзаца) | — | **1** (L292–295) | ❌ NEW |
+| Новый N2 heading-mistranslation | — | **1** (`IV. MEASUREMENT` → `МЕРОПРИЕМ`) | ❌ NEW |
+| `[WARN] en_residual_segments` | не лог. | 17 | ⚠️ |
+
+### 12.3 Cascade-гистограмма (248 строк)
+
+| reason | count |
+|---|---|
+| `identity_terminal` | 56 |
+| `identity_context_failed` | 39 |
+| `identity_residual` | 38 |
+| `structured_parse_failed` | 31 |
+| `id_mismatch` | 24 |
+| `abbrev_tokens_altered` | 17 |
+| `tag_mask_dropped` | 15 |
+| `wide_recovery_split_fail` | 14 |
+| `formula_tokens_altered` | 5 |
+| `identity_residual_paragraph` | 3 |
+| `marker_leak` | 2 |
+| `trailing_ellipsis_stripped` / `_artifact` | 2/2 |
+
+### 12.4 Подтверждённые новые/недозакрытые дефекты
+
+#### N1 (CRITICAL). Heading `<h2>A. System Model</h2>` потерян, заменён префиксом абзаца
+
+`Wang…ru.html:292–295`:
+
+```html
+<h1 id="section-II">II. МЕТОДОЛОГИЯ</h1>
+<h2>Пассивный датчик давления, который имплантируется под твердой
+мозговой оболочкой, состоит из двух спиральных индукторов. На
+рисунке </h2>
+<p>Пассивный датчик давления… <a href="#fig-1">Fig. 1</a>…</p>
+```
+
+Источник (`.html:292–295`): `<h2>A. System Model</h2>` + `<p>A passive
+pressure sensor…</p>`. В выводе heading-контент полностью пропал,
+заменён началом следующего абзаца, обрезанным на первом inline-теге
+`<a href="#fig-1">`.
+
+**Корневая причина (гипотеза).** Heading-merge path сливает короткий
+heading `A. System Model` с префиксом соседнего `<p>` для лучшего
+контекста. После LLM-ответа `_split_heading_text_nodes` разрезает
+поток по позиции первого inline-тега источника и относит весь prefix
+к heading-слоту. Модель в LLM-ответе проигнорировала оригинальный
+heading (посчитала его дубликатом открывающего слова абзаца),
+поэтому heading-слот получил только paragraph-префикс.
+
+**Фикс P8.7.** В `_split_heading_text_nodes`:
+
+1. Проверять, что heading-slot после split содержит хотя бы частичный
+   перевод первого слова оригинального heading (`A. System Model` →
+   искать «System Model»/«Модель Системы»/подобное).
+2. Если heading-slot длиннее `2 × len(source_heading)` — считать
+   split malformed, делать rollback merge (переводить heading и
+   paragraph раздельно).
+3. Unit-тест: merge heading+paragraph → модель вернула только
+   paragraph-перевод → rollback.
+
+**Критерий:** 0 случаев, где первое слово `<hN>` в RU не
+соответствует первому слову (или его переводу) source `<hN>`.
+
+#### N2 (HIGH). Heading-mistranslation «MEASUREMENT → МЕРОПРИЕМ»
+
+`Wang…ru.html:737–739`:
+
+```html
+<h4 id="section-IV">IV. МЕРОПРИЕМ</h4>
+```
+
+Source: `IV. MEASUREMENT`. `МЕРОПРИЕМ` — несуществующее слово;
+конфабуляция Gemma-4B на коротком изолированном all-caps heading.
+
+**Корневая причина.** Качественная ошибка LLM, не structural. Короткие
+all-caps section-headings — известно нестабильны у Gemma-4B (см. D3
+по Wang h1 title).
+
+**Фикс P8.8.** Heading-глоссарий:
+
+1. Добавить в `src/zoteropdf2md/abbreviations.py` защищённый
+   RU-словарь верхне-регистровых section-keywords:
+   - `MEASUREMENT → ИЗМЕРЕНИЕ`
+   - `METHODOLOGY → МЕТОДОЛОГИЯ`
+   - `METHODS → МЕТОДЫ`
+   - `RESULTS → РЕЗУЛЬТАТЫ`
+   - `DISCUSSION → ОБСУЖДЕНИЕ`
+   - `CONCLUSION → ЗАКЛЮЧЕНИЕ`
+   - `CONCLUSIONS → ЗАКЛЮЧЕНИЯ`
+   - `INTRODUCTION → ВВЕДЕНИЕ`
+   - `BACKGROUND → ФОН`
+   - `REFERENCES → СПИСОК ЛИТЕРАТУРЫ`
+   - `APPENDIX → ПРИЛОЖЕНИЕ`
+   - `ACKNOWLEDGMENTS → БЛАГОДАРНОСТИ`
+2. В heading translate pipeline (или post-translate polish) выполнять
+   dictionary-lookup на source; при совпадении форсировать замену
+   heading-slot на корректный RU-перевод.
+3. Case-preservation: source all-caps → target all-caps.
+4. Расширяется глоссарием через `U1.1` из `UNIVERSALITY_AUDIT.md`
+   (доменные секции).
+
+**Критерий:** `МЕРОПРИЕМ` / подобных конфабуляций в RU HTML — 0.
+
+#### N3 (MEDIUM). Трейлинг `…` на per-segment пути (повтор E2)
+
+`Wang…ru.html:417 "Влияние..."`, `:433 "Мы определяем..."`.
+
+**Корневая причина.** G4 (`_has_trailing_ellipsis_artifact` +
+`_strip_unexpected_trailing_ellipsis`) применяется только в
+batch/window guards и в final pass, но формуло-дроблёный абзац даёт
+короткие single-segment переводы, которые обходят batch. Per-segment
+путь не валидирует G4.
+
+**Фикс P8.1.** После успешного single-segment translate вызывать
+`_strip_unexpected_trailing_ellipsis` при
+`_has_trailing_ellipsis_artifact(...)` с контекстом
+`all_source_segments`. Counter: `per_seg_trailing_ellipsis_stripped`.
+
+**Критерий:** `grep -nE '[а-яё]\.\.\.(?!\.|\s*<)' Wang…ru.html` → 0
+(кроме случаев, где source тоже `...`).
+
+#### N4 (MEDIUM). `wide_recovery_split_fail=14` — formula-sentinels ломают redistribute
+
+**Evidence:** 14 логов.
+
+**Корневая причина.** `_redistribute_recovered_slice_to_parts`
+(`translategemma.py:701–765`) ищет source-parts (`<tag>` и `\(...\)`)
+буквальным `.find()` в recovered_chunk. LaTeX-фрагменты могут быть
+слегка перефразированы моделью (пробелы, escape-underscores) → split
+не сходится → punt.
+
+**Фикс P8.2.** До redistribute:
+
+1. Применять `_apply_formula_mask` к source_slice и работать со
+   sentinels `@@Z2MF{n}@@` как разделителями (они не перефразируются).
+2. Split по sentinels вместо `\(...\)`.
+3. Если и sentinel-based split не сошёлся — fallback на batch-путь на
+   segments группы.
+
+**Критерий:** `wide_recovery_split_fail` ≤ 3 на Wang.
+
+#### N5 (HIGH). `identity_terminal=56` — финальная эскалация не развёрнута
+
+**Evidence:** `[WARN] en_residual_segments=17`.
+
+**Фикс P8.4.** После final identity pass:
+
+1. Собрать identity_terminal сегменты по parent-paragraph-group.
+2. Для групп с ≥ 2 terminal-сегментов запустить **второй** wide-retry
+   с явным промптом («перевести каждое предложение; не копировать
+   источник; сохранить математику, ref-tags, `@@Z2M…` как есть»).
+3. Промпт параметризуется `target_language_code` (universality —
+   связан с U2/U3 в `UNIVERSALITY_AUDIT.md`).
+4. При повторном identity — counter `identity_unresolved`.
+
+**Критерий:** `identity_terminal ≤ 15`, `en_residual_segments ≤ 5`.
+
+#### N6 (OBSERVABILITY). Локализовать `en_residual` по сегментам
+
+**Фикс P8.5.** На finalize: для каждого оставшегося identity
+сегмента — `[WARN] en_residual seg={seg_no} preview={first 80 chars}`.
+
+### 12.5 Приоритет и порядок работ
+
+1. **P8.3 sentinel regex hardening** (уже в §11.6; проверить, что
+   `_normalize_sentinel_escapes` покрывает tag+formula+abbrev).
+2. **P8.1 per-segment ellipsis strip** — мелкий точечный фикс.
+3. **P8.5 en_residual детализация** — observability, чтобы следующий
+   прогон показал точечные seg-id.
+4. **P8.7 heading-split rollback** — CRITICAL, без него любой `<h2>`
+   с одним-двумя словами рискует быть съеден.
+5. **P8.8 heading-glossary** — быстрый win для top-10 научных рубрик.
+6. **P8.2 redistribute sentinel-safe split** — уменьшит
+   wide_recovery_split_fail.
+7. **P8.4 + P8.6 second wide retry + i18n prompt** — closes
+   identity_terminal residual; связан с `U2.5` из
+   `docs/UNIVERSALITY_AUDIT.md`.
+
+### 12.6 Критерии приёмки Phase 8 (end-to-end)
+
+1. `pytest tests/test_translategemma_html.py tests/test_single_file_html.py -q`
+   зелёно (включая новые тесты P8.1/P8.3/P8.4/P8.7/P8.8).
+2. `pytest -q` без регрессий.
+3. Прогон Wang:
+   - `grep -nE '[а-яё]\.\.\.(?!\.|\s*<)' Wang…ru.html` → 0
+     (исключая source-ellipsis).
+   - `grep -c 'МЕРОПРИЕМ' Wang…ru.html` == 0.
+   - `grep -c 'A. System Model\|System Model' Wang…ru.html` ≥ 1
+     (heading восстановлен).
+   - Cascade: `wide_recovery_split_fail ≤ 3`, `identity_terminal ≤ 15`.
+   - `[WARN] en_residual_segments ≤ 5`, `sentinel_leak_segments == 0`.
+4. `TRANSLATED_SEGMENTS ≥ 330`.
+
+### 12.7 Связь с `UNIVERSALITY_AUDIT.md`
+
+- P8.6 (target-language-aware recovery prompt) ↔ `U2.5`.
+- P8.8 (heading-glossary) ↔ `U1.1` (доменные секции глоссария).
+- Все остальные фиксы (P8.1–P8.5, P8.7) — structural, universality-neutral.
