@@ -401,7 +401,7 @@ def _cascade_debug(message: str) -> None:
     flag = os.getenv("Z2M_DEBUG_CASCADE", "").strip().lower()
     if flag not in {"1", "true", "yes", "on"}:
         return
-    print(f"[cascade] {message}", file=sys.stderr, flush=True)
+    print(f"[cascade] {message}", flush=True)
 
 
 def _is_recovery_context_active() -> bool:
