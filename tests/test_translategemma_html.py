@@ -970,6 +970,31 @@ def test_try_batch_translate_recovers_when_internal_marker_leaks_into_segment() 
     assert "<z2m-" not in "".join(result)
 
 
+def test_tag_mask_preserves_anchors_in_recovery() -> None:
+    segments = [
+        'Segment with (<a href="#section-three">section three</a>-d) anchor.',
+        "Second batch segment.",
+    ]
+
+    def marker_leak_translate(text: str) -> str:
+        if "<z2m-i1/>" in text and "<z2m-i2/>" in text:
+            return (
+                "<z2m-i1/>Output with leaked marker <z2m-i7>tail"
+                "<z2m-i2/>Второй сегмент из батча."
+            )
+        if "@@Z2M_T0@@" in text:
+            return "Восстановленный сегмент со ссылкой (@@Z2M_T0@@-D)."
+        return text
+
+    result, reason = _try_batch_translate_with_reason(segments, marker_leak_translate)
+
+    assert result is not None
+    assert reason.startswith("ok_leak_recovery")
+    assert "marker_leak=1" in reason
+    assert '(<a href="#section-three">section three</a>-d)' in result[0]
+    assert result[1] == "Второй сегмент из батча."
+
+
 def test_try_batch_translate_recovers_neighbor_duplicates_locally() -> None:
     segments = [
         "Alpha segment source text should remain unique after recovery.",
@@ -1034,6 +1059,32 @@ def test_try_batch_translate_recovers_identity_residual_segment() -> None:
     assert result[1] == "Второй сегмент уже переведен."
 
 
+def test_guard_trailing_ellipsis_recovers() -> None:
+    segments = [
+        'This segment includes (<a href="#section-three">section three</a>-d)',
+        "Next segment keeps context alive.",
+    ]
+
+    def ellipsis_translate(text: str) -> str:
+        if "<z2m-i1/>" in text and "<z2m-i2/>" in text:
+            return (
+                "<z2m-i1/>Этот сегмент внезапно обрывается..."
+                "<z2m-i2/>Следующий сегмент уже переведен."
+            )
+        if "@@Z2M_T0@@" in text:
+            return "Этот сегмент восстановлен корректно (@@Z2M_T0@@-D)."
+        return text
+
+    result, reason = _try_batch_translate_with_reason(segments, ellipsis_translate)
+
+    assert result is not None
+    assert reason.startswith("ok_leak_recovery")
+    assert "trailing_ellipsis_artifact=1" in reason
+    assert not result[0].rstrip().endswith("...")
+    assert '(<a href="#section-three">section three</a>-d)' in result[0]
+    assert result[1] == "Следующий сегмент уже переведен."
+
+
 def test_try_windowed_batch_translate_recovers_cross_window_duplicate_boundary() -> None:
     segments = [
         "S1 source paragraph one.",
@@ -1081,3 +1132,17 @@ def test_try_windowed_batch_translate_recovers_cross_window_duplicate_boundary()
     assert result[1] == "RU2 локально восстановлен."
     assert result[2] == "RU3 локально восстановлен."
     assert result[3] == "RU4 уникальный сегмент второго окна."
+
+def test_regression_heading_multi_inline_split() -> None:
+    html = (
+        "<html><body>"
+        "<h1>A novel <i>LC</i> and <b>VNA</b> sensor</h1>"
+        "<p>Body text.</p>"
+        "</body></html>"
+    )
+
+    translated, _ = translate_html_text_nodes(html, translate_text=lambda text: text)
+
+    assert "<i>LC</i>" in translated
+    assert "<b>VNA</b>" in translated
+    assert "@@Z2M_HSEP@@" not in translated

@@ -58,6 +58,7 @@ _ABBREV_PATTERN = re.compile(r'\b[A-Z]{2,5}\d*\b')
 # Placeholder tokens used to protect abbreviations during model calls.
 # ASCII sentinel is more robust than XML-style tags in free-form generation.
 _ABBREV_TOKEN_PATTERN = re.compile(r"@@Z2M_A(\d+)@@", re.IGNORECASE)
+_TAG_TOKEN_PATTERN = re.compile(r"@@Z2M_T(\d+)@@", re.IGNORECASE)
 
 # Additional patterns for protecting specific abbreviations from translation
 _LATIN_ABBREV_PATTERNS = [re.compile(pattern, re.IGNORECASE) for pattern in LATIN_ABBREV_TO_RU.keys()]
@@ -526,6 +527,42 @@ def _restore_abbrev_mask(text: str, amap: dict[str, str]) -> str:
     return restored
 
 
+def _apply_tag_mask(text: str) -> tuple[str, dict[str, str]]:
+    """Mask inline HTML tags inside a text segment to keep recovery stable.
+
+    This is used only for single-segment recovery paths where the model may
+    hallucinate punctuation around missing inline anchors/tags.
+    """
+    tags = list(re.finditer(r"<[^>]+>", text))
+    if not tags:
+        return text, {}
+
+    masked = text
+    tmap: dict[str, str] = {}
+    for j, match in enumerate(reversed(tags)):
+        real_j = len(tags) - 1 - j
+        token = f"@@Z2M_T{real_j}@@"
+        tmap[token] = match.group(0)
+        start, end = match.span()
+        masked = masked[:start] + token + masked[end:]
+    return masked, tmap
+
+
+def _restore_tag_mask(text: str, tmap: dict[str, str]) -> str:
+    """Restore inline tag tokens after recovery translation."""
+    if not tmap:
+        return text
+
+    def _replace(match: re.Match[str]) -> str:
+        token = f"@@Z2M_T{int(match.group(1))}@@"
+        return tmap.get(token, match.group(0))
+
+    restored = _TAG_TOKEN_PATTERN.sub(_replace, text)
+    for token, original in tmap.items():
+        restored = restored.replace(token, original)
+    return restored
+
+
 def _split_outer_ws(text: str) -> tuple[str, str, str]:
     leading_len = len(text) - len(text.lstrip())
     trailing_len = len(text) - len(text.rstrip())
@@ -536,6 +573,63 @@ def _split_outer_ws(text: str) -> tuple[str, str, str]:
 def _segment_core_text(text: str) -> str:
     _, core, _ = _split_outer_ws(text)
     return core
+
+
+def _has_following_translatable(segments: list[str], current_index: int) -> bool:
+    for next_idx in range(current_index + 1, len(segments)):
+        nxt = segments[next_idx]
+        if not nxt or not nxt.strip():
+            continue
+        return bool(_TRANSLATABLE_TEXT_PATTERN.search(nxt))
+    return False
+
+
+def _has_trailing_ellipsis_artifact(
+    source_seg: str,
+    translated_seg: str,
+    source_segments: list[str],
+    source_index: int,
+) -> bool:
+    source_core = _segment_core_text(source_seg).rstrip()
+    translated_core = _segment_core_text(translated_seg).rstrip()
+    if not translated_core:
+        return False
+
+    src_has_ellipsis = source_core.endswith(("...", "…"))
+    out_has_ellipsis = translated_core.endswith(("...", "…"))
+    if not out_has_ellipsis or src_has_ellipsis:
+        return False
+
+    return _has_following_translatable(source_segments, source_index)
+
+
+def _recover_single_segment_with_tag_mask(
+    source_seg: str,
+    *,
+    translate_text: Callable[[str], str],
+    cache: dict[str, str],
+    max_chunk_chars: int,
+    context_label: str,
+    seg_index: int | None = None,
+) -> str:
+    masked_source, tmap = _apply_tag_mask(source_seg)
+    recovered_masked = _translate_text_segment(
+        masked_source,
+        translate_text=translate_text,
+        cache=cache,
+        max_chunk_chars=max_chunk_chars,
+    )
+    restored = _restore_tag_mask(recovered_masked, tmap)
+    if tmap:
+        expected_ids = list(range(len(tmap)))
+        found_ids = sorted(int(m.group(1)) for m in _TAG_TOKEN_PATTERN.finditer(recovered_masked))
+        if found_ids != expected_ids:
+            seg_info = f" seg={seg_index}" if seg_index is not None else ""
+            _cascade_debug(
+                f"{context_label}_lenient reason=tag_mask_dropped{seg_info} "
+                f"expected={_format_int_list(expected_ids)} got={_format_int_list(found_ids)}"
+            )
+    return restored
 
 
 def _is_duplicate_neighbor_segment(candidate: str, neighbor: str | None) -> bool:
@@ -583,6 +677,8 @@ def _is_identity_residual_segment(source_seg: str, translated_seg: str) -> bool:
 
 def _post_reassembly_guard_reason(
     *,
+    source_segments: list[str],
+    source_index: int,
     source_seg: str,
     translated_seg: str,
     prev_translated: str | None,
@@ -597,6 +693,8 @@ def _post_reassembly_guard_reason(
         return "duplicate_leak"
     if _is_duplicate_neighbor_segment(translated_seg, next_translated):
         return "duplicate_leak"
+    if _has_trailing_ellipsis_artifact(source_seg, translated_seg, source_segments, source_index):
+        return "trailing_ellipsis_artifact"
     return None
 
 
@@ -623,6 +721,8 @@ def _apply_post_reassembly_guards(
         prev_seg = snapshot[idx - 2] if idx > 1 else None
         next_seg = snapshot[idx] if idx < len(snapshot) else None
         reason = _post_reassembly_guard_reason(
+            source_segments=source_segments,
+            source_index=idx - 1,
             source_seg=source_seg,
             translated_seg=translated_seg,
             prev_translated=prev_seg,
@@ -631,11 +731,13 @@ def _apply_post_reassembly_guards(
         if reason is None:
             continue
 
-        result[idx - 1] = _translate_text_segment(
+        result[idx - 1] = _recover_single_segment_with_tag_mask(
             source_seg,
             translate_text=translate_text,
             cache=cache,
             max_chunk_chars=max_chunk_chars,
+            context_label=context_label,
+            seg_index=idx,
         )
         recovery_counts[reason] = recovery_counts.get(reason, 0) + 1
         _cascade_debug(
@@ -935,11 +1037,13 @@ def _try_batch_translate_with_reason(
                 )
                 # Model altered abbrev sentinels in this segment. Recover this
                 # segment locally instead of failing the whole window.
-                recovered_seg = _translate_text_segment(
+                recovered_seg = _recover_single_segment_with_tag_mask(
                     orig,
                     translate_text=translate_text,
                     cache=seg_recovery_cache,
                     max_chunk_chars=1800,
+                    context_label="batch",
+                    seg_index=seg_idx,
                 )
                 result.append(recovered_seg)
                 lenient_abbrev_recovered += 1
@@ -966,11 +1070,13 @@ def _try_batch_translate_with_reason(
                 extra_formula_ids = sorted(
                     set(found_token_ids) - set(expected_token_ids)
                 )
-                recovered_seg = _translate_text_segment(
+                recovered_seg = _recover_single_segment_with_tag_mask(
                     orig,
                     translate_text=translate_text,
                     cache=seg_recovery_cache,
                     max_chunk_chars=1800,
+                    context_label="batch",
+                    seg_index=seg_idx,
                 )
                 result.append(recovered_seg)
                 lenient_formula_recovered += 1
@@ -1086,11 +1192,13 @@ def _try_windowed_batch_translate_with_reason(
                 f"reason={reason}"
             )
             for idx in range(core_start, core_end):
-                translated[idx] = _translate_text_segment(
+                translated[idx] = _recover_single_segment_with_tag_mask(
                     segments[idx],
                     translate_text=translate_text,
                     cache=leaf_cache,
                     max_chunk_chars=leaf_max_chunk_chars,
+                    context_label="window",
+                    seg_index=idx + 1,
                 )
             return True, (
                 "ok_leaf_per_segment "
