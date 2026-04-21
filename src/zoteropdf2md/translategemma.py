@@ -394,6 +394,7 @@ _HEADING_MERGE_SEPARATOR = "@@Z2M_HSEP@@"
 _TABLE_CAPTION_ALLCAPS_PATTERN = re.compile(
     r"^\s*TABLE\s+([IVX]+)\s+([A-Z0-9][A-Z0-9\s,()/:+\-]{3,})\s*$"
 )
+_RECOVERY_CONTEXT_DEPTH = 0
 
 
 def _cascade_debug(message: str) -> None:
@@ -401,6 +402,10 @@ def _cascade_debug(message: str) -> None:
     if flag not in {"1", "true", "yes", "on"}:
         return
     print(f"[cascade] {message}", file=sys.stderr, flush=True)
+
+
+def _is_recovery_context_active() -> bool:
+    return _RECOVERY_CONTEXT_DEPTH > 0
 
 
 def _sanitize_generation_config_for_greedy(generation_config: object | None) -> None:
@@ -640,13 +645,18 @@ def _recover_single_segment_with_tag_mask(
     context_label: str,
     seg_index: int | None = None,
 ) -> str:
+    global _RECOVERY_CONTEXT_DEPTH
     masked_source, tmap = _apply_tag_mask(source_seg)
-    recovered_masked = _translate_text_segment(
-        masked_source,
-        translate_text=translate_text,
-        cache=cache,
-        max_chunk_chars=max_chunk_chars,
-    )
+    _RECOVERY_CONTEXT_DEPTH += 1
+    try:
+        recovered_masked = _translate_text_segment(
+            masked_source,
+            translate_text=translate_text,
+            cache=cache,
+            max_chunk_chars=max_chunk_chars,
+        )
+    finally:
+        _RECOVERY_CONTEXT_DEPTH = max(0, _RECOVERY_CONTEXT_DEPTH - 1)
     restored = _restore_tag_mask(recovered_masked, tmap)
     if tmap:
         expected_ids = list(range(len(tmap)))
@@ -1981,6 +1991,8 @@ class TranslateGemmaTranslator:
         self._device = "cpu"
         self._context_window_tokens: int | None = None
         self._base_streamer_cls = None
+        self.recovery_calls_total = 0
+        self.recovery_calls_time_s = 0.0
 
     def _log_line(self, message: str) -> None:
         if self._log is not None:
@@ -2294,11 +2306,16 @@ class TranslateGemmaTranslator:
         progress_next_pct = 10
         progress_logged_first = False
         llm_calls = 0
+        recovery_calls_total = 0
+        recovery_calls_time_s = 0.0
 
         def translate_text_with_progress(text: str) -> str:
-            nonlocal llm_calls
+            nonlocal llm_calls, recovery_calls_total, recovery_calls_time_s
             llm_calls += 1
             call_started_at = perf_counter()
+            is_recovery_call = _is_recovery_context_active()
+            if is_recovery_call:
+                recovery_calls_total += 1
             token_next_pct = 5
             token_last_logged = 0
             self._log_line(
@@ -2331,10 +2348,13 @@ class TranslateGemmaTranslator:
                 )
 
             translated = self.translate_text(text, on_token_progress=on_token_progress)
+            call_elapsed = perf_counter() - call_started_at
+            if is_recovery_call:
+                recovery_calls_time_s += call_elapsed
             self._log_line(
                 "TranslateGemma progress: "
                 f"LLM call {llm_calls} done for {html_path.name} "
-                f"(elapsed={perf_counter() - call_started_at:.2f}s)"
+                f"(elapsed={call_elapsed:.2f}s)"
             )
             return translated
 
@@ -2398,6 +2418,19 @@ class TranslateGemmaTranslator:
         self._log_line(f"[timer] translategemma.write_html: {perf_counter() - write_started_at:.2f}s")
         self._log_line(
             f"[timer] translategemma.file_total: {perf_counter() - file_started_at:.2f}s ({html_path.name})"
+        )
+        self.recovery_calls_total += recovery_calls_total
+        self.recovery_calls_time_s += recovery_calls_time_s
+        avg_recovery_s = (
+            recovery_calls_time_s / recovery_calls_total
+            if recovery_calls_total > 0
+            else 0.0
+        )
+        self._log_line(
+            "[timer] translategemma.recovery_calls: "
+            f"total={recovery_calls_total} "
+            f"time={recovery_calls_time_s:.2f}s "
+            f"avg={avg_recovery_s:.2f}s"
         )
 
         return TranslatedHtmlArtifact(
