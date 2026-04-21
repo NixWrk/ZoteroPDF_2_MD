@@ -8,6 +8,7 @@ from zoteropdf2md.translategemma import (
     _apply_post_reassembly_guards,
     _apply_wide_paragraph_recovery,
     _apply_formula_mask,
+    _is_identity_residual,
     _is_translator_refusal,
     _mark_author_line_notranslate,
     _restore_abbrev_mask,
@@ -1269,6 +1270,95 @@ def test_identity_mixed_paragraph_recovers_only_identity_segment() -> None:
     assert result[1] == "Второй сегмент уже переведен."
 
 
+def test_is_identity_residual_detects_long_english_run_in_mixed_segment() -> None:
+    source = (
+        "An amplifier enhances the signal with a constant power output "
+        "when the load impedance is matched."
+    )
+    mixed = (
+        "Часть фразы уже переведена, но An amplifier enhances the signal "
+        "with a constant power output when the load impedance is matched."
+    )
+    assert _is_identity_residual(source, mixed)
+
+
+def test_identity_contiguous_run_recovery_handles_partial_paragraph_group() -> None:
+    source_segments = [
+        "A signal amplifier enhances the signal and stabilizes power output for telemetry operation.",
+        "A half-wave rectifier recovers the envelope amplitude for microcontroller processing.",
+        "This segment is already translated and should stay as is.",
+    ]
+    translated_segments = [
+        source_segments[0],
+        source_segments[1],
+        "Этот сегмент уже переведен и должен остаться как есть.",
+    ]
+    calls = [0]
+
+    def fake_translate(text: str) -> str:
+        calls[0] += 1
+        if "<z2m-i1/>" in text and "<z2m-i2/>" in text and "<z2m-i3/>" not in text:
+            return (
+                "<z2m-i1/>Усилитель сигнала усиливает сигнал и стабилизирует мощность для телеметрии."
+                "<z2m-i2/>Полуволновой выпрямитель восстанавливает амплитуду огибающей для микроконтроллера."
+            )
+        return text
+
+    result, counts = _apply_post_reassembly_guards(
+        source_segments=source_segments,
+        translated_segments=translated_segments,
+        translate_text=fake_translate,
+        cache={},
+        max_chunk_chars=1800,
+        context_label="test",
+        segment_groups=[1, 1, 1],
+    )
+
+    assert calls[0] >= 1
+    assert counts.get("identity_residual_paragraph") == 1
+    assert result[0].startswith("Усилитель сигнала")
+    assert result[1].startswith("Полуволновой выпрямитель")
+    assert result[2] == "Этот сегмент уже переведен и должен остаться как есть."
+
+
+def test_identity_terminal_escalates_to_group_context_recovery() -> None:
+    source_segments = [
+        "Context sentence before the hard segment.",
+        "The block samples output amplitude quickly.",
+        "Context sentence after the hard segment.",
+    ]
+    translated_segments = [
+        "Контекстное предложение перед сложным сегментом.",
+        source_segments[1],
+        "Контекстное предложение после сложного сегмента.",
+    ]
+    calls = [0]
+
+    def fake_translate(text: str) -> str:
+        calls[0] += 1
+        if "<z2m-i1/>" in text and "<z2m-i2/>" in text and "<z2m-i3/>" in text:
+            return (
+                "<z2m-i1/>Контекстное предложение перед сложным сегментом."
+                "<z2m-i2/>Блок быстро измеряет амплитуду выходного сигнала."
+                "<z2m-i3/>Контекстное предложение после сложного сегмента."
+            )
+        return text
+
+    result, counts = _apply_post_reassembly_guards(
+        source_segments=source_segments,
+        translated_segments=translated_segments,
+        translate_text=fake_translate,
+        cache={},
+        max_chunk_chars=1800,
+        context_label="test",
+        segment_groups=[9, 9, 9],
+    )
+
+    assert calls[0] >= 2
+    assert counts.get("identity_context_recovery") == 1
+    assert counts.get("identity_terminal") in (None, 0)
+    assert result[1].startswith("Блок быстро измеряет")
+
 def test_identity_terminal_does_not_loop() -> None:
     source_segments = ["Signal amplifier enhances quality in the receiver path."]
     translated_segments = ["Signal amplifier enhances quality in the receiver path."]
@@ -1452,4 +1542,8 @@ def test_translate_html_text_nodes_reports_en_residual_warning() -> None:
     assert translated_segments == 0
     assert translated
     assert warnings
+    assert any(item.startswith("identity_terminal_count=") for item in warnings)
+    assert any(item.startswith("wide_paragraph_recovery_count=") for item in warnings)
+    assert any(item.startswith("wide_recovery_split_fail_count=") for item in warnings)
     assert warnings[-1].startswith("en_residual_segments=")
+

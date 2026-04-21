@@ -770,7 +770,7 @@ def _find_contiguous_identity_runs(
     *,
     source_segments: list[str],
     translated_segments: list[str],
-    min_total_chars: int = 100,
+    min_total_chars: int = 80,
 ) -> list[tuple[int, int]]:
     if not indices:
         return []
@@ -944,6 +944,29 @@ def _has_min_latin_words(text: str, min_count: int = 2) -> bool:
     return len(re.findall(r"[A-Za-z]{2,}", text)) >= min_count
 
 
+def _has_long_english_word_run(text: str, min_words: int = 8) -> bool:
+    words = list(re.finditer(r"[A-Za-z]{2,}", text))
+    if not words:
+        return False
+
+    run_len = 0
+    prev_end = -1
+    for match in words:
+        if prev_end < 0:
+            run_len = 1
+        else:
+            between = text[prev_end:match.start()]
+            # Continue the run only when the gap has no alphabetic letters.
+            if not re.search(r"[A-Za-zА-Яа-яЁё]", between or ""):
+                run_len += 1
+            else:
+                run_len = 1
+        if run_len >= min_words:
+            return True
+        prev_end = match.end()
+    return False
+
+
 def _is_identity_residual(source_seg: str, translated_seg: str) -> bool:
     source_core = _normalize_ws(_segment_core_text(source_seg))
     translated_core = _normalize_ws(_segment_core_text(translated_seg))
@@ -957,12 +980,18 @@ def _is_identity_residual(source_seg: str, translated_seg: str) -> bool:
     if translated_core == source_core:
         return True
 
+    # Catch mixed EN/RU outputs where a long contiguous EN fragment survived.
+    if _has_long_english_word_run(translated_core, min_words=8):
+        return True
+
     # Count only letters to avoid punctuation/digit skew for technical strings.
     letters = [char for char in translated_core if char.isalpha()]
     if len(letters) < 5:
         return False
     latin_chars = sum(1 for char in letters if ("A" <= char <= "Z") or ("a" <= char <= "z"))
     latin_ratio = latin_chars / len(letters)
+    if len(letters) >= 80:
+        return latin_ratio >= 0.7
     return latin_ratio >= 0.8
 
 
@@ -1004,6 +1033,7 @@ def _apply_post_reassembly_guards(
     context_label: str,
     segment_groups: list[int | None] | None = None,
     enable_paragraph_identity_guard: bool = True,
+    enable_identity_context_recovery: bool = True,
 ) -> tuple[list[str], dict[str, int]]:
     if len(source_segments) != len(translated_segments):
         return translated_segments, {}
@@ -1011,25 +1041,87 @@ def _apply_post_reassembly_guards(
     snapshot = list(translated_segments)
     result = list(translated_segments)
     recovery_counts: dict[str, int] = {}
-    paragraph_identity_groups: dict[int, list[int]] = {}
+    paragraph_identity_runs: dict[int, list[tuple[int, int]]] = {}
     paragraph_identity_indices: set[int] = set()
+    grouped_indices: dict[int, list[int]] = {}
+    context_recovered_spans: set[tuple[int, ...]] = set()
 
-    if (
-        enable_paragraph_identity_guard
-        and segment_groups is not None
-        and len(segment_groups) == len(source_segments)
-    ):
-        grouped_indices: dict[int, list[int]] = {}
+    if segment_groups is not None and len(segment_groups) == len(source_segments):
         for seg_idx, group_id in enumerate(segment_groups):
             if group_id is None:
                 continue
             grouped_indices.setdefault(group_id, []).append(seg_idx)
-        for group_id, indices in grouped_indices.items():
-            if len(indices) < 2:
-                continue
-            if all(_is_identity_residual(source_segments[i], snapshot[i]) for i in indices):
-                paragraph_identity_groups[group_id] = indices
-                paragraph_identity_indices.update(indices)
+        if enable_paragraph_identity_guard:
+            for group_id, indices in grouped_indices.items():
+                if len(indices) < 2:
+                    continue
+                runs = _find_contiguous_identity_runs(
+                    indices,
+                    source_segments=source_segments,
+                    translated_segments=snapshot,
+                    min_total_chars=80,
+                )
+                if not runs:
+                    continue
+                paragraph_identity_runs[group_id] = runs
+                for run_start, run_end in runs:
+                    paragraph_identity_indices.update(range(run_start, run_end + 1))
+
+    def _try_context_recovery_for_index(seg_idx: int) -> bool:
+        if (
+            not enable_identity_context_recovery
+            or segment_groups is None
+            or len(segment_groups) != len(source_segments)
+        ):
+            return False
+        group_id = segment_groups[seg_idx]
+        if group_id is None:
+            return False
+        indices = grouped_indices.get(group_id, [])
+        if len(indices) < 2:
+            return False
+        try:
+            local_pos = indices.index(seg_idx)
+        except ValueError:
+            return False
+
+        span_start = max(0, local_pos - 1)
+        span_end = min(len(indices), local_pos + 2)
+        span_indices = indices[span_start:span_end]
+        if len(span_indices) < 2:
+            return False
+        span_key = tuple(span_indices)
+        if span_key in context_recovered_spans:
+            return False
+
+        span_sources = [source_segments[i] for i in span_indices]
+        span_result, span_reason = _try_batch_translate_with_reason(
+            span_sources,
+            translate_text,
+            max_batch_chars=max(_MAX_BATCH_CHARS, max_chunk_chars * 8),
+            segment_groups=[1] * len(span_sources),
+            enable_paragraph_identity_guard=False,
+            enable_identity_context_recovery=False,
+        )
+        if span_result is None:
+            _cascade_debug(
+                f"{context_label}_lenient reason=identity_context_failed "
+                f"seg={seg_idx + 1} span={_format_int_list([i + 1 for i in span_indices])} "
+                f"detail={span_reason}"
+            )
+            return False
+
+        for local_idx, real_idx in enumerate(span_indices):
+            result[real_idx] = span_result[local_idx]
+        context_recovered_spans.add(span_key)
+        recovery_counts["identity_context_recovery"] = (
+            recovery_counts.get("identity_context_recovery", 0) + 1
+        )
+        _cascade_debug(
+            f"{context_label}_lenient reason=identity_context_recovery "
+            f"seg={seg_idx + 1} span={_format_int_list([i + 1 for i in span_indices])}"
+        )
+        return True
 
     for idx, (source_seg, translated_seg) in enumerate(
         zip(source_segments, snapshot),
@@ -1078,57 +1170,64 @@ def _apply_post_reassembly_guards(
             f"{context_label}_lenient "
             f"reason={reason} seg={idx} action=local_segment_recovery"
         )
+        if reason == "identity_residual" and _is_identity_residual(source_seg, result[idx - 1]):
+            _try_context_recovery_for_index(idx - 1)
         if _is_identity_residual(source_seg, result[idx - 1]):
             recovery_counts["identity_terminal"] = recovery_counts.get("identity_terminal", 0) + 1
             _cascade_debug(
                 f"{context_label}_lenient reason=identity_terminal seg={idx} action=keep_recovered"
             )
 
-    if paragraph_identity_groups:
-        for group_id, indices in sorted(paragraph_identity_groups.items()):
-            group_sources = [source_segments[i] for i in indices]
-            group_result, group_reason = _try_batch_translate_with_reason(
-                group_sources,
-                translate_text,
-                max_batch_chars=max(_MAX_BATCH_CHARS, max_chunk_chars * 8),
-                segment_groups=[1] * len(group_sources),
-                enable_paragraph_identity_guard=False,
-            )
-            if group_result is None:
-                group_result = [
-                    _recover_single_segment_with_tag_mask(
-                        source_segments[i],
-                        translate_text=translate_text,
-                        cache=cache,
-                        max_chunk_chars=max_chunk_chars,
-                        context_label=context_label,
-                        seg_index=i + 1,
-                    )
-                    for i in indices
-                ]
-                _cascade_debug(
-                    f"{context_label}_lenient reason=identity_residual_paragraph "
-                    f"group={group_id} segs={_format_int_list([i + 1 for i in indices])} "
-                    f"action=local_segment_recovery reason_detail={group_reason}"
+    if paragraph_identity_runs:
+        for group_id, runs in sorted(paragraph_identity_runs.items()):
+            for run_start, run_end in runs:
+                run_indices = list(range(run_start, run_end + 1))
+                run_sources = [source_segments[i] for i in run_indices]
+                run_result, run_reason = _try_batch_translate_with_reason(
+                    run_sources,
+                    translate_text,
+                    max_batch_chars=max(_MAX_BATCH_CHARS, max_chunk_chars * 8),
+                    segment_groups=[1] * len(run_sources),
+                    enable_paragraph_identity_guard=False,
+                    enable_identity_context_recovery=False,
                 )
-            else:
-                _cascade_debug(
-                    f"{context_label}_lenient reason=identity_residual_paragraph "
-                    f"group={group_id} segs={_format_int_list([i + 1 for i in indices])} "
-                    "action=paragraph_recovery"
-                )
-
-            for local_idx, seg_idx in enumerate(indices):
-                result[seg_idx] = group_result[local_idx]
-                if _is_identity_residual(source_segments[seg_idx], result[seg_idx]):
-                    recovery_counts["identity_terminal"] = recovery_counts.get("identity_terminal", 0) + 1
+                if run_result is None:
+                    run_result = [
+                        _recover_single_segment_with_tag_mask(
+                            source_segments[i],
+                            translate_text=translate_text,
+                            cache=cache,
+                            max_chunk_chars=max_chunk_chars,
+                            context_label=context_label,
+                            seg_index=i + 1,
+                        )
+                        for i in run_indices
+                    ]
                     _cascade_debug(
-                        f"{context_label}_lenient reason=identity_terminal seg={seg_idx + 1} "
-                        "action=keep_recovered"
+                        f"{context_label}_lenient reason=identity_residual_paragraph "
+                        f"group={group_id} segs={_format_int_list([i + 1 for i in run_indices])} "
+                        f"action=local_segment_recovery reason_detail={run_reason}"
                     )
-            recovery_counts["identity_residual_paragraph"] = (
-                recovery_counts.get("identity_residual_paragraph", 0) + 1
-            )
+                else:
+                    _cascade_debug(
+                        f"{context_label}_lenient reason=identity_residual_paragraph "
+                        f"group={group_id} segs={_format_int_list([i + 1 for i in run_indices])} "
+                        "action=paragraph_recovery"
+                    )
+
+                for local_idx, seg_idx in enumerate(run_indices):
+                    result[seg_idx] = run_result[local_idx]
+                    if _is_identity_residual(source_segments[seg_idx], result[seg_idx]):
+                        _try_context_recovery_for_index(seg_idx)
+                    if _is_identity_residual(source_segments[seg_idx], result[seg_idx]):
+                        recovery_counts["identity_terminal"] = recovery_counts.get("identity_terminal", 0) + 1
+                        _cascade_debug(
+                            f"{context_label}_lenient reason=identity_terminal seg={seg_idx + 1} "
+                            "action=keep_recovered"
+                        )
+                recovery_counts["identity_residual_paragraph"] = (
+                    recovery_counts.get("identity_residual_paragraph", 0) + 1
+                )
 
     return result, recovery_counts
 
@@ -1394,6 +1493,7 @@ def _try_batch_translate_with_reason(
     max_batch_chars: int = _MAX_BATCH_CHARS,
     segment_groups: list[int | None] | None = None,
     enable_paragraph_identity_guard: bool = True,
+    enable_identity_context_recovery: bool = True,
 ) -> tuple[list[str] | None, str]:
     if len(segments) < 2:
         return None, f"single_segment count={len(segments)}"
@@ -1602,6 +1702,7 @@ def _try_batch_translate_with_reason(
         context_label="batch",
         segment_groups=segment_groups,
         enable_paragraph_identity_guard=enable_paragraph_identity_guard,
+        enable_identity_context_recovery=enable_identity_context_recovery,
     )
     guard_recovered = sum(guard_recovery_counts.values())
     if guard_recovered > 0:
@@ -2268,7 +2369,7 @@ def translate_html_text_nodes(
         for idx, src, tgt in zip(translatable_indices, source_texts, batch_result):
             parts[idx] = tgt
         wide_cache: dict[str, str] = {}
-        parts, _ = _apply_wide_paragraph_recovery(
+        parts, initial_wide_counts = _apply_wide_paragraph_recovery(
             source_parts=source_parts,
             translated_parts=parts,
             translatable_indices=translatable_indices,
@@ -2291,6 +2392,7 @@ def translate_html_text_nodes(
         # Final identity pass (after heading split) catches single-inline headings
         # and any residual EN segments that escaped window-level guards.
         final_cache: dict[str, str] = {}
+        final_identity_terminal_count = 0
         for seg_no, (part_idx, source_seg) in enumerate(
             zip(translatable_indices, source_texts),
             start=1,
@@ -2351,6 +2453,7 @@ def translate_html_text_nodes(
                         recovered_seg = parts[part_idx]
 
             if _is_identity_residual(source_seg, recovered_seg):
+                final_identity_terminal_count += 1
                 _cascade_debug(
                     f"final_lenient reason=identity_terminal seg={seg_no} action=keep_recovered"
                 )
@@ -2358,6 +2461,20 @@ def translate_html_text_nodes(
                 _cascade_debug(
                     f"final_lenient reason=identity_residual seg={seg_no} action=local_segment_recovery"
                 )
+
+        # One more paragraph-wide pass after final per-segment retries helps when
+        # isolated retries keep returning identity EN for technical text.
+        parts, final_wide_counts = _apply_wide_paragraph_recovery(
+            source_parts=source_parts,
+            translated_parts=parts,
+            translatable_indices=translatable_indices,
+            source_segments=source_texts,
+            paragraph_groups=translatable_paragraph_groups,
+            paragraph_part_ranges=paragraph_part_ranges,
+            translate_text=translate_text,
+            cache=wide_cache,
+            max_chunk_chars=max_chunk_chars,
+        )
 
         translated_segments = sum(
             1
@@ -2369,8 +2486,19 @@ def translate_html_text_nodes(
             for part_idx, source_seg in zip(translatable_indices, source_texts)
             if _is_identity_residual(source_seg, parts[part_idx])
         )
+        wide_recovery_total = (
+            initial_wide_counts.get("wide_paragraph_recovery", 0)
+            + final_wide_counts.get("wide_paragraph_recovery", 0)
+        )
+        wide_split_fail_total = (
+            initial_wide_counts.get("wide_recovery_split_fail", 0)
+            + final_wide_counts.get("wide_recovery_split_fail", 0)
+        )
         if on_warning is not None:
             try:
+                on_warning(f"identity_terminal_count={final_identity_terminal_count}")
+                on_warning(f"wide_paragraph_recovery_count={wide_recovery_total}")
+                on_warning(f"wide_recovery_split_fail_count={wide_split_fail_total}")
                 on_warning(f"en_residual_segments={en_residual_segments}")
             except Exception:
                 pass
@@ -2440,6 +2568,9 @@ def translate_html_text_nodes(
             if _is_identity_residual(source_seg, translated_seg)
         )
         try:
+            on_warning("identity_terminal_count=0")
+            on_warning("wide_paragraph_recovery_count=0")
+            on_warning("wide_recovery_split_fail_count=0")
             on_warning(f"en_residual_segments={en_residual_segments}")
         except Exception:
             pass
@@ -2630,7 +2761,8 @@ class TranslateGemmaTranslator:
             "(1) Keep every sequence of 2 or more uppercase Latin letters (acronyms) "
             "letter-for-letter – never transliterate them into Cyrillic. "
             "(2) Do not translate or modify proper names, author names, or DOIs. "
-            "(3) If you cannot translate a specific term, leave it unchanged. "
+            "(3) Leave unchanged only exact acronyms, proper names, and DOIs; "
+            "do not keep full English sentences unchanged. "
             "(4) Output only the translation, nothing else."
         )
         if source_language.lower() in {"auto", "auto-detect", "autodetect"}:
