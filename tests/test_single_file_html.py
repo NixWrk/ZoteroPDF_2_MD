@@ -232,6 +232,57 @@ def test_polish_html_document_repairs_sentence_split_by_caption_paragraph() -> N
     assert "<p>Fig. 1 | Overview of the GAI development pipeline.</p>" in polished
 
 
+def test_polish_html_document_repairs_sentence_split_across_affiliation_block() -> None:
+    html = (
+        "<html><body>"
+        "<p>Subsequently, multimodal foundation models (for example, GPT-5, Gemini 2.5 Pro,</p>"
+        "<p>1Singapore National Eye Centre, Singapore Eye Research Institute, Singapore, Singapore. "
+        "2AI Office, Singapore Health Services, Singapore, Singapore. "
+        "3Nuffield Department of Clinical Neurosciences, University of Oxford, Oxford, UK. "
+        "4Ophthalmology and Visual Sciences Academic Clinical Program, Duke-NUS Medical School, Singapore, Singapore. "
+        "5Department of Ophthalmology, Byers Eye Institute, Stanford, CA, USA. "
+        "15These authors contributed equally: Zhen Ling Teo, Arun James Thirunavukarasu. "
+        "e-mail: daniel.ting@duke-nus.edu.sg</p>"
+        "<p>Claude 4 and Grok 4), which can process images in addition to text, have increased utility.</p>"
+        "</body></html>"
+    )
+
+    polished = polish_html_document(html, table_caption_language="en")
+    flat = " ".join(polished.split())
+
+    assert (
+        "Subsequently, multimodal foundation models (for example, GPT-5, Gemini 2.5 Pro, "
+        "Claude 4 and Grok 4), which can process images in addition to text, have increased utility."
+    ) in flat
+    assert "Singapore National Eye Centre" in polished
+    assert "daniel.ting@duke-nus.edu.sg" in polished
+
+
+def test_polish_html_document_repairs_sentence_split_across_affiliation_block_without_comma() -> None:
+    html = (
+        "<html><body>"
+        "<p>Subsequently, multimodal foundation models (for example, GPT-5 and Gemini 2.5 Pro</p>"
+        "<p>1Singapore National Eye Centre, Singapore Eye Research Institute, Singapore, Singapore. "
+        "2AI Office, Singapore Health Services, Singapore, Singapore. "
+        "3Nuffield Department of Clinical Neurosciences, University of Oxford, Oxford, UK. "
+        "4Department of Ophthalmology and Optometry, Medical University of Vienna, Vienna, Austria. "
+        "15These authors contributed equally: Zhen Ling Teo, Arun James Thirunavukarasu. "
+        "e-mail: daniel.ting@duke-nus.edu.sg</p>"
+        "<p>Claude 4 and Grok 4), which can process images in addition to text.</p>"
+        "</body></html>"
+    )
+
+    polished = polish_html_document(html, table_caption_language="en")
+    flat = " ".join(polished.split())
+
+    assert (
+        "Subsequently, multimodal foundation models (for example, GPT-5 and Gemini 2.5 Pro "
+        "Claude 4 and Grok 4), which can process images in addition to text."
+    ) in flat
+    assert "Singapore National Eye Centre" in polished
+    assert "daniel.ting@duke-nus.edu.sg" in polished
+
+
 def test_polish_html_document_repairs_sentence_split_by_image_and_caption_paragraphs() -> None:
     html = (
         "<html><body>"

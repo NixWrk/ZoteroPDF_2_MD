@@ -1354,6 +1354,8 @@ def _looks_nonprose_gap_block(block_html: str) -> bool:
         return bool(re.match(r"^(?:fig(?:ure)?|table|таблица)\.?\s*[ivxlcdm\d]+\b", visible, re.IGNORECASE))
 
     if lowered.startswith("<p"):
+        if _looks_affiliation_block(stripped):
+            return True
         if _looks_inline_figure_block(stripped):
             return True
         visible = _visible_text(stripped)
@@ -1365,6 +1367,42 @@ def _looks_nonprose_gap_block(block_html: str) -> bool:
         if re.match(r"^\\[\(\[]", visible):
             return True
 
+    return False
+
+
+def _looks_affiliation_block(raw: str) -> bool:
+    """Detect long affiliation/author-footnote paragraphs inserted between prose blocks."""
+    if not raw.lstrip().lower().startswith("<p"):
+        return False
+    visible = _visible_text(raw)
+    if len(visible) < 220:
+        return False
+
+    lower = visible.lower()
+    numbered_chunks = len(re.findall(r"(?:^|\s)\d{1,2}\s*[A-Z]", visible))
+    org_hits = sum(
+        1
+        for kw in (
+            "university",
+            "department",
+            "centre",
+            "center",
+            "school of medicine",
+            "institute",
+            "hospital",
+            "office",
+            "authors contributed equally",
+        )
+        if kw in lower
+    )
+    has_contact = ("e-mail" in lower) or ("email" in lower) or ("@" in visible)
+
+    if numbered_chunks >= 5 and org_hits >= 2:
+        return True
+    if numbered_chunks >= 4 and has_contact:
+        return True
+    if "authors contributed equally" in lower and numbered_chunks >= 3:
+        return True
     return False
 
 
@@ -1444,6 +1482,32 @@ def _is_sentence_continuation(left_text: str, right_text: str) -> bool:
     if first_token in continuation_tokens:
         return True
     return False
+
+
+def _is_sentence_continuation_across_affiliation_gap(left_text: str, right_text: str) -> bool:
+    """Relaxed continuation check for cases split by long affiliation footnote blocks."""
+    if not left_text or not right_text:
+        return False
+    if not re.search(r"[A-Za-z]", left_text + right_text):
+        return False
+    if re.search(r"[А-Яа-яЁё]", left_text + right_text):
+        return False
+
+    right_start = right_text.lstrip()
+    if not right_start:
+        return False
+    norm_right_start = re.sub(r'^[\s"\'(\[\{,;:]+', "", right_start)
+    if not norm_right_start:
+        norm_right_start = right_start
+    if re.match(r"^(?:fig(?:ure)?|table|box)\.?\s*\d*", norm_right_start, re.IGNORECASE):
+        return False
+    if re.match(r"^\d+", norm_right_start):
+        return False
+    if len(norm_right_start) < 4:
+        return False
+    if left_text.rstrip().endswith((".", "!", "?", ":", ";", "…")):
+        return False
+    return True
 
 
 def _is_short_fragment_left(left_text: str) -> bool:
@@ -1909,7 +1973,12 @@ def _repair_sentence_breaks_around_figure_blocks(html: str) -> tuple[str, int]:
         if len(left_text) < 20 and not _is_short_fragment_left(left_text):
             i += 1
             continue
-        if _is_sentence_continuation(left_text, right_text):
+        all_affiliation_gap = all(_looks_affiliation_block(nodes[g].group(0)) for g in gap_indices)
+        continuation_ok = _is_sentence_continuation(left_text, right_text)
+        if not continuation_ok and all_affiliation_gap:
+            continuation_ok = _is_sentence_continuation_across_affiliation_gap(left_text, right_text)
+
+        if continuation_ok:
             merged_left = _merge_sentence_parts(left_body, right_body)
             replacements[i] = f"{left_match.group('open')}{merged_left}{left_match.group('close')}"
             dropped.add(right_idx)
