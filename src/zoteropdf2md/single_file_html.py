@@ -125,6 +125,13 @@ _FIG_REF_PATTERN = re.compile(
     r'\b((?:Fig|Рис|рис|Фиг|фиг|FIG)\.?)\s*(\d+)\b(?!\s*\.\s)',
     re.IGNORECASE,
 )
+_HTML_TAG_PATTERN = re.compile(r"<[^>]+>")
+_SENTENCE_SPLIT_BY_FIGURE_PATTERN = re.compile(
+    r'(?P<left_open><p\b[^>]*>)(?P<left_body>[\s\S]*?)(?P<left_close></p>)'
+    r'(?P<middle>\s*(?:<figure\b[\s\S]*?</figure>|<p\b[^>]*>[\s\S]*?<img\b[^>]*>[\s\S]*?</p>)\s*)'
+    r'(?P<right_open><p\b[^>]*>)(?P<right_body>[\s\S]*?)(?P<right_close></p>)',
+    re.IGNORECASE,
+)
 _TABLE_CAPTION_PARA_PATTERN = re.compile(
     r'(<p\b[^>]*>\s*)(?:TABLE|Таблица)\s+([IVXLCM\d]+)\s*[\.\-:]?\s*([^<]*?)(\s*</p>)',
     re.IGNORECASE,
@@ -1275,6 +1282,129 @@ def _normalize_table_caption_style(html: str) -> str:
     return _TABLE_CAPTION_PARA_PATTERN.sub(_normalize, html)
 
 
+def _visible_text(fragment: str) -> str:
+    text = _HTML_TAG_PATTERN.sub(" ", fragment)
+    text = (
+        text.replace("&nbsp;", " ")
+        .replace("&#160;", " ")
+        .replace("\u00a0", " ")
+    )
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _looks_inline_figure_gap(block_html: str) -> bool:
+    stripped = block_html.strip()
+    if stripped.lower().startswith("<figure"):
+        return True
+    if "<img" not in stripped.lower():
+        return False
+    # For image-only gaps, allow merge only when no visible caption text exists.
+    visible = _visible_text(stripped)
+    return len(visible) <= 2
+
+
+def _is_sentence_continuation(left_text: str, right_text: str) -> bool:
+    if not left_text or not right_text:
+        return False
+    if not re.search(r"[A-Za-z]", left_text + right_text):
+        return False
+    if re.search(r"[А-Яа-яЁё]", left_text + right_text):
+        return False
+
+    right_start = right_text.lstrip()
+    if not right_start:
+        return False
+    if re.match(r"^(?:fig(?:ure)?|table)\.?\s*\d+", right_start, re.IGNORECASE):
+        return False
+    if left_text.rstrip().endswith((".", "!", "?", ":", ";", "…")):
+        return False
+
+    first_token_match = re.match(r'^["\'(\[]*([A-Za-z]+)', right_start)
+    first_token = first_token_match.group(1).lower() if first_token_match else ""
+    continuation_tokens = {
+        "and",
+        "or",
+        "but",
+        "with",
+        "which",
+        "where",
+        "when",
+        "while",
+        "that",
+        "to",
+        "for",
+        "of",
+        "in",
+        "on",
+        "at",
+        "as",
+        "by",
+        "if",
+        "after",
+        "before",
+        "during",
+        "because",
+        "meanwhile",
+        "then",
+        "currently",
+        "it",
+        "this",
+        "these",
+        "those",
+        "the",
+        "a",
+        "an",
+    }
+    first_char = right_start[0]
+    if first_char.islower():
+        return True
+    if first_token in continuation_tokens:
+        return True
+    return False
+
+
+def _repair_sentence_breaks_around_figure_blocks(html: str) -> tuple[str, int]:
+    repaired = html
+    total_repairs = 0
+
+    def _replace(match: re.Match[str]) -> str:
+        nonlocal total_repairs
+        left_open = match.group("left_open")
+        left_body = match.group("left_body")
+        left_close = match.group("left_close")
+        middle = match.group("middle")
+        right_open = match.group("right_open")
+        right_body = match.group("right_body")
+
+        if re.search(r"\bid\s*=", right_open, re.IGNORECASE):
+            return match.group(0)
+        if not _looks_inline_figure_gap(middle):
+            return match.group(0)
+
+        left_text = _visible_text(left_body)
+        right_text = _visible_text(right_body)
+        if len(left_text) < 20 or len(right_text) < 6:
+            return match.group(0)
+        if not _is_sentence_continuation(left_text, right_text):
+            return match.group(0)
+
+        merged_left = left_body.rstrip()
+        tail = right_body.lstrip()
+        if merged_left and tail and not merged_left.endswith((" ", "\n", "\t", "-", "(", "[", "/")):
+            merged_left += " "
+        merged_left += tail
+
+        total_repairs += 1
+        return f"{left_open}{merged_left}{left_close}{middle}"
+
+    for _ in range(16):
+        repaired_next, replacements = _SENTENCE_SPLIT_BY_FIGURE_PATTERN.subn(_replace, repaired)
+        repaired = repaired_next
+        if replacements == 0:
+            break
+    return repaired, total_repairs
+
+
 def polish_html_document(html: str) -> str:
     polished = _unwrap_spurious_math_captions(html)  # before all else: free captions from <math>
     polished = drop_repeated_phrases(polished)
@@ -1290,6 +1420,7 @@ def polish_html_document(html: str) -> str:
     polished = _convert_latex_sup_citations(polished)   # \(^{N}\) → <sup>N</sup>
     polished = _fix_equation_display(polished)
     polished = _convert_math_tags_to_tex(polished)
+    polished, _ = _repair_sentence_breaks_around_figure_blocks(polished)
     polished, found_sections = _add_section_anchors(polished)
     polished, found_figures = _add_figure_anchors(polished)
     polished = _add_reference_ids_and_citation_links(polished)

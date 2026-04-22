@@ -146,6 +146,59 @@ def test_polish_html_document_normalizes_table_caption_style() -> None:
     assert "<p>Таблица IV. Comparison of state of arts.</p>" in polished
 
 
+def test_polish_html_document_repairs_sentence_split_by_figure_block() -> None:
+    html = (
+        "<html><body>"
+        "<p>The amplitude value is sent back to the microcontroller for signal processing</p>"
+        "<figure><img src=\"f8.png\"/></figure>"
+        "<p>at the same time, it is also sent to a NI DAQ.</p>"
+        "</body></html>"
+    )
+
+    polished = polish_html_document(html)
+
+    assert (
+        "The amplitude value is sent back to the microcontroller for signal processing "
+        "at the same time, it is also sent to a NI DAQ."
+    ) in polished
+    assert polished.count("at the same time, it is also sent to a NI DAQ.") == 1
+    assert "<figure><img src=\"f8.png\"/></figure>" in polished
+
+
+def test_polish_html_document_repairs_sentence_split_by_image_paragraph() -> None:
+    html = (
+        "<html><body>"
+        "<p>The sensor was positioned close to the antenna</p>"
+        "<p><img src=\"fig9.png\"/></p>"
+        "<p>At the same time, the signal was monitored continuously.</p>"
+        "</body></html>"
+    )
+
+    polished = polish_html_document(html)
+
+    assert (
+        "The sensor was positioned close to the antenna "
+        "At the same time, the signal was monitored continuously."
+    ) in polished
+    assert polished.count("At the same time, the signal was monitored continuously.") == 1
+    assert "<p><img src=\"fig9.png\"/></p>" in polished
+
+
+def test_polish_html_document_does_not_merge_after_finished_sentence() -> None:
+    html = (
+        "<html><body>"
+        "<p>The amplitude value is sent back to the microcontroller for signal processing.</p>"
+        "<figure><img src=\"f8.png\"/></figure>"
+        "<p>The system then records data in a text file.</p>"
+        "</body></html>"
+    )
+
+    polished = polish_html_document(html)
+
+    assert "<p>The amplitude value is sent back to the microcontroller for signal processing.</p>" in polished
+    assert "<p>The system then records data in a text file.</p>" in polished
+
+
 def test_polish_html_document_repairs_split_url_before_autolink() -> None:
     html = (
         "<html><body>"

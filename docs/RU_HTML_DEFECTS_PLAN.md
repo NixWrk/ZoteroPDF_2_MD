@@ -1513,3 +1513,35 @@ Next plan:
 
 1. Rework P8.8 as `experimental, opt-in only`.
 2. Production default remains Gemma heading path + existing structural guards.
+
+### 12.9 P9.1 EN-polish for sentence splits around figures (2026-04-22)
+
+Goal: fix a structural source issue where Marker output breaks one English sentence
+into two `<p>` blocks with a figure/image block between them, which later hurts
+translation agreement.
+
+Scope:
+
+1. Add EN-side polish rule before translation:
+   - pattern: `<p>left without terminal punctuation</p> + <figure|image-only paragraph> + <p>right continuation</p>`
+   - action: merge `right` into `left`, keep figure/image block in place, remove redundant right paragraph.
+2. Keep this conservative:
+   - do not merge when left already ends with `. ! ? : ; …`
+   - do not merge captions (`Fig. N`, `Figure N`, `Table N`)
+   - do not merge when right paragraph has explicit `id=...`
+   - do not merge for non-English (Cyrillic detected).
+
+Implementation:
+
+1. Function in `single_file_html.py`:
+   - `_repair_sentence_breaks_around_figure_blocks(html) -> (html, count)`
+2. Integrated into `polish_html_document()` before section/figure-link normalization.
+3. Tests:
+   - merge with `<figure>...</figure>`
+   - merge with image-only `<p><img ...></p>`
+   - no merge when sentence is already finished.
+
+Expected result:
+
+1. Sentence grammar remains coherent in RU output for this class of documents.
+2. Figure blocks no longer split one sentence into two translation units.
