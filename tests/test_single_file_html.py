@@ -89,6 +89,30 @@ def test_polish_html_document_autolinks_plain_web_urls() -> None:
     assert "<pre>https://do-not-link.example</pre>" in polished
 
 
+def test_polish_html_document_does_not_autolink_inside_escaped_anchor_snippets() -> None:
+    html = (
+        "<html><body>"
+        "<p>Reference literal: &lt;a href=\"https://example.com/page\"&gt;https://example.com/page&lt;/a&gt;</p>"
+        "</body></html>"
+    )
+    polished = polish_html_document(html)
+    assert '&lt;a href="https://example.com/page"&gt;' in polished
+    assert polished.count('target="_blank"') == 0
+
+
+def test_polish_html_document_repairs_nested_autolink_in_escaped_anchor_snippet() -> None:
+    html = (
+        "<html><body>"
+        "<p>(created in BioRender. Chamanzar, M. (2025) "
+        "&lt;a href=\"<a href=\"https://BioRender.com/qms5tta\" target=\"_blank\" rel=\"noopener noreferrer\">https://BioRender.com/qms5tta</a>\"&gt;"
+        "<a href=\"https://BioRender.com/qms5tta&lt;/a&gt;\" target=\"_blank\" rel=\"noopener noreferrer\">https://BioRender.com/qms5tta&lt;/a&gt;</a>)</p>"
+        "</body></html>"
+    )
+    polished = polish_html_document(html)
+    assert 'href="<a href="https://BioRender.com/qms5tta"' not in polished
+    assert polished.count('href="https://BioRender.com/qms5tta"') == 1
+
+
 def test_polish_html_document_links_sup_citations_to_references() -> None:
     html = (
         "<html><body>"
@@ -802,6 +826,47 @@ def test_polish_html_document_recovers_trailing_single_bare_citation() -> None:
     assert 'href="#ref-62"' in polished
 
 
+def test_polish_html_document_does_not_treat_decimal_number_as_citation() -> None:
+    html = (
+        "<html><body>"
+        "<p>The spacing ranged from 1.5 – 2.5 mm across designs.</p>"
+        "<h4>References</h4>"
+        "<ul>" + "".join(f"<li>Ref {i}.</li>" for i in range(1, 90)) + "</ul>"
+        "</body></html>"
+    )
+    polished = polish_html_document(html)
+    assert "1.5 – 2.5 mm" in polished
+    assert '<sup><a href="#ref-1" class="z2m-ref-link">1</a></sup>.5' not in polished
+    assert '<sup><a href="#ref-2" class="z2m-ref-link">2</a></sup>.5' not in polished
+
+
+def test_polish_html_document_repairs_existing_false_decimal_sup_citation() -> None:
+    html = (
+        "<html><body>"
+        "<p>The spacing ranged from <sup><a href=\"#ref-1\" class=\"z2m-ref-link\">1</a></sup>.5 – 2.5 mm.</p>"
+        "<h4>References</h4>"
+        "<ul>" + "".join(f"<li>Ref {i}.</li>" for i in range(1, 10)) + "</ul>"
+        "</body></html>"
+    )
+    polished = polish_html_document(html)
+    assert "1.5 – 2.5 mm" in polished
+    assert '<sup><a href="#ref-1" class="z2m-ref-link">1</a></sup>.5' not in polished
+
+
+def test_polish_html_document_recovers_citation_leaked_into_tex_unit_exponent() -> None:
+    html = (
+        "<html><body>"
+        "<p>Stainless steel has fracture toughness of \\(112-278~\\mathrm{MPa}\\sqrt{\\mathrm{m}^{24}}\\).</p>"
+        "<h4>References</h4>"
+        "<ul>" + "".join(f"<li>Ref {i}.</li>" for i in range(1, 30)) + "</ul>"
+        "</body></html>"
+    )
+    polished = polish_html_document(html)
+    assert r"\sqrt{\mathrm{m}^{24}}" not in polished
+    assert r"\sqrt{\mathrm{m}}" in polished
+    assert 'href="#ref-24"' in polished
+
+
 def test_polish_html_document_normalizes_ocr_merged_citation_169_70_to_69_70() -> None:
     html = (
         "<html><body>"
@@ -979,6 +1044,13 @@ def test_add_figure_anchors_skips_paragraph_with_existing_id() -> None:
     assert result.count('id=') == 1
 
 
+def test_add_figure_anchors_handles_leading_inline_span_before_caption() -> None:
+    html = '<p><span id="page-14-0"></span> Figure 1. Overview text.</p>'
+    result, found = _add_figure_anchors(html)
+    assert "1" in found
+    assert 'id="fig-1"' in result
+
+
 def test_link_figure_refs_wraps_matching_refs() -> None:
     html = "<p>As shown in Fig. 1 and Fig. 2 below.</p>"
     linked = _link_figure_refs(html, {"1", "2"})
@@ -986,6 +1058,14 @@ def test_link_figure_refs_wraps_matching_refs() -> None:
     assert 'href="#fig-1"' in linked
     assert 'href="#fig-2"' in linked
     assert "z2m-fig-link" in linked
+
+
+def test_link_figure_refs_wraps_figure_word_and_subfigure_suffixes() -> None:
+    html = "<p>As shown in Figure 1c and 1d, the flexible cable reduces tethering.</p>"
+    linked = _link_figure_refs(html, {"1"})
+    assert 'href="#fig-1"' in linked
+    assert "Figure\xa01c" in linked
+    assert ">1d</a>" in linked
 
 
 def test_link_figure_refs_skips_caption_dots() -> None:
@@ -1023,6 +1103,35 @@ def test_polish_html_document_adds_figure_anchor_links() -> None:
     assert 'id="fig-1"' in polished
     assert 'href="#fig-1"' in polished
     assert "z2m-fig-link" in polished
+
+
+def test_polish_html_document_adds_figure_anchor_links_for_figure_keyword() -> None:
+    html = (
+        "<html><body>"
+        "<p>The architecture is shown in Figure 1c and 1d.</p>"
+        "<p>Figure 1. Architecture overview.</p>"
+        "</body></html>"
+    )
+    polished = polish_html_document(html)
+    assert 'id="fig-1"' in polished
+    assert 'href="#fig-1"' in polished
+    assert "Figure\xa01c" in polished
+
+
+def test_polish_html_document_repairs_existing_false_figure_label_sup_and_links_subfigures() -> None:
+    html = (
+        "<html><body>"
+        "<p>The architecture is shown in Figure 1c and 1d.</p>"
+        "<p>Figure <sup><a href=\"#ref-1\" class=\"z2m-ref-link\">1</a></sup>. Architecture overview.</p>"
+        "<h4>References</h4>"
+        "<ul>" + "".join(f"<li>Ref {i}.</li>" for i in range(1, 5)) + "</ul>"
+        "</body></html>"
+    )
+    polished = polish_html_document(html)
+    assert "Figure <sup>" not in polished
+    assert 'id="fig-1"' in polished
+    assert "Figure\xa01c" in polished
+    assert ">1d</a>" in polished
 
 
 def test_link_figure_refs_handles_fig_transliteration() -> None:

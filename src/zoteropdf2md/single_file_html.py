@@ -62,6 +62,19 @@ _LATEX_TAG_PATTERN = re.compile(r'\\tag\{(\d+)\}')
 _LATEX_SUP_CITATION_PATTERN = re.compile(
     r'\\\(\^\{([\d,\s\-\u2013\u2014]+)\}\\\)',
 )
+_INLINE_TEX_PATTERN = re.compile(r'\\\((.*?)\\\)', re.DOTALL)
+_LEAKED_SQRT_M_CITATION_PATTERN = re.compile(
+    r'\\sqrt\{\\mathrm\{m\}\^\{(?P<cite>\d{1,3})\}\}\s*$',
+    re.IGNORECASE,
+)
+_LEAKED_UNIT_EXPONENT_PATTERN = re.compile(
+    r'(?P<core>[\s\S]*?)'
+    r'(?P<unit>('
+    r'\\mathrm\{(?:m|mm|cm|nm|um|µm|Pa|kPa|MPa|GPa|Hz|kHz|MHz|GHz|V|mV|A|mA|W|mW)\}'
+    r'|m|mm|cm|nm|um|µm|Pa|kPa|MPa|GPa|Hz|kHz|MHz|GHz|V|mV|A|mA|W|mW'
+    r'))\s*\^\{(?P<cite>\d{1,3})\}\s*$',
+    re.IGNORECASE,
+)
 # Heading translation artefact: the model inserts a period before an inline-
 # formatted abbreviation: "беспроводного. <i>LC</i> Датчик" inside <h1>-<h6>.
 _HEADING_TAG_PATTERN = re.compile(
@@ -119,14 +132,19 @@ _SECTION_REF_PATTERN = re.compile(
 # Figure/image caption paragraphs: <p …>Fig. 3. Some caption text…
 # Russian equivalents: Рис. (standard) or Фиг. (sometimes emitted by translators)
 _FIG_CAPTION_PARA_PATTERN = re.compile(
-    r'(<p\b[^>]*)>([ \t\r\n]*(?:Fig|Рис|рис|Фиг|фиг|FIG)\.?\s*(\d+)\.)',
+    r'(<p\b[^>]*)>([ \t\r\n]*(?:(?:<(?:span|strong|em|b|i|sup|sub)\b[^>]*>|</(?:span|strong|em|b|i|sup|sub)>)\s*)*'
+    r'(?:Fig(?:ure)?|Рис|рис|Фиг|фиг|FIG(?:URE)?)\.?\s*(\d+)\.)',
     re.IGNORECASE,
 )
 # In-text figure references: "Fig. 3" / "рис. 3" / "фиг. 3" NOT followed by ". <text>"
 # (that would be a figure caption).  We distinguish "Fig. 3. Caption..." from "...Fig. 3."
 # (end of sentence) by requiring whitespace after the dot, i.e. ".\s" → caption lookahead.
 _FIG_REF_PATTERN = re.compile(
-    r'\b((?:Fig|Рис|рис|Фиг|фиг|FIG)\.?)\s*(\d+)\b(?!\s*\.\s)',
+    r'\b((?:Fig(?:ure)?|Рис|рис|Фиг|фиг|FIG(?:URE)?)\.?)\s*(\d+)([a-z])?\b(?!\s*\.\s)',
+    re.IGNORECASE,
+)
+_FIG_REF_CHAIN_CONT_PATTERN = re.compile(
+    r'(?P<sep>\s*(?:and|or|,|&|–|-)\s*)(?P<num>\d+)(?P<suf>[a-z])\b',
     re.IGNORECASE,
 )
 _HTML_TAG_PATTERN = re.compile(r"<[^>]+>")
@@ -187,18 +205,34 @@ _URL_TRAILING_CONNECTOR_RE = re.compile(
 # Bare single citation: "knowledge 67. Prompt" — number preceded by letter+space,
 # followed by period + capital letter (new-sentence signal).
 _BARE_CITATION_SINGLE_SPACED_PATTERN = re.compile(
-    r'(?<=[A-Za-zА-Яа-яёЁ]) (\d{1,3})(?=\. [A-Z])'
+    r'(?P<lead>\b(?P<word>[A-Za-zА-Яа-яЁё]{3,})\s)(?P<num>\d{1,3})(?=\. [A-Z])'
 )
 # Dot-citation preceded by space: "issues 17.68." — spaced variant of the glued
 # dot pattern.  Only fires when followed by sentence-end punctuation.
 _BARE_CITATION_SINGLE_TRAILING_PATTERN = re.compile(
-    r'(?P<lead>\b(?P<word>[A-Za-zА-Яа-яЁё]{3,})\s)(?P<num>\d{1,3})(?=(?:[.;:!?)]|$))'
+    r'(?P<lead>\b(?P<word>[A-Za-zА-Яа-яЁё]{3,})\s)'
+    r'(?P<num>\d{1,3})(?=(?:[;:!?)]|$|(?:\.(?!\d))))'
 )
 _BARE_CITATION_SPACED_DOT_PATTERN = re.compile(
     r'(?<=[A-Za-zА-Яа-яёЁ]) (\d{1,3}(?:\.\d{1,3})+)(?=[.,;:!?)<\]]|$)'
 )
+_FALSE_DECIMAL_SUP_CITATION_PATTERN = re.compile(
+    r'<sup>\s*(?:<a\b[^>]*\bz2m-ref-link\b[^>]*>)?(?P<num>\d{1,3})(?:</a>)?\s*</sup>\.(?P<frac>\d+)',
+    re.IGNORECASE,
+)
+_FALSE_FIGURE_LABEL_SUP_PATTERN = re.compile(
+    r'(?P<prefix>\b(?:Fig(?:ure)?|Рис|рис|Фиг|фиг|FIG(?:URE)?)\.?\s*)'
+    r'<sup>\s*(?:<a\b[^>]*\bz2m-ref-link\b[^>]*>)?(?P<num>\d{1,3})(?:</a>)?\s*</sup>'
+    r'(?=\s*\.)',
+    re.IGNORECASE,
+)
 _BROKEN_URL_SPLIT_PATTERN = re.compile(
     r"((?:https?://|www\.)[^\s<>\"]+?/)\s+([A-Za-z0-9][A-Za-z0-9._~:/?#\[\]@!$&'()*+,;=%-]*)",
+    re.IGNORECASE,
+)
+_NESTED_ESCAPED_ANCHOR_AUTOLINK_PATTERN = re.compile(
+    r'&lt;a\s+href="\s*<a\s+href="(?P<url>https?://[^"]+)"[^>]*>[^<]+</a>\s*"&gt;'
+    r'\s*<a\s+href="https?://[^"]+&lt;/a&gt;"[^>]*>[^<]+&lt;/a&gt;</a>',
     re.IGNORECASE,
 )
 
@@ -724,6 +758,12 @@ def _autolink_plain_urls(html: str) -> str:
         if skip_stack:
             out.append(part)
             continue
+        # Do not autolink inside escaped HTML anchor snippets ("&lt;a href=...&gt;"),
+        # otherwise we can create nested/broken links in figure captions.
+        low = part.lower()
+        if "&lt;a " in low or "&lt;/a&gt;" in low:
+            out.append(part)
+            continue
         out.append(_autolink_text_urls(part))
 
     return "".join(out)
@@ -842,6 +882,9 @@ def _recover_bare_citations(html: str, ref_count: int) -> str:
         "kg",
     }
 
+    def _stoplisted(word: str) -> bool:
+        return word.lower() in trailing_word_stoplist
+
     def _normalize_comma_citations(nums_text: str) -> str | None:
         try:
             nums = [int(n.strip()) for n in nums_text.split(",")]
@@ -892,8 +935,11 @@ def _recover_bare_citations(html: str, ref_count: int) -> str:
         return f"<sup>{normalized}</sup>" if normalized is not None else m.group(0)
 
     def _wrap_single_spaced(m: re.Match[str]) -> str:
-        nums_text = m.group(1)
-        return f" <sup>{nums_text}</sup>" if _valid_nums(nums_text) else m.group(0)
+        word = (m.group("word") or "").lower()
+        if _stoplisted(word):
+            return m.group(0)
+        nums_text = m.group("num")
+        return f"{m.group('lead')}<sup>{nums_text}</sup>" if _valid_nums(nums_text) else m.group(0)
 
     def _wrap_spaced_dot(m: re.Match[str]) -> str:
         nums_text = m.group(1)
@@ -903,7 +949,7 @@ def _recover_bare_citations(html: str, ref_count: int) -> str:
 
     def _wrap_single_trailing(m: re.Match[str]) -> str:
         word = (m.group("word") or "").lower()
-        if word in trailing_word_stoplist:
+        if _stoplisted(word):
             return m.group(0)
         nums_text = m.group("num")
         return f"{m.group('lead')}<sup>{nums_text}</sup>" if _valid_nums(nums_text) else m.group(0)
@@ -928,6 +974,87 @@ def _recover_bare_citations(html: str, ref_count: int) -> str:
         out.append(text)
 
     return "".join(out)
+
+
+def _recover_citations_leaked_into_tex_units(html: str, ref_count: int) -> str:
+    """Recover citations that leaked into TeX unit exponents.
+
+    OCR/Marker occasionally glues a citation superscript to a unit inside inline
+    TeX, producing constructs like ``\\sqrt{\\mathrm{m}^{24}}`` or ``GPa^{23}``.
+    We move such trailing citation numbers back to ``<sup>N</sup>``.
+    """
+    if ref_count <= 0:
+        return html
+
+    parts = _TAG_SPLIT_PATTERN.split(html)
+    out: list[str] = []
+    skip_stack: list[str] = []
+
+    def _fix_inline_tex(m: re.Match[str]) -> str:
+        expr = m.group(1)
+        expr_fixed = expr
+        leaked_cites: list[int] = []
+
+        sqrt_match = _LEAKED_SQRT_M_CITATION_PATTERN.search(expr_fixed)
+        if sqrt_match is not None:
+            cite = int(sqrt_match.group("cite"))
+            if 10 <= cite <= ref_count:
+                leaked_cites.append(cite)
+                expr_fixed = _LEAKED_SQRT_M_CITATION_PATTERN.sub(
+                    r'\\sqrt{\\mathrm{m}}',
+                    expr_fixed,
+                )
+
+        unit_match = _LEAKED_UNIT_EXPONENT_PATTERN.search(expr_fixed)
+        if unit_match is not None:
+            cite = int(unit_match.group("cite"))
+            if 10 <= cite <= ref_count:
+                leaked_cites.append(cite)
+                expr_fixed = f"{unit_match.group('core')}{unit_match.group('unit')}"
+
+        if not leaked_cites:
+            return m.group(0)
+
+        suffix = "".join(f"<sup>{n}</sup>" for n in leaked_cites)
+        return f"\\({expr_fixed}\\){suffix}"
+
+    for part in parts:
+        if not part:
+            continue
+        if part.startswith("<"):
+            _update_skip_stack(part, skip_stack)
+            out.append(part)
+            continue
+        if skip_stack:
+            out.append(part)
+            continue
+        out.append(_INLINE_TEX_PATTERN.sub(_fix_inline_tex, part))
+
+    return "".join(out)
+
+
+def _fix_false_sup_citations_in_decimals_and_figure_labels(html: str) -> str:
+    """Undo known false-positive citation links in decimals and figure labels."""
+    fixed = _FALSE_DECIMAL_SUP_CITATION_PATTERN.sub(
+        lambda m: f"{m.group('num')}.{m.group('frac')}",
+        html,
+    )
+    fixed = _FALSE_FIGURE_LABEL_SUP_PATTERN.sub(
+        lambda m: f"{m.group('prefix')}{m.group('num')}",
+        fixed,
+    )
+    return fixed
+
+
+def _fix_nested_autolink_in_escaped_anchor_snippets(html: str) -> str:
+    """Collapse nested autolinks generated inside escaped anchor snippets."""
+    return _NESTED_ESCAPED_ANCHOR_AUTOLINK_PATTERN.sub(
+        lambda m: (
+            f'<a href="{m.group("url")}" target="_blank" rel="noopener noreferrer">'
+            f'{m.group("url")}</a>'
+        ),
+        html,
+    )
 
 
 def _add_reference_ids_and_citation_links(html: str) -> str:
@@ -1037,6 +1164,10 @@ def _add_reference_ids_and_citation_links(html: str) -> str:
             return m.group(0)
 
         return pair_pattern.sub(repl, text)
+
+    # Recover citation superscripts that leaked into TeX unit exponents:
+    # "\(112-278~\mathrm{MPa}\sqrt{\mathrm{m}^{24}}\)" -> "\(112-278~\mathrm{MPa}\sqrt{\mathrm{m}}\)<sup>24</sup>"
+    before_references = _recover_citations_leaked_into_tex_units(before_references, ref_index)
 
     # Recover bare citations: "issues17,68" → "issues<sup>17,68</sup>"
     before_references = _recover_bare_citations(before_references, ref_index)
@@ -1336,9 +1467,10 @@ def _link_figure_refs(html: str, found_figures: set[str]) -> str:
     def _replace(m: re.Match[str]) -> str:
         prefix = m.group(1)
         num = m.group(2)
+        suffix = m.group(3) or ""
         if num not in found_figures:
             return m.group(0)
-        return f'<a href="#fig-{num}" class="z2m-fig-link">{prefix}\xa0{num}</a>'
+        return f'<a href="#fig-{num}" class="z2m-fig-link">{prefix}\xa0{num}{suffix}</a>'
 
     for part in parts:
         if not part:
@@ -1350,7 +1482,23 @@ def _link_figure_refs(html: str, found_figures: set[str]) -> str:
         if skip_stack:
             out.append(part)
             continue
-        out.append(_FIG_REF_PATTERN.sub(_replace, part))
+        linked = _FIG_REF_PATTERN.sub(_replace, part)
+
+        # Handle compact chained subfigure refs: "Figure 1c and 1d" / "Fig. 2a-2c".
+        def _replace_chain(m: re.Match[str]) -> str:
+            num = m.group("num")
+            if num not in found_figures:
+                return m.group(0)
+            left_ctx = linked[max(0, m.start() - 160):m.start()]
+            if 'class="z2m-fig-link"' not in left_ctx:
+                return m.group(0)
+            return (
+                f'{m.group("sep")}'
+                f'<a href="#fig-{num}" class="z2m-fig-link">{num}{m.group("suf")}</a>'
+            )
+
+        linked = _FIG_REF_CHAIN_CONT_PATTERN.sub(_replace_chain, linked)
+        out.append(linked)
 
     return "".join(out)
 
@@ -2200,6 +2348,7 @@ def polish_html_document(html: str, *, table_caption_language: str = "ru") -> st
     polished, _ = _repair_sentence_breaks_at_page_boundaries(polished)
     polished, _ = _reorder_table_block_away_from_formula_context(polished)
     polished, _ = _repair_sentence_breaks_around_figure_blocks(polished)
+    polished = _fix_false_sup_citations_in_decimals_and_figure_labels(polished)
     polished = _mark_affiliation_paragraphs(polished)
     polished, found_sections = _add_section_anchors(polished)
     polished, found_figures = _add_figure_anchors(polished)
@@ -2208,6 +2357,7 @@ def polish_html_document(html: str, *, table_caption_language: str = "ru") -> st
     polished = _link_figure_refs(polished, found_figures)
     polished = _normalize_table_caption_style(polished, table_caption_language=table_caption_language)
     polished = _normalize_spacing_after_z2m_links(polished)
+    polished = _fix_nested_autolink_in_escaped_anchor_snippets(polished)
     polished = _autolink_plain_urls(polished)
     polished = _inject_utf8_charset(polished)
     polished = _inject_default_styles(polished)
