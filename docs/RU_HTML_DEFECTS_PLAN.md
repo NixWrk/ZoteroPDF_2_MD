@@ -1554,3 +1554,34 @@ Expected result:
 
 1. Sentence grammar remains coherent in RU output for this class of documents.
 2. Figure blocks no longer split one sentence into two translation units.
+
+### 12.10 P9.2 EN-polish for page-break + table/formula intrusions (2026-04-22)
+
+Goal: cover two additional structural break classes that remained after P9.1.
+
+Scope:
+
+1. Page-break split between adjacent paragraphs:
+   - pattern: `<p>left without terminal punctuation</p> + <p>right continuation</p>`
+   - example: `...wide frequency range` + `(35 MHz to 2.7 GHz), ...`
+2. Table intrusion between formula intro and formula itself:
+   - pattern: `<p>intro ending with :</p> + <table caption> + <table> + <formula p> (+ follow-up p like "We chose ..."/"where ...")`
+   - action: reorder to `intro -> formula -> follow-up -> table caption -> table`.
+
+Implementation:
+
+1. Added `_repair_sentence_breaks_at_page_boundaries(html) -> (html, count)`.
+2. Added `_reorder_table_block_away_from_formula_context(html) -> (html, count)`.
+3. Integrated both into `polish_html_document()` before figure-gap repair.
+4. Added guards:
+   - do not merge page-break when right starts like numbered reference (`1.` / `1)`),
+   - conservative skip for demonstrative starts (`This/These/It/...`) to avoid paragraph-overmerge.
+5. Added support for equation-row wrappers around formulas (`<div class="z2m-equation-row">...`) in reorder detection.
+
+Verification:
+
+1. `tests/test_single_file_html.py`:
+   - page-break merge with parenthesized right half,
+   - no merge for reference-like next paragraph,
+   - table/formula reorder in plain and equation-row wrapped variants,
+   - no reorder when formula context is absent.

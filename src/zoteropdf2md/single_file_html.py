@@ -1388,6 +1388,8 @@ def _is_sentence_continuation(left_text: str, right_text: str) -> bool:
         norm_right_start = right_start
     if re.match(r"^(?:fig(?:ure)?|table)\.?\s*\d+", norm_right_start, re.IGNORECASE):
         return False
+    if right_start.startswith("("):
+        return True
     if left_text.rstrip().endswith((".", "!", "?", ":", ";", "…")):
         return False
 
@@ -1441,6 +1443,228 @@ def _is_short_fragment_left(left_text: str) -> bool:
     if not words or len(words) > 4:
         return False
     return words[0].lower() in {"this", "these", "it", "that", "which", "also"}
+
+
+def _merge_sentence_parts(left_body: str, right_body: str) -> str:
+    merged_left = left_body.rstrip()
+    tail = right_body.lstrip()
+    if merged_left and tail:
+        if merged_left.endswith("-") and re.match(r"^[a-z]", tail):
+            # OCR line-wrap hyphenation (e.g. "regis-" + "ter") around split blocks.
+            merged_left = merged_left[:-1]
+        elif tail[:1] in ",.;:)]}":
+            pass
+        elif not merged_left.endswith((" ", "\n", "\t", "-", "(", "[", "/")):
+            merged_left += " "
+    merged_left += tail
+    return merged_left
+
+
+def _repair_sentence_breaks_at_page_boundaries(html: str) -> tuple[str, int]:
+    nodes = list(_SENTENCE_NODE_PATTERN.finditer(html))
+    if not nodes:
+        return html, 0
+
+    replacements: dict[int, str] = {}
+    dropped: set[int] = set()
+    repairs = 0
+
+    def _is_p_node(raw: str) -> bool:
+        return raw.lstrip().lower().startswith("<p")
+
+    def _between_is_whitespace(a_idx: int, b_idx: int) -> bool:
+        return html[nodes[a_idx].end():nodes[b_idx].start()].strip() == ""
+
+    i = 0
+    while i + 1 < len(nodes):
+        left_raw = nodes[i].group(0)
+        right_raw = nodes[i + 1].group(0)
+        if not _is_p_node(left_raw) or not _is_p_node(right_raw):
+            i += 1
+            continue
+        if not _between_is_whitespace(i, i + 1):
+            i += 1
+            continue
+
+        left_match = _SENTENCE_P_NODE_PATTERN.match(left_raw)
+        right_match = _SENTENCE_P_NODE_PATTERN.match(right_raw)
+        if left_match is None or right_match is None:
+            i += 1
+            continue
+
+        right_open = right_match.group("open")
+        if re.search(r"\bid\s*=", right_open, re.IGNORECASE):
+            i += 1
+            continue
+
+        left_text = _visible_text(left_match.group("body"))
+        right_text = _visible_text(right_match.group("body"))
+        if len(right_text) < 6:
+            i += 1
+            continue
+        if len(left_text) < 30 and not _is_short_fragment_left(left_text):
+            i += 1
+            continue
+        if re.match(r'^(?:This|These|It|That|Those|The|A|An)\b', right_text.lstrip()):
+            i += 1
+            continue
+        if re.match(r"^\d+\s*[.)]", right_text):
+            i += 1
+            continue
+        if not _is_sentence_continuation(left_text, right_text):
+            i += 1
+            continue
+
+        merged = _merge_sentence_parts(left_match.group("body"), right_match.group("body"))
+        replacements[i] = f"{left_match.group('open')}{merged}{left_match.group('close')}"
+        dropped.add(i + 1)
+        repairs += 1
+        i += 2
+
+    if repairs == 0:
+        return html, 0
+
+    out_parts: list[str] = []
+    cursor = 0
+    for idx, node in enumerate(nodes):
+        out_parts.append(html[cursor:node.start()])
+        if idx in dropped:
+            pass
+        elif idx in replacements:
+            out_parts.append(replacements[idx])
+        else:
+            out_parts.append(node.group(0))
+        cursor = node.end()
+    out_parts.append(html[cursor:])
+    return "".join(out_parts), repairs
+
+
+def _reorder_table_block_away_from_formula_context(html: str) -> tuple[str, int]:
+    nodes = list(_SENTENCE_NODE_PATTERN.finditer(html))
+    if not nodes:
+        return html, 0
+
+    replacements: dict[int, str] = {}
+    dropped: set[int] = set()
+    moves = 0
+
+    def _between_is_ignorable(a_idx: int, b_idx: int) -> bool:
+        segment = html[nodes[a_idx].end():nodes[b_idx].start()]
+        if segment.strip() == "":
+            return True
+        compact = re.sub(r"\s+", "", segment)
+        compact = re.sub(
+            r'<divclass="z2m-equation-row"><spanclass="z2m-eq-lhs"></span>',
+            "",
+            compact,
+            flags=re.IGNORECASE,
+        )
+        compact = re.sub(
+            r'<spanclass="z2m-eq-num">\(\d+\)</span></div>',
+            "",
+            compact,
+            flags=re.IGNORECASE,
+        )
+        return compact == ""
+
+    def _is_p_node(raw: str) -> bool:
+        return raw.lstrip().lower().startswith("<p")
+
+    def _p_body(raw: str) -> str | None:
+        m = _SENTENCE_P_NODE_PATTERN.match(raw)
+        return m.group("body") if m else None
+
+    def _is_table_caption_node(raw: str) -> bool:
+        low = raw.lstrip().lower()
+        if not (low.startswith("<p") or re.match(r"<h[1-6]\b", low)):
+            return False
+        visible = _visible_text(raw)
+        return bool(re.match(r"^(?:table|таблица)\.?\s*[ivxlcdm\d]+\b", visible, re.IGNORECASE))
+
+    def _is_table_node(raw: str) -> bool:
+        return raw.lstrip().lower().startswith("<table")
+
+    def _is_formula_p(raw: str) -> bool:
+        body = _p_body(raw)
+        if body is None:
+            return False
+        visible = _visible_text(body).strip()
+        if not visible:
+            return False
+        return bool(
+            re.match(r"^(?:\\[\(\[]|\(\d+\))", visible)
+            or visible.startswith("y(")
+            or visible.startswith("Ly_")
+        )
+
+    def _is_formula_follow_p(raw: str) -> bool:
+        body = _p_body(raw)
+        if body is None:
+            return False
+        visible = _visible_text(body).strip()
+        return bool(re.match(r"^(?:We chose|where\b|and where\b)", visible, re.IGNORECASE))
+
+    i = 0
+    while i < len(nodes):
+        if i in dropped:
+            i += 1
+            continue
+
+        if i + 3 >= len(nodes):
+            break
+
+        intro_raw = nodes[i].group(0)
+        cap_raw = nodes[i + 1].group(0)
+        table_raw = nodes[i + 2].group(0)
+        formula_raw = nodes[i + 3].group(0)
+
+        intro_body = _p_body(intro_raw)
+        intro_text = _visible_text(intro_body) if intro_body is not None else ""
+        if not intro_body or not intro_text.endswith(":"):
+            i += 1
+            continue
+        if not _is_table_caption_node(cap_raw) or not _is_table_node(table_raw) or not _is_formula_p(formula_raw):
+            i += 1
+            continue
+        if not (_between_is_ignorable(i, i + 1) and _between_is_ignorable(i + 1, i + 2) and _between_is_ignorable(i + 2, i + 3)):
+            i += 1
+            continue
+
+        follow_idx = None
+        if i + 4 < len(nodes) and _between_is_ignorable(i + 3, i + 4) and _is_formula_follow_p(nodes[i + 4].group(0)):
+            follow_idx = i + 4
+
+        parts = [intro_raw, formula_raw]
+        if follow_idx is not None:
+            parts.append(nodes[follow_idx].group(0))
+        parts.extend([cap_raw, table_raw])
+        replacements[i] = "\n".join(parts)
+
+        for di in (i + 1, i + 2, i + 3):
+            dropped.add(di)
+        if follow_idx is not None:
+            dropped.add(follow_idx)
+            i = follow_idx + 1
+        else:
+            i += 4
+        moves += 1
+
+    if moves == 0:
+        return html, 0
+
+    out_parts: list[str] = []
+    cursor = 0
+    for idx, node in enumerate(nodes):
+        out_parts.append(html[cursor:node.start()])
+        if idx in dropped:
+            pass
+        elif idx in replacements:
+            out_parts.append(replacements[idx])
+        else:
+            out_parts.append(node.group(0))
+        cursor = node.end()
+    out_parts.append(html[cursor:])
+    return "".join(out_parts), moves
 
 
 def _repair_sentence_breaks_around_figure_blocks(html: str) -> tuple[str, int]:
@@ -1527,17 +1751,7 @@ def _repair_sentence_breaks_around_figure_blocks(html: str) -> tuple[str, int]:
             i += 1
             continue
 
-        merged_left = left_body.rstrip()
-        tail = right_body.lstrip()
-        if merged_left and tail:
-            if merged_left.endswith("-") and re.match(r"^[a-z]", tail):
-                # OCR line-wrap hyphenation (e.g. "regis-" + "ter") around figure gaps.
-                merged_left = merged_left[:-1]
-            elif tail[:1] in ",.;:)]}":
-                pass
-            elif not merged_left.endswith((" ", "\n", "\t", "-", "(", "[", "/")):
-                merged_left += " "
-        merged_left += tail
+        merged_left = _merge_sentence_parts(left_body, right_body)
 
         replacements[i] = f"{left_match.group('open')}{merged_left}{left_match.group('close')}"
         dropped.add(right_idx)
@@ -1577,6 +1791,8 @@ def polish_html_document(html: str) -> str:
     polished = _convert_latex_sup_citations(polished)   # \(^{N}\) → <sup>N</sup>
     polished = _fix_equation_display(polished)
     polished = _convert_math_tags_to_tex(polished)
+    polished, _ = _repair_sentence_breaks_at_page_boundaries(polished)
+    polished, _ = _reorder_table_block_away_from_formula_context(polished)
     polished, _ = _repair_sentence_breaks_around_figure_blocks(polished)
     polished, found_sections = _add_section_anchors(polished)
     polished, found_figures = _add_figure_anchors(polished)

@@ -300,6 +300,36 @@ def test_polish_html_document_repairs_sentence_split_when_right_starts_with_comm
     assert "based on , given" not in polished
 
 
+def test_polish_html_document_repairs_page_break_split_with_parenthesis() -> None:
+    html = (
+        "<html><body>"
+        "<p>The reader can work over a wide frequency range</p>"
+        "<p>(35 MHz to 2.7 GHz), which gives freedom to design different sensors.</p>"
+        "</body></html>"
+    )
+
+    polished = polish_html_document(html)
+
+    assert (
+        "The reader can work over a wide frequency range "
+        "(35 MHz to 2.7 GHz), which gives freedom to design different sensors."
+    ) in polished
+
+
+def test_polish_html_document_does_not_merge_page_break_reference_item() -> None:
+    html = (
+        "<html><body>"
+        "<p>Discussion about prior art and comparison</p>"
+        "<p>1. A. Author, \"Reference title\", Journal, 2020.</p>"
+        "</body></html>"
+    )
+
+    polished = polish_html_document(html)
+
+    assert "<p>Discussion about prior art and comparison</p>" in polished
+    assert "<p>1. A. Author, \"Reference title\", Journal, 2020.</p>" in polished
+
+
 def test_polish_html_document_repairs_sentence_split_when_right_starts_uppercase() -> None:
     html = (
         "<html><body>"
@@ -333,6 +363,61 @@ def test_polish_html_document_repairs_sentence_split_with_dehyphenation() -> Non
 
     assert "SPI bytes times 34 bytes per register (32 bytes data per register) times 6 registers." in polished
     assert "regis-ter" not in polished
+
+
+def test_polish_html_document_reorders_table_after_formula_context() -> None:
+    html = (
+        "<html><body>"
+        "<p>A moving average, which works as a low pass filter removed the noise:</p>"
+        "<p>TABLE IV Comparison of state of arts.</p>"
+        "<table><tbody><tr><td>Range</td><td>Distance</td></tr></tbody></table>"
+        "<p>\\[Ly_s(i) = \\frac{1}{2N+1}(y(i+N) + \\dots + y(i-N))\\]</p>"
+        "<p>We chose N = 5.</p>"
+        "</body></html>"
+    )
+
+    polished = polish_html_document(html)
+    flat = " ".join(polished.split())
+
+    assert flat.find("A moving average, which works as a low pass filter removed the noise:") < flat.find("\\[Ly_s(i)")
+    assert flat.find("\\[Ly_s(i)") < flat.find("We chose N = 5.")
+    assert flat.find("We chose N = 5.") < flat.find("Таблица IV. Comparison of state of arts.")
+
+
+def test_polish_html_document_reorders_table_after_formula_with_equation_row_wrapper() -> None:
+    html = (
+        "<html><body>"
+        "<p>A moving average, which works as a low pass filter removed the noise:</p>"
+        "<p>TABLE IV Comparison of state of arts.</p>"
+        "<table><tbody><tr><td>Range</td><td>Distance</td></tr></tbody></table>"
+        "<div class=\"z2m-equation-row\"><span class=\"z2m-eq-lhs\"></span>"
+        "<p>\\[Ly_s(i) = \\frac{1}{2N+1}(y(i+N) + \\dots + y(i-N))\\]</p>"
+        "<span class=\"z2m-eq-num\">(9)</span></div>"
+        "<p>We chose N = 5.</p>"
+        "</body></html>"
+    )
+
+    polished = polish_html_document(html)
+    flat = " ".join(polished.split())
+
+    assert flat.find("\\[Ly_s(i)") < flat.find("We chose N = 5.")
+    assert flat.find("We chose N = 5.") < flat.find("Таблица IV. Comparison of state of arts.")
+
+
+def test_polish_html_document_does_not_reorder_table_without_formula_context() -> None:
+    html = (
+        "<html><body>"
+        "<p>Comparison summary:</p>"
+        "<p>TABLE IV Comparison of state of arts.</p>"
+        "<table><tbody><tr><td>Range</td><td>Distance</td></tr></tbody></table>"
+        "<p>Regular paragraph after table.</p>"
+        "</body></html>"
+    )
+
+    polished = polish_html_document(html)
+    flat = " ".join(polished.split())
+
+    assert flat.find("Таблица IV. Comparison of state of arts.") < flat.find("Regular paragraph after table.")
 
 
 def test_polish_html_document_does_not_merge_after_finished_sentence() -> None:
