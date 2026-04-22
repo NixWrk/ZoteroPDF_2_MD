@@ -191,6 +191,9 @@ _BARE_CITATION_SINGLE_SPACED_PATTERN = re.compile(
 )
 # Dot-citation preceded by space: "issues 17.68." — spaced variant of the glued
 # dot pattern.  Only fires when followed by sentence-end punctuation.
+_BARE_CITATION_SINGLE_TRAILING_PATTERN = re.compile(
+    r'(?P<lead>\b(?P<word>[A-Za-zА-Яа-яЁё]{3,})\s)(?P<num>\d{1,3})(?=(?:[.;:!?)]|$))'
+)
 _BARE_CITATION_SPACED_DOT_PATTERN = re.compile(
     r'(?<=[A-Za-zА-Яа-яёЁ]) (\d{1,3}(?:\.\d{1,3})+)(?=[.,;:!?)<\]]|$)'
 )
@@ -263,6 +266,14 @@ _DEFAULT_READABILITY_STYLE = """
     margin: 0.6em 0;
     text-indent: 1.25em;
     word-break: break-word;
+  }
+  p.z2m-affiliations {
+    text-indent: 0;
+    margin: 1.1em 0;
+    padding: 0.7em 0;
+    border-top: 1px solid #c7d3df;
+    border-bottom: 1px solid #c7d3df;
+    font-size: 0.95em;
   }
   a {
     color: #0b57d0;
@@ -804,6 +815,57 @@ def _recover_bare_citations(html: str, ref_count: int) -> str:
     parts = _TAG_SPLIT_PATTERN.split(html)
     out: list[str] = []
     skip_stack: list[str] = []
+    trailing_word_stoplist = {
+        "table",
+        "figure",
+        "fig",
+        "section",
+        "sec",
+        "box",
+        "eq",
+        "equation",
+        "chapter",
+        "range",
+        "distance",
+        "frequency",
+        "parameter",
+        "value",
+        "values",
+        "sample",
+        "data",
+        "page",
+        "mhz",
+        "ghz",
+        "khz",
+        "mm",
+        "cm",
+        "kg",
+    }
+
+    def _normalize_comma_citations(nums_text: str) -> str | None:
+        try:
+            nums = [int(n.strip()) for n in nums_text.split(",")]
+        except ValueError:
+            return None
+        if not nums:
+            return None
+
+        # OCR merge artefact: "169,70" where original likely was "69,70".
+        if len(nums) == 2:
+            first, second = nums[0], nums[1]
+            if (
+                first >= 100
+                and second < 100
+                and first > second
+                and str(first).startswith("1")
+            ):
+                candidate = int(str(first)[1:])
+                if 1 <= candidate <= ref_count and 0 <= (second - candidate) <= 5:
+                    nums[0] = candidate
+
+        if not all(1 <= n <= ref_count for n in nums):
+            return None
+        return ",".join(str(n) for n in nums)
 
     def _valid_nums(nums_text: str, sep: str = ",") -> bool:
         try:
@@ -813,18 +875,21 @@ def _recover_bare_citations(html: str, ref_count: int) -> str:
 
     def _wrap_glued(m: re.Match[str]) -> str:
         nums_text = m.group(1)
-        return f"<sup>{nums_text}</sup>" if _valid_nums(nums_text) else m.group(0)
+        normalized = _normalize_comma_citations(nums_text)
+        return f"<sup>{normalized}</sup>" if normalized is not None else m.group(0)
 
     def _wrap_spaced(m: re.Match[str]) -> str:
         nums_text = m.group(1)
         # Preserve the space before <sup>
-        return f" <sup>{nums_text}</sup>" if _valid_nums(nums_text) else m.group(0)
+        normalized = _normalize_comma_citations(nums_text)
+        return f" <sup>{normalized}</sup>" if normalized is not None else m.group(0)
 
     def _wrap_dot(m: re.Match[str]) -> str:
         nums_text = m.group(1)
         # Convert dots to commas so downstream link logic treats them uniformly
         nums_comma = nums_text.replace(".", ",")
-        return f"<sup>{nums_comma}</sup>" if _valid_nums(nums_comma) else m.group(0)
+        normalized = _normalize_comma_citations(nums_comma)
+        return f"<sup>{normalized}</sup>" if normalized is not None else m.group(0)
 
     def _wrap_single_spaced(m: re.Match[str]) -> str:
         nums_text = m.group(1)
@@ -833,7 +898,15 @@ def _recover_bare_citations(html: str, ref_count: int) -> str:
     def _wrap_spaced_dot(m: re.Match[str]) -> str:
         nums_text = m.group(1)
         nums_comma = nums_text.replace(".", ",")
-        return f" <sup>{nums_comma}</sup>" if _valid_nums(nums_comma) else m.group(0)
+        normalized = _normalize_comma_citations(nums_comma)
+        return f" <sup>{normalized}</sup>" if normalized is not None else m.group(0)
+
+    def _wrap_single_trailing(m: re.Match[str]) -> str:
+        word = (m.group("word") or "").lower()
+        if word in trailing_word_stoplist:
+            return m.group(0)
+        nums_text = m.group("num")
+        return f"{m.group('lead')}<sup>{nums_text}</sup>" if _valid_nums(nums_text) else m.group(0)
 
     for part in parts:
         if not part:
@@ -851,6 +924,7 @@ def _recover_bare_citations(html: str, ref_count: int) -> str:
         text = _BARE_CITATION_SPACED_PATTERN.sub(_wrap_spaced, text)
         text = _BARE_CITATION_SINGLE_SPACED_PATTERN.sub(_wrap_single_spaced, text)
         text = _BARE_CITATION_DOT_PATTERN.sub(_wrap_dot, text)
+        text = _BARE_CITATION_SINGLE_TRAILING_PATTERN.sub(_wrap_single_trailing, text)
         out.append(text)
 
     return "".join(out)
@@ -913,6 +987,15 @@ def _add_reference_ids_and_citation_links(html: str) -> str:
         if "<a " in inner.lower():
             return match.group(0)
 
+        pair_match = re.fullmatch(r"\s*(\d{3})\s*,\s*(\d{1,3})\s*", inner)
+        if pair_match is not None:
+            first = int(pair_match.group(1))
+            second = int(pair_match.group(2))
+            if first > second and str(first).startswith("1") and second < 100:
+                candidate = int(str(first)[1:])
+                if 1 <= candidate <= ref_index and 0 <= (second - candidate) <= 5:
+                    inner = f"{candidate},{second}"
+
         def replace_number(num_match: re.Match[str]) -> str:
             number_text = num_match.group(0)
             try:
@@ -926,6 +1009,35 @@ def _add_reference_ids_and_citation_links(html: str) -> str:
         linked_inner = _SUP_NUMBER_PATTERN.sub(replace_number, inner)
         return f"<sup>{linked_inner}</sup>"
 
+    def normalize_linked_ocr_pairs(text: str) -> str:
+        pair_pattern = re.compile(
+            r'<sup>\s*'
+            r'<a href="#ref-(\d+)" class="z2m-ref-link">(\d+)</a>\s*,\s*'
+            r'<a href="#ref-(\d+)" class="z2m-ref-link">(\d+)</a>\s*'
+            r'</sup>',
+            re.IGNORECASE,
+        )
+
+        def repl(m: re.Match[str]) -> str:
+            href_a, txt_a, href_b, txt_b = m.group(1), m.group(2), m.group(3), m.group(4)
+            if href_a != txt_a or href_b != txt_b:
+                return m.group(0)
+            try:
+                first = int(txt_a)
+                second = int(txt_b)
+            except ValueError:
+                return m.group(0)
+            if first > second and str(first).startswith("1") and second < 100:
+                candidate = int(str(first)[1:])
+                if 1 <= candidate <= ref_index and 0 <= (second - candidate) <= 5:
+                    return (
+                        f'<sup><a href="#ref-{candidate}" class="z2m-ref-link">{candidate}</a>,'
+                        f'<a href="#ref-{second}" class="z2m-ref-link">{second}</a></sup>'
+                    )
+            return m.group(0)
+
+        return pair_pattern.sub(repl, text)
+
     # Recover bare citations: "issues17,68" → "issues<sup>17,68</sup>"
     before_references = _recover_bare_citations(before_references, ref_index)
 
@@ -933,6 +1045,7 @@ def _add_reference_ids_and_citation_links(html: str) -> str:
     before_with_citation_links = _SUP_PATTERN.sub(link_sup, before_references)
     before_with_citation_links = _link_bracket_citations(before_with_citation_links, ref_index)
     before_with_citation_links = _link_paren_ref_citations(before_with_citation_links, ref_index)
+    before_with_citation_links = normalize_linked_ocr_pairs(before_with_citation_links)
     return before_with_citation_links + references_with_ids
 
 
@@ -1404,6 +1517,32 @@ def _looks_affiliation_block(raw: str) -> bool:
     if "authors contributed equally" in lower and numbered_chunks >= 3:
         return True
     return False
+
+
+def _mark_affiliation_paragraphs(html: str) -> str:
+    """Add a style hook class to affiliation/author-footnote paragraphs."""
+    pattern = re.compile(r"<p\b([^>]*)>([\s\S]*?)</p>", re.IGNORECASE)
+
+    def _append_class(attrs: str, class_name: str) -> str:
+        class_match = re.search(r'(\bclass\s*=\s*["\'])([^"\']*)(["\'])', attrs, re.IGNORECASE)
+        if class_match is None:
+            return f'{attrs} class="{class_name}"'
+        classes = class_match.group(2).split()
+        if class_name in classes:
+            return attrs
+        merged = " ".join(classes + [class_name]).strip()
+        return attrs[: class_match.start(2)] + merged + attrs[class_match.end(2) :]
+
+    def _mark(match: re.Match[str]) -> str:
+        attrs = match.group(1) or ""
+        body = match.group(2) or ""
+        raw = f"<p{attrs}>{body}</p>"
+        if not _looks_affiliation_block(raw):
+            return match.group(0)
+        marked_attrs = _append_class(attrs, "z2m-affiliations")
+        return f"<p{marked_attrs}>{body}</p>"
+
+    return pattern.sub(_mark, html)
 
 
 def _looks_inline_figure_gap(block_html: str) -> bool:
@@ -2061,6 +2200,7 @@ def polish_html_document(html: str, *, table_caption_language: str = "ru") -> st
     polished, _ = _repair_sentence_breaks_at_page_boundaries(polished)
     polished, _ = _reorder_table_block_away_from_formula_context(polished)
     polished, _ = _repair_sentence_breaks_around_figure_blocks(polished)
+    polished = _mark_affiliation_paragraphs(polished)
     polished, found_sections = _add_section_anchors(polished)
     polished, found_figures = _add_figure_anchors(polished)
     polished = _add_reference_ids_and_citation_links(polished)

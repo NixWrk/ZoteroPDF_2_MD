@@ -283,6 +283,23 @@ def test_polish_html_document_repairs_sentence_split_across_affiliation_block_wi
     assert "daniel.ting@duke-nus.edu.sg" in polished
 
 
+def test_polish_html_document_marks_affiliation_block_with_style_class() -> None:
+    html = (
+        "<html><body>"
+        "<p>1Singapore National Eye Centre, Singapore Eye Research Institute, Singapore, Singapore. "
+        "2AI Office, Singapore Health Services, Singapore, Singapore. "
+        "3Nuffield Department of Clinical Neurosciences, University of Oxford, Oxford, UK. "
+        "4Department of Ophthalmology and Optometry, Medical University of Vienna, Vienna, Austria. "
+        "15These authors contributed equally: Zhen Ling Teo, Arun James Thirunavukarasu. "
+        "e-mail: daniel.ting@duke-nus.edu.sg</p>"
+        "</body></html>"
+    )
+    polished = polish_html_document(html, table_caption_language="en")
+    assert 'class="z2m-affiliations"' in polished
+    assert "border-top: 1px solid" in polished
+    assert "border-bottom: 1px solid" in polished
+
+
 def test_polish_html_document_repairs_sentence_split_by_image_and_caption_paragraphs() -> None:
     html = (
         "<html><body>"
@@ -771,6 +788,62 @@ def test_polish_html_document_recovers_spaced_bare_citations() -> None:
     assert 'href="#ref-80"' in polished
     assert 'href="#ref-152"' in polished
     assert 'href="#ref-166"' in polished
+
+
+def test_polish_html_document_recovers_trailing_single_bare_citation() -> None:
+    html = (
+        "<html><body>"
+        "<p>ongoing efforts aim to broaden access to large, multimodal clinical datasets 62.</p>"
+        "<h4>References</h4>"
+        "<ul>" + "".join(f"<li>Ref {i}.</li>" for i in range(1, 80)) + "</ul>"
+        "</body></html>"
+    )
+    polished = polish_html_document(html)
+    assert 'href="#ref-62"' in polished
+
+
+def test_polish_html_document_normalizes_ocr_merged_citation_169_70_to_69_70() -> None:
+    html = (
+        "<html><body>"
+        "<p>to help ensure that tools maximize their potential 169,70.</p>"
+        "<h4>References</h4>"
+        "<ul>" + "".join(f"<li>Ref {i}.</li>" for i in range(1, 180)) + "</ul>"
+        "</body></html>"
+    )
+    polished = polish_html_document(html)
+    assert 'href="#ref-69"' in polished
+    assert 'href="#ref-70"' in polished
+    assert 'href="#ref-169"' not in polished
+
+
+def test_polish_html_document_normalizes_existing_sup_ocr_merged_citation_pair() -> None:
+    html = (
+        "<html><body>"
+        "<p>to help ensure that tools maximize their potential <sup>169,70</sup>.</p>"
+        "<h4>References</h4>"
+        "<ul>" + "".join(f"<li>Ref {i}.</li>" for i in range(1, 180)) + "</ul>"
+        "</body></html>"
+    )
+    polished = polish_html_document(html)
+    assert 'href="#ref-69"' in polished
+    assert 'href="#ref-70"' in polished
+    assert 'href="#ref-169"' not in polished
+
+
+def test_polish_html_document_normalizes_already_linked_ocr_merged_citation_pair() -> None:
+    html = (
+        "<html><body>"
+        "<p>to help ensure that tools maximize their potential "
+        '<sup><a href="#ref-169" class="z2m-ref-link">169</a>,'
+        '<a href="#ref-70" class="z2m-ref-link">70</a></sup>.</p>'
+        "<h4>References</h4>"
+        "<ul>" + "".join(f"<li>Ref {i}.</li>" for i in range(1, 180)) + "</ul>"
+        "</body></html>"
+    )
+    polished = polish_html_document(html)
+    assert 'href="#ref-69"' in polished
+    assert 'href="#ref-70"' in polished
+    assert 'href="#ref-169"' not in polished
 
 
 def test_polish_html_document_recovers_dot_separated_citations() -> None:
