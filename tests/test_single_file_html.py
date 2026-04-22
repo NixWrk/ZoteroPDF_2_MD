@@ -418,6 +418,29 @@ def test_polish_html_document_reorders_table_after_formula_with_equation_row_wra
     assert flat.find("We chose N = 5.") < flat.find("Таблица IV. Comparison of state of arts.")
 
 
+def test_polish_html_document_repairs_sentence_split_across_box_block() -> None:
+    html = (
+        "<html><body>"
+        "<p>Since 2008 there has been a growing prevalence of studies to replace missing</p>"
+        "<h2>BOX 1</h2>"
+        "<h3>Glossary of key terms</h3>"
+        "<p>Agentic model: description.</p>"
+        "<p>Transformer model: description.</p>"
+        "<p>data—a common issue in clinical research.</p>"
+        "</body></html>"
+    )
+
+    polished = polish_html_document(html)
+    flat = " ".join(polished.split())
+
+    assert (
+        "Since 2008 there has been a growing prevalence of studies to replace missing "
+        "data—a common issue in clinical research."
+    ) in flat
+    assert "<h2>BOX 1</h2>" in polished
+    assert "<h3>Glossary of key terms</h3>" in polished
+
+
 def test_polish_html_document_does_not_reorder_table_without_formula_context() -> None:
     html = (
         "<html><body>"

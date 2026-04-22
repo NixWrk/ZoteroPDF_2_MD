@@ -1671,6 +1671,96 @@ def _reorder_table_block_away_from_formula_context(html: str) -> tuple[str, int]
     return "".join(out_parts), moves
 
 
+def _repair_sentence_breaks_around_box_blocks(html: str) -> tuple[str, int]:
+    nodes = list(_SENTENCE_NODE_PATTERN.finditer(html))
+    if not nodes:
+        return html, 0
+
+    replacements: dict[int, str] = {}
+    dropped: set[int] = set()
+    repairs = 0
+
+    def _between_is_whitespace(a_idx: int, b_idx: int) -> bool:
+        return html[nodes[a_idx].end():nodes[b_idx].start()].strip() == ""
+
+    def _p_match(raw: str) -> re.Match[str] | None:
+        return _SENTENCE_P_NODE_PATTERN.match(raw)
+
+    def _is_box_heading(raw: str) -> bool:
+        low = raw.lstrip().lower()
+        if not re.match(r"<h[1-6]\b", low):
+            return False
+        visible = _visible_text(raw)
+        return bool(re.match(r"^box\s+\d+\b", visible, re.IGNORECASE))
+
+    max_scan = 36
+    for i in range(len(nodes)):
+        if i in dropped or i + 2 >= len(nodes):
+            continue
+
+        left_raw = nodes[i].group(0)
+        left_match = _p_match(left_raw)
+        if left_match is None:
+            continue
+        if not _between_is_whitespace(i, i + 1):
+            continue
+        if not _is_box_heading(nodes[i + 1].group(0)):
+            continue
+
+        left_text = _visible_text(left_match.group("body"))
+        if len(left_text) < 20:
+            continue
+        if left_text.rstrip().endswith((".", "!", "?", ":", ";", "…")):
+            continue
+
+        right_idx = None
+        upper = min(len(nodes), i + max_scan + 1)
+        for j in range(i + 2, upper):
+            if not _between_is_whitespace(j - 1, j):
+                break
+            raw = nodes[j].group(0)
+            pm = _p_match(raw)
+            if pm is None:
+                continue
+            right_text = _visible_text(pm.group("body"))
+            if len(right_text) < 6:
+                continue
+            if _is_sentence_continuation(left_text, right_text):
+                right_idx = j
+                break
+            # Stop at major non-box section heading.
+            if re.match(r"<h[1-6]\b", raw.lstrip().lower()):
+                break
+
+        if right_idx is None:
+            continue
+
+        right_match = _p_match(nodes[right_idx].group(0))
+        if right_match is None:
+            continue
+        merged = _merge_sentence_parts(left_match.group("body"), right_match.group("body"))
+        replacements[i] = f"{left_match.group('open')}{merged}{left_match.group('close')}"
+        dropped.add(right_idx)
+        repairs += 1
+
+    if repairs == 0:
+        return html, 0
+
+    out_parts: list[str] = []
+    cursor = 0
+    for idx, node in enumerate(nodes):
+        out_parts.append(html[cursor:node.start()])
+        if idx in dropped:
+            pass
+        elif idx in replacements:
+            out_parts.append(replacements[idx])
+        else:
+            out_parts.append(node.group(0))
+        cursor = node.end()
+    out_parts.append(html[cursor:])
+    return "".join(out_parts), repairs
+
+
 def _repair_sentence_breaks_around_figure_blocks(html: str) -> tuple[str, int]:
     nodes = list(_SENTENCE_NODE_PATTERN.finditer(html))
     if not nodes:
@@ -1795,6 +1885,7 @@ def polish_html_document(html: str, *, table_caption_language: str = "ru") -> st
     polished = _convert_latex_sup_citations(polished)   # \(^{N}\) → <sup>N</sup>
     polished = _fix_equation_display(polished)
     polished = _convert_math_tags_to_tex(polished)
+    polished, _ = _repair_sentence_breaks_around_box_blocks(polished)
     polished, _ = _repair_sentence_breaks_at_page_boundaries(polished)
     polished, _ = _reorder_table_block_away_from_formula_context(polished)
     polished, _ = _repair_sentence_breaks_around_figure_blocks(polished)
