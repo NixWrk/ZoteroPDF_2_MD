@@ -257,6 +257,7 @@ _DEFAULT_READABILITY_STYLE = """
   }
   p {
     margin: 0.6em 0;
+    text-indent: 1.25em;
     word-break: break-word;
   }
   a {
@@ -342,6 +343,7 @@ _DEFAULT_READABILITY_STYLE = """
   p[block-type="Equation"] {
     text-align: center;
     margin: 0.8em 0;
+    text-indent: 0;
   }
   .z2m-equation-row {
     display: flex;
