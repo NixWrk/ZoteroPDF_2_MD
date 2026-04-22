@@ -262,6 +262,44 @@ def test_polish_html_document_repairs_sentence_split_with_table_caption_gap() ->
     assert "<p>Таблица I. Parameters for two antennas.</p>" in polished
 
 
+def test_polish_html_document_repairs_sentence_split_across_table_and_formula_note() -> None:
+    html = (
+        "<html><body>"
+        "<p>Fig. 16 shows the k factor for two antenna with distance varying based on</p>"
+        "<h4>TABLE III Antenna Parameters</h4>"
+        "<table><tbody><tr><td>Parameter</td><td>Value</td></tr></tbody></table>"
+        "<p>\\(f_{brain}\\) is the function which describes localized tissue properties.</p>"
+        "<p>sizes. A small antenna features higher k factor at close distance.</p>"
+        "</body></html>"
+    )
+
+    polished = polish_html_document(html)
+
+    assert (
+        "Fig. 16 shows the k factor for two antenna with distance varying based on "
+        "sizes. A small antenna features higher k factor at close distance."
+    ) in polished
+    assert "\\(f_{brain}\\) is the function which describes localized tissue properties." in polished
+    assert "<h4>TABLE III Antenna Parameters</h4>" in polished
+    assert "<table><tbody><tr><td>Parameter</td><td>Value</td></tr></tbody></table>" in polished
+
+
+def test_polish_html_document_repairs_sentence_split_when_right_starts_with_comma() -> None:
+    html = (
+        "<html><body>"
+        "<p>distance varying based on</p>"
+        "<p><img src=\"fig16.jpg\"/></p>"
+        "<p id=\"fig-16\">Fig. 16. Signal strength vs distance.</p>"
+        "<p>, given the antennas' and sensor's sizes.</p>"
+        "</body></html>"
+    )
+
+    polished = polish_html_document(html)
+
+    assert "distance varying based on, given the antennas' and sensor's sizes." in polished
+    assert "based on , given" not in polished
+
+
 def test_polish_html_document_repairs_sentence_split_when_right_starts_uppercase() -> None:
     html = (
         "<html><body>"

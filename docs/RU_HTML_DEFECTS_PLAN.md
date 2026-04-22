@@ -1538,7 +1538,10 @@ Implementation:
    - `_repair_sentence_breaks_around_figure_blocks(html) -> (html, count)`
    - node-based scan over adjacent blocks (supports `<p>`, `<figure>`, caption headings, `<table>`),
      with variable-length gap (up to 12 non-prose blocks).
+   - table-gap additions: accepts empty/formula-note `<p>` blocks (`\( ... \)`/`\[ ... \]`) as non-prose
+     continuations around table sections.
    - includes OCR dehyphenation on merge (`regis-` + `ter` -> `register`) when split is artificial.
+   - punctuation-aware merge: no extra space before `,.;:` when right fragment starts with punctuation.
 2. Integrated into `polish_html_document()` before section/figure-link normalization.
 3. Tests:
    - merge with `<figure>...</figure>`

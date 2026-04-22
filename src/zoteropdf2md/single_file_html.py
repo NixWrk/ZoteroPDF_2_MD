@@ -1349,7 +1349,12 @@ def _looks_nonprose_gap_block(block_html: str) -> bool:
         if _looks_inline_figure_block(stripped):
             return True
         visible = _visible_text(stripped)
+        if not visible:
+            return True
         if re.match(r"^(?:table|таблица)\.?\s*[ivxlcdm\d]+\b", visible, re.IGNORECASE):
+            return True
+        # Table-tail math notes often rendered as standalone paragraphs.
+        if re.match(r"^\\[\(\[]", visible):
             return True
 
     return False
@@ -1378,12 +1383,15 @@ def _is_sentence_continuation(left_text: str, right_text: str) -> bool:
     right_start = right_text.lstrip()
     if not right_start:
         return False
-    if re.match(r"^(?:fig(?:ure)?|table)\.?\s*\d+", right_start, re.IGNORECASE):
+    norm_right_start = re.sub(r'^[\s"\'(\[\{,;:]+', "", right_start)
+    if not norm_right_start:
+        norm_right_start = right_start
+    if re.match(r"^(?:fig(?:ure)?|table)\.?\s*\d+", norm_right_start, re.IGNORECASE):
         return False
     if left_text.rstrip().endswith((".", "!", "?", ":", ";", "…")):
         return False
 
-    first_token_match = re.match(r'^["\'(\[]*([A-Za-z]+)', right_start)
+    first_token_match = re.match(r'^["\'(\[]*([A-Za-z]+)', norm_right_start)
     first_token = first_token_match.group(1).lower() if first_token_match else ""
     continuation_tokens = {
         "and",
@@ -1420,7 +1428,7 @@ def _is_sentence_continuation(left_text: str, right_text: str) -> bool:
         "an",
         "acquisition",
     }
-    first_char = right_start[0]
+    first_char = norm_right_start[0]
     if first_char.islower():
         return True
     if first_token in continuation_tokens:
@@ -1525,6 +1533,8 @@ def _repair_sentence_breaks_around_figure_blocks(html: str) -> tuple[str, int]:
             if merged_left.endswith("-") and re.match(r"^[a-z]", tail):
                 # OCR line-wrap hyphenation (e.g. "regis-" + "ter") around figure gaps.
                 merged_left = merged_left[:-1]
+            elif tail[:1] in ",.;:)]}":
+                pass
             elif not merged_left.endswith((" ", "\n", "\t", "-", "(", "[", "/")):
                 merged_left += " "
         merged_left += tail
