@@ -1536,7 +1536,9 @@ Implementation:
 
 1. Function in `single_file_html.py`:
    - `_repair_sentence_breaks_around_figure_blocks(html) -> (html, count)`
-   - node-based scan over adjacent `<p>/<figure>` blocks (instead of overlap-prone regex-only pass).
+   - node-based scan over adjacent blocks (supports `<p>`, `<figure>`, caption headings, `<table>`),
+     with variable-length gap (up to 12 non-prose blocks).
+   - includes OCR dehyphenation on merge (`regis-` + `ter` -> `register`) when split is artificial.
 2. Integrated into `polish_html_document()` before section/figure-link normalization.
 3. Tests:
    - merge with `<figure>...</figure>`

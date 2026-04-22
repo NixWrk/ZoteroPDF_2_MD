@@ -221,6 +221,82 @@ def test_polish_html_document_repairs_sentence_split_by_image_and_caption_paragr
     assert "<p id=\"fig-1\">Fig. 1. The passive sensor model.</p>" in polished
 
 
+def test_polish_html_document_repairs_sentence_split_by_long_figure_chain() -> None:
+    html = (
+        "<html><body>"
+        "<p>This</p>"
+        "<p><img src=\"f4.jpg\"/></p>"
+        "<p id=\"fig-4\">Fig. 4. Passive sensor model.</p>"
+        "<p><img src=\"f5.jpg\"/></p>"
+        "<p id=\"fig-5\">Fig. 5. Impedance and phase frequency response.</p>"
+        "<p><img src=\"f6.jpg\"/></p>"
+        "<p id=\"fig-6\">Fig. 6. Measurement principle.</p>"
+        "<p>equivalent resistor changes the system's impedance.</p>"
+        "</body></html>"
+    )
+
+    polished = polish_html_document(html)
+
+    assert "This equivalent resistor changes the system's impedance." in polished
+    assert polished.count("equivalent resistor changes the system's impedance.") == 1
+    assert "<p id=\"fig-6\">Fig. 6. Measurement principle.</p>" in polished
+
+
+def test_polish_html_document_repairs_sentence_split_with_table_caption_gap() -> None:
+    html = (
+        "<html><body>"
+        "<p>In our final prototype,</p>"
+        "<p><img src=\"fig9.jpg\"/></p>"
+        "<p id=\"fig-9\">Fig. 9. Final sensor mounted on the PCB.</p>"
+        "<p>Table I. Parameters for two antennas.</p>"
+        "<p>an integrated half-wave rectifier measures the output envelope.</p>"
+        "</body></html>"
+    )
+
+    polished = polish_html_document(html)
+
+    assert (
+        "In our final prototype, an integrated half-wave rectifier measures the output envelope."
+    ) in polished
+    assert polished.count("an integrated half-wave rectifier measures the output envelope.") == 1
+    assert "<p>Таблица I. Parameters for two antennas.</p>" in polished
+
+
+def test_polish_html_document_repairs_sentence_split_when_right_starts_uppercase() -> None:
+    html = (
+        "<html><body>"
+        "<p>To facilitate observation, data is sampled by the Usb-6009 Data</p>"
+        "<p><img src=\"fig10.jpg\"/></p>"
+        "<p id=\"fig-10\">Fig. 10. Measurement setup.</p>"
+        "<p>Acquisition Card (National Instruments).</p>"
+        "</body></html>"
+    )
+
+    polished = polish_html_document(html)
+
+    assert (
+        "To facilitate observation, data is sampled by the Usb-6009 Data "
+        "Acquisition Card (National Instruments)."
+    ) in polished
+    assert polished.count("Acquisition Card (National Instruments).") == 1
+
+
+def test_polish_html_document_repairs_sentence_split_with_dehyphenation() -> None:
+    html = (
+        "<html><body>"
+        "<p>SPI bytes times 34 bytes per regis-</p>"
+        "<p><img src=\"fig12.jpg\"/></p>"
+        "<p id=\"fig-12\">Fig. 12. Resonant frequency shift.</p>"
+        "<p>ter (32 bytes data per register) times 6 registers.</p>"
+        "</body></html>"
+    )
+
+    polished = polish_html_document(html)
+
+    assert "SPI bytes times 34 bytes per register (32 bytes data per register) times 6 registers." in polished
+    assert "regis-ter" not in polished
+
+
 def test_polish_html_document_does_not_merge_after_finished_sentence() -> None:
     html = (
         "<html><body>"
