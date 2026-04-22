@@ -146,6 +146,20 @@ def test_polish_html_document_normalizes_table_caption_style() -> None:
     assert "<p>Таблица IV. Comparison of state of arts.</p>" in polished
 
 
+def test_polish_html_document_normalizes_table_caption_style_en_mode() -> None:
+    html = (
+        "<html><body>"
+        "<p>TABLE I PARAMETERS FOR TWO ANTENNAS</p>"
+        "<p>Таблица II параметры сенсора</p>"
+        "</body></html>"
+    )
+
+    polished = polish_html_document(html, table_caption_language="en")
+
+    assert "<p>TABLE I. Parameters for two antennas.</p>" in polished
+    assert "<p>TABLE II. Параметры сенсора.</p>" in polished
+
+
 def test_polish_html_document_repairs_sentence_split_by_figure_block() -> None:
     html = (
         "<html><body>"

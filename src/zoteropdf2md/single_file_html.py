@@ -162,7 +162,7 @@ _SENTENCE_H_NODE_PATTERN = re.compile(
     re.IGNORECASE,
 )
 _TABLE_CAPTION_PARA_PATTERN = re.compile(
-    r'(<p\b[^>]*>\s*)(?:TABLE|Таблица)\s+([IVXLCM\d]+)\s*[\.\-:]?\s*([^<]*?)(\s*</p>)',
+    r'(<p\b[^>]*>\s*)(TABLE|Таблица)\s+([IVXLCM\d]+)\s*[\.\-:]?\s*([^<]*?)(\s*</p>)',
     re.IGNORECASE,
 )
 _LEADING_SPACED_BACKSLASH_PATTERN = re.compile(r"(^|\s)\\\s+")
@@ -1290,23 +1290,25 @@ def _normalize_spacing_after_z2m_links(html: str) -> str:
     return _Z2M_LINK_GLUE_PATTERN.sub(r"\1 ", html)
 
 
-def _normalize_table_caption_style(html: str) -> str:
+def _normalize_table_caption_style(html: str, *, table_caption_language: str = "ru") -> str:
     """Normalize table caption paragraphs to a single style.
 
-    Target form: ``Таблица N. Хвост.`` where ``N`` is Roman/digit index and
-    ``Хвост`` is sentence-case caption text.
+    Target form:
+    - ``Таблица N. Хвост.`` for ``table_caption_language='ru'``
+    - ``TABLE N. Tail.`` for ``table_caption_language='en'``
     """
     def _normalize(m: re.Match[str]) -> str:
-        p_open, table_no, tail, p_close = m.group(1), m.group(2), m.group(3), m.group(4)
+        p_open, _source_label, table_no, tail, p_close = m.group(1), m.group(2), m.group(3), m.group(4), m.group(5)
         number = table_no.upper()
         cleaned_tail = re.sub(r"\s+", " ", tail).strip()
         cleaned_tail = cleaned_tail.strip(" .;:,")
+        label = "TABLE" if table_caption_language == "en" else "Таблица"
 
         if cleaned_tail:
             sentence_tail = cleaned_tail.lower()
             sentence_tail = sentence_tail[:1].upper() + sentence_tail[1:]
-            return f"{p_open}Таблица {number}. {sentence_tail}.{p_close}"
-        return f"{p_open}Таблица {number}.{p_close}"
+            return f"{p_open}{label} {number}. {sentence_tail}.{p_close}"
+        return f"{p_open}{label} {number}.{p_close}"
 
     return _TABLE_CAPTION_PARA_PATTERN.sub(_normalize, html)
 
@@ -1776,7 +1778,7 @@ def _repair_sentence_breaks_around_figure_blocks(html: str) -> tuple[str, int]:
     return "".join(out_parts), repairs
 
 
-def polish_html_document(html: str) -> str:
+def polish_html_document(html: str, *, table_caption_language: str = "ru") -> str:
     polished = _unwrap_spurious_math_captions(html)  # before all else: free captions from <math>
     polished = drop_repeated_phrases(polished)
     polished = _fix_latex_text_commands(polished)
@@ -1799,7 +1801,7 @@ def polish_html_document(html: str) -> str:
     polished = _add_reference_ids_and_citation_links(polished)
     polished = _link_section_refs(polished, found_sections)
     polished = _link_figure_refs(polished, found_figures)
-    polished = _normalize_table_caption_style(polished)
+    polished = _normalize_table_caption_style(polished, table_caption_language=table_caption_language)
     polished = _normalize_spacing_after_z2m_links(polished)
     polished = _autolink_plain_urls(polished)
     polished = _inject_utf8_charset(polished)

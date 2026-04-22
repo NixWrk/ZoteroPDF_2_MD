@@ -3705,7 +3705,7 @@ class TranslateGemmaTranslator:
         source_html_raw = html_path.read_text(encoding="utf-8", errors="replace")
         # Polish the source (EN) HTML and overwrite the file so it gets the same
         # citation links, reference IDs, math conversion, and styles as the RU file.
-        polished_source = polish_html_document(source_html_raw)
+        polished_source = polish_html_document(source_html_raw, table_caption_language="en")
         html_path.write_text(polished_source, encoding="utf-8")
         self._log_line(
             f"[timer] translategemma.polish_source_html: {perf_counter() - read_started_at:.2f}s"
@@ -3855,7 +3855,7 @@ class TranslateGemmaTranslator:
         )
 
         polish_started_at = perf_counter()
-        polished = polish_html_document(translated_html)
+        polished = polish_html_document(translated_html, table_caption_language="ru")
         self._log_line(f"[timer] translategemma.polish_html: {perf_counter() - polish_started_at:.2f}s")
 
         language_code = normalize_language_code(self._config.target_language_code)
