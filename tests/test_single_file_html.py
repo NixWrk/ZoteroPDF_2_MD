@@ -184,6 +184,43 @@ def test_polish_html_document_repairs_sentence_split_by_image_paragraph() -> Non
     assert "<p><img src=\"fig9.png\"/></p>" in polished
 
 
+def test_polish_html_document_repairs_sentence_split_by_caption_paragraph() -> None:
+    html = (
+        "<html><body>"
+        "<p>The first network is trained by the second to generate synthetic images that cannot be distinguished from real ones, enabling the production of</p>"
+        "<p>Fig. 1 | Overview of the GAI development pipeline.</p>"
+        "<p>highly detailed, realistic images.</p>"
+        "</body></html>"
+    )
+
+    polished = polish_html_document(html)
+
+    assert (
+        "The first network is trained by the second to generate synthetic images that cannot be distinguished from real ones, enabling the production of "
+        "highly detailed, realistic images."
+    ) in polished
+    assert polished.count("highly detailed, realistic images.") == 1
+    assert "<p>Fig. 1 | Overview of the GAI development pipeline.</p>" in polished
+
+
+def test_polish_html_document_repairs_sentence_split_by_image_and_caption_paragraphs() -> None:
+    html = (
+        "<html><body>"
+        "<p>Also, this is an analog</p>"
+        "<p><img src=\"fig1.jpg\"/></p>"
+        "<p id=\"fig-1\">Fig. 1. The passive sensor model.</p>"
+        "<p>circuit with limited frequency resolution.</p>"
+        "</body></html>"
+    )
+
+    polished = polish_html_document(html)
+
+    assert "Also, this is an analog circuit with limited frequency resolution." in polished
+    assert polished.count("circuit with limited frequency resolution.") == 1
+    assert "<p><img src=\"fig1.jpg\"/></p>" in polished
+    assert "<p id=\"fig-1\">Fig. 1. The passive sensor model.</p>" in polished
+
+
 def test_polish_html_document_does_not_merge_after_finished_sentence() -> None:
     html = (
         "<html><body>"
@@ -197,6 +234,21 @@ def test_polish_html_document_does_not_merge_after_finished_sentence() -> None:
 
     assert "<p>The amplitude value is sent back to the microcontroller for signal processing.</p>" in polished
     assert "<p>The system then records data in a text file.</p>" in polished
+
+
+def test_polish_html_document_does_not_merge_across_regular_middle_paragraph() -> None:
+    html = (
+        "<html><body>"
+        "<p>The first network is trained by the second to generate synthetic images</p>"
+        "<p>This is just a normal paragraph, not a figure caption.</p>"
+        "<p>that cannot be distinguished from real ones.</p>"
+        "</body></html>"
+    )
+
+    polished = polish_html_document(html)
+
+    assert "<p>The first network is trained by the second to generate synthetic images</p>" in polished
+    assert "<p>that cannot be distinguished from real ones.</p>" in polished
 
 
 def test_polish_html_document_repairs_split_url_before_autolink() -> None:

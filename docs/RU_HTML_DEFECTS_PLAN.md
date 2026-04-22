@@ -1523,7 +1523,8 @@ translation agreement.
 Scope:
 
 1. Add EN-side polish rule before translation:
-   - pattern: `<p>left without terminal punctuation</p> + <figure|image-only paragraph> + <p>right continuation</p>`
+   - pattern A: `<p>left without terminal punctuation</p> + <figure|image-only paragraph|Fig-caption paragraph> + <p>right continuation</p>`
+   - pattern B: `<p>left ...</p> + <p><img ...></p> + <p>Fig. N ...</p> + <p>right continuation</p>`
    - action: merge `right` into `left`, keep figure/image block in place, remove redundant right paragraph.
 2. Keep this conservative:
    - do not merge when left already ends with `. ! ? : ; …`
@@ -1535,10 +1536,13 @@ Implementation:
 
 1. Function in `single_file_html.py`:
    - `_repair_sentence_breaks_around_figure_blocks(html) -> (html, count)`
+   - node-based scan over adjacent `<p>/<figure>` blocks (instead of overlap-prone regex-only pass).
 2. Integrated into `polish_html_document()` before section/figure-link normalization.
 3. Tests:
    - merge with `<figure>...</figure>`
    - merge with image-only `<p><img ...></p>`
+   - merge with caption paragraph `<p>Fig. N ...</p>`
+   - merge with image+caption pair between sentence halves
    - no merge when sentence is already finished.
 
 Expected result:

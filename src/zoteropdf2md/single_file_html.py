@@ -126,10 +126,35 @@ _FIG_REF_PATTERN = re.compile(
     re.IGNORECASE,
 )
 _HTML_TAG_PATTERN = re.compile(r"<[^>]+>")
+_FIGURE_GAP_PARA_PATTERN = (
+    r"<p\b[^>]*>\s*"
+    r"(?:(?:<img\b)|(?:<(?:strong|em|b|i)\b[^>]*>\s*)*(?:Fig(?:ure)?|FIG)\.?\s*\d\b)"
+    r"[\s\S]*?</p>"
+)
+_FIGURE_GAP_BLOCK_PATTERN = rf"(?:<figure\b[\s\S]*?</figure>|{_FIGURE_GAP_PARA_PATTERN})"
 _SENTENCE_SPLIT_BY_FIGURE_PATTERN = re.compile(
     r'(?P<left_open><p\b[^>]*>)(?P<left_body>[\s\S]*?)(?P<left_close></p>)'
-    r'(?P<middle>\s*(?:<figure\b[\s\S]*?</figure>|<p\b[^>]*>[\s\S]*?<img\b[^>]*>[\s\S]*?</p>)\s*)'
+    rf'(?P<middle>\s*{_FIGURE_GAP_BLOCK_PATTERN}\s*)'
     r'(?P<right_open><p\b[^>]*>)(?P<right_body>[\s\S]*?)(?P<right_close></p>)',
+    re.IGNORECASE,
+)
+_SENTENCE_SPLIT_BY_DOUBLE_FIGURE_GAP_PATTERN = re.compile(
+    r'(?P<left_open><p\b[^>]*>)(?P<left_body>[\s\S]*?)(?P<left_close></p>)'
+    rf'(?P<middle1>\s*{_FIGURE_GAP_BLOCK_PATTERN}\s*)'
+    rf'(?P<middle2>\s*{_FIGURE_GAP_BLOCK_PATTERN}\s*)'
+    r'(?P<right_open><p\b[^>]*>)(?P<right_body>[\s\S]*?)(?P<right_close></p>)',
+    re.IGNORECASE,
+)
+_SENTENCE_GAP_BLOCK_PATTERN = re.compile(
+    _FIGURE_GAP_BLOCK_PATTERN,
+    re.IGNORECASE,
+)
+_SENTENCE_NODE_PATTERN = re.compile(
+    r"<p\b[^>]*>[\s\S]*?</p>|<figure\b[\s\S]*?</figure>",
+    re.IGNORECASE,
+)
+_SENTENCE_P_NODE_PATTERN = re.compile(
+    r'^(?P<open><p\b[^>]*>)(?P<body>[\s\S]*)(?P<close></p>)$',
     re.IGNORECASE,
 )
 _TABLE_CAPTION_PARA_PATTERN = re.compile(
@@ -1292,15 +1317,29 @@ def _visible_text(fragment: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
-def _looks_inline_figure_gap(block_html: str) -> bool:
+def _looks_inline_figure_block(block_html: str) -> bool:
     stripped = block_html.strip()
     if stripped.lower().startswith("<figure"):
+        return True
+    visible = _visible_text(stripped)
+    if re.match(r"^(?:fig(?:ure)?|fig)\.?\s*\d+\b", visible, re.IGNORECASE):
         return True
     if "<img" not in stripped.lower():
         return False
     # For image-only gaps, allow merge only when no visible caption text exists.
-    visible = _visible_text(stripped)
     return len(visible) <= 2
+
+
+def _looks_inline_figure_gap(block_html: str) -> bool:
+    blocks = _SENTENCE_GAP_BLOCK_PATTERN.findall(block_html)
+    if not blocks:
+        return False
+    saw_figure_like = False
+    for block in blocks:
+        if not _looks_inline_figure_block(block):
+            return False
+        saw_figure_like = True
+    return saw_figure_like
 
 
 def _is_sentence_continuation(left_text: str, right_text: str) -> bool:
@@ -1364,45 +1403,105 @@ def _is_sentence_continuation(left_text: str, right_text: str) -> bool:
 
 
 def _repair_sentence_breaks_around_figure_blocks(html: str) -> tuple[str, int]:
-    repaired = html
-    total_repairs = 0
+    nodes = list(_SENTENCE_NODE_PATTERN.finditer(html))
+    if not nodes:
+        return html, 0
 
-    def _replace(match: re.Match[str]) -> str:
-        nonlocal total_repairs
-        left_open = match.group("left_open")
-        left_body = match.group("left_body")
-        left_close = match.group("left_close")
-        middle = match.group("middle")
-        right_open = match.group("right_open")
-        right_body = match.group("right_body")
+    replacements: dict[int, str] = {}
+    dropped: set[int] = set()
+    repairs = 0
 
-        if re.search(r"\bid\s*=", right_open, re.IGNORECASE):
-            return match.group(0)
-        if not _looks_inline_figure_gap(middle):
-            return match.group(0)
+    def _is_p_node(raw: str) -> bool:
+        return raw.lstrip().lower().startswith("<p")
 
-        left_text = _visible_text(left_body)
-        right_text = _visible_text(right_body)
-        if len(left_text) < 20 or len(right_text) < 6:
-            return match.group(0)
-        if not _is_sentence_continuation(left_text, right_text):
-            return match.group(0)
+    def _between_is_whitespace(a_idx: int, b_idx: int) -> bool:
+        return html[nodes[a_idx].end():nodes[b_idx].start()].strip() == ""
 
-        merged_left = left_body.rstrip()
-        tail = right_body.lstrip()
-        if merged_left and tail and not merged_left.endswith((" ", "\n", "\t", "-", "(", "[", "/")):
-            merged_left += " "
-        merged_left += tail
+    i = 0
+    while i < len(nodes):
+        if i in dropped:
+            i += 1
+            continue
 
-        total_repairs += 1
-        return f"{left_open}{merged_left}{left_close}{middle}"
+        left_raw = nodes[i].group(0)
+        if not _is_p_node(left_raw):
+            i += 1
+            continue
+        left_match = _SENTENCE_P_NODE_PATTERN.match(left_raw)
+        if left_match is None:
+            i += 1
+            continue
 
-    for _ in range(16):
-        repaired_next, replacements = _SENTENCE_SPLIT_BY_FIGURE_PATTERN.subn(_replace, repaired)
-        repaired = repaired_next
-        if replacements == 0:
+        merged_here = False
+        for gap_len in (3, 2, 1):
+            right_idx = i + gap_len + 1
+            if right_idx >= len(nodes):
+                continue
+
+            mid_indices = list(range(i + 1, right_idx))
+            if any(idx in dropped for idx in mid_indices):
+                continue
+            if any(not _between_is_whitespace(prev, cur) for prev, cur in zip(range(i, right_idx), range(i + 1, right_idx + 1))):
+                continue
+
+            middle_blocks = [nodes[idx].group(0) for idx in mid_indices]
+            if not middle_blocks:
+                continue
+            if not all(_looks_inline_figure_block(block) for block in middle_blocks):
+                continue
+
+            right_raw = nodes[right_idx].group(0)
+            if not _is_p_node(right_raw):
+                continue
+            right_match = _SENTENCE_P_NODE_PATTERN.match(right_raw)
+            if right_match is None:
+                continue
+
+            right_open = right_match.group("open")
+            if re.search(r"\bid\s*=", right_open, re.IGNORECASE):
+                continue
+
+            left_body = left_match.group("body")
+            right_body = right_match.group("body")
+            left_text = _visible_text(left_body)
+            right_text = _visible_text(right_body)
+            if len(left_text) < 20 or len(right_text) < 6:
+                continue
+            if not _is_sentence_continuation(left_text, right_text):
+                continue
+
+            merged_left = left_body.rstrip()
+            tail = right_body.lstrip()
+            if merged_left and tail and not merged_left.endswith((" ", "\n", "\t", "-", "(", "[", "/")):
+                merged_left += " "
+            merged_left += tail
+
+            replacements[i] = f"{left_match.group('open')}{merged_left}{left_match.group('close')}"
+            dropped.add(right_idx)
+            repairs += 1
+            merged_here = True
+            i = right_idx + 1
             break
-    return repaired, total_repairs
+
+        if not merged_here:
+            i += 1
+
+    if repairs == 0:
+        return html, 0
+
+    out_parts: list[str] = []
+    cursor = 0
+    for idx, node in enumerate(nodes):
+        out_parts.append(html[cursor:node.start()])
+        if idx in dropped:
+            pass
+        elif idx in replacements:
+            out_parts.append(replacements[idx])
+        else:
+            out_parts.append(node.group(0))
+        cursor = node.end()
+    out_parts.append(html[cursor:])
+    return "".join(out_parts), repairs
 
 
 def polish_html_document(html: str) -> str:
