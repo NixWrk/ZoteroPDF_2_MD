@@ -250,6 +250,42 @@ def test_polish_html_document_repairs_sentence_split_by_image_and_caption_paragr
     assert "<p id=\"fig-1\">Fig. 1. The passive sensor model.</p>" in polished
 
 
+def test_polish_html_document_repairs_cross_mixed_prose_and_figure_caption() -> None:
+    html = (
+        "<html><body>"
+        "<p>Similar processes can be applied to develop multimodal foundation models. "
+        "An early example is RETFound, which was trained in a 'fill in the blank' "
+        "to evaluate for aspects such as accuracy, relevance and bias; and (4) deployment, "
+        "which are crucial steps for clinical translation. CT, computed tomography; MRI, "
+        "magnetic resonance imaging; CLIP, contrastive language-image pretraining; "
+        "RAG, retrieval-augmented generation.</p>"
+        "<p><img src=\"fig2.jpg\"/></p>"
+        "<p><strong>Fig. 2</strong> | <strong>GAI development pipeline based on specific modalities.</strong> "
+        "The key steps include: (1) pretraining; (2) fine-tuning; (3) reinforcement learning (required) "
+        "\\\\ image-modeling task in which the model was exposed to fundus photographs with missing portions "
+        "and tasked with reconstructing the missing pixels. Other foundation models were developed as well.</p>"
+        "<p>Early anecdotal evidence and recent studies are described below.</p>"
+        "</body></html>"
+    )
+
+    polished = polish_html_document(html, table_caption_language="en")
+    flat = " ".join(polished.split())
+
+    assert (
+        "which was trained in a 'fill in the blank' image-modeling task in which the model was exposed"
+    ) in flat
+    assert "and (4) deployment, which are crucial steps for clinical translation." in flat
+    assert "Fig. 2" in flat
+    assert "(1) pretraining; (2) fine-tuning; (3) reinforcement learning (required)" in flat
+    assert "\\\\ image-modeling task" not in polished
+    assert "to evaluate for aspects such as accuracy, relevance and bias; and (4) deployment" in polished
+    assert (
+        "which was trained in a 'fill in the blank' to evaluate for aspects such as accuracy, relevance and bias"
+        not in polished
+    )
+    assert flat.count("Early anecdotal evidence and recent studies are described below.") == 1
+
+
 def test_polish_html_document_repairs_sentence_split_by_long_figure_chain() -> None:
     html = (
         "<html><body>"

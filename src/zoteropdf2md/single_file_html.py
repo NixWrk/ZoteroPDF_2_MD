@@ -1468,6 +1468,70 @@ def _merge_sentence_parts(left_body: str, right_body: str) -> str:
     return merged_left
 
 
+def _is_figure_caption_node(raw: str) -> bool:
+    low = raw.lstrip().lower()
+    if not (low.startswith("<p") or re.match(r"<h[1-6]\b", low)):
+        return False
+    visible = _visible_text(raw)
+    return bool(re.match(r"^(?:fig(?:ure)?|fig)\.?\s*\d+\b", visible, re.IGNORECASE))
+
+
+def _extract_caption_intrusion_tail(caption_body: str) -> tuple[str, str] | None:
+    """Split a figure-caption body when OCR injected article prose after backslashes.
+
+    Example:
+      "... (required) \\ image-modeling task in which ..." ->
+      head="... (required)", tail="image-modeling task in which ..."
+    """
+    m = re.match(r"^(?P<head>[\s\S]*?)\s*\\+\s*(?P<tail>[a-z][\s\S]*)$", caption_body.strip())
+    if m is None:
+        return None
+    head = m.group("head").strip()
+    tail = m.group("tail").strip()
+    tail_visible = _visible_text(tail)
+    if len(tail_visible) < 60:
+        return None
+    if len(re.findall(r"[A-Za-z]+", tail_visible)) < 8:
+        return None
+    return head, tail
+
+
+def _rehome_enumerated_caption_suffix(left_body: str, caption_body: str) -> tuple[str, str]:
+    """Move a misplaced "(4) ..." suffix from prose paragraph back into figure caption.
+
+    Marker occasionally pushes the final enumeration item "(4) ..." to the prose
+    paragraph before the figure, while the caption keeps only "(1)-(3)".
+    """
+    left_visible = _visible_text(left_body)
+    caption_visible = _visible_text(caption_body)
+    if "(4)" not in left_visible:
+        return left_body, caption_body
+    if "(1)" not in caption_visible or "(2)" not in caption_visible or "(3)" not in caption_visible:
+        return left_body, caption_body
+    if "(4)" in caption_visible:
+        return left_body, caption_body
+
+    lower_left = left_body.lower()
+    split_at = lower_left.rfind("to evaluate")
+    if split_at < 0:
+        pos4 = lower_left.rfind("(4)")
+        if pos4 < 0:
+            return left_body, caption_body
+        semi = left_body.rfind(";", 0, pos4)
+        split_at = semi if semi >= 0 else pos4
+
+    suffix = left_body[split_at:].strip()
+    prefix = left_body[:split_at].rstrip()
+    if len(_visible_text(suffix)) < 20:
+        return left_body, caption_body
+
+    merged_caption = caption_body.rstrip()
+    if merged_caption and not merged_caption.endswith((" ", "\n", "\t")):
+        merged_caption += " "
+    merged_caption += suffix
+    return prefix, merged_caption
+
+
 def _repair_sentence_breaks_at_page_boundaries(html: str) -> tuple[str, int]:
     nodes = list(_SENTENCE_NODE_PATTERN.finditer(html))
     if not nodes:
@@ -1845,16 +1909,51 @@ def _repair_sentence_breaks_around_figure_blocks(html: str) -> tuple[str, int]:
         if len(left_text) < 20 and not _is_short_fragment_left(left_text):
             i += 1
             continue
-        if not _is_sentence_continuation(left_text, right_text):
-            i += 1
+        if _is_sentence_continuation(left_text, right_text):
+            merged_left = _merge_sentence_parts(left_body, right_body)
+            replacements[i] = f"{left_match.group('open')}{merged_left}{left_match.group('close')}"
+            dropped.add(right_idx)
+            repairs += 1
+            i = right_idx + 1
             continue
 
-        merged_left = _merge_sentence_parts(left_body, right_body)
+        # Recovery path: caption contains a prose tail after backslash artefacts
+        # ("... \\ image-modeling ..."), while "(4) ..." escaped into the left paragraph.
+        recovered = False
+        for gap_idx in gap_indices:
+            if gap_idx in dropped:
+                continue
+            cap_raw = nodes[gap_idx].group(0)
+            if not _is_figure_caption_node(cap_raw):
+                continue
+            cap_match = _SENTENCE_P_NODE_PATTERN.match(cap_raw)
+            if cap_match is None:
+                continue
 
-        replacements[i] = f"{left_match.group('open')}{merged_left}{left_match.group('close')}"
-        dropped.add(right_idx)
-        repairs += 1
-        i = right_idx + 1
+            cap_body = cap_match.group("body")
+            split = _extract_caption_intrusion_tail(cap_body)
+            if split is None:
+                continue
+            cap_head, prose_tail = split
+            left_body_for_recovery, cap_head_for_recovery = _rehome_enumerated_caption_suffix(
+                left_body,
+                cap_head,
+            )
+            if not _is_sentence_continuation(_visible_text(left_body_for_recovery), _visible_text(prose_tail)):
+                continue
+
+            repaired_left = _merge_sentence_parts(left_body_for_recovery, prose_tail)
+            replacements[i] = f"{left_match.group('open')}{repaired_left}{left_match.group('close')}"
+            replacements[gap_idx] = (
+                f"{cap_match.group('open')}{cap_head_for_recovery}{cap_match.group('close')}"
+            )
+            repairs += 1
+            recovered = True
+            i = right_idx
+            break
+
+        if not recovered:
+            i += 1
 
     if repairs == 0:
         return html, 0
