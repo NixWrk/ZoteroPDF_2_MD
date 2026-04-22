@@ -1585,3 +1585,48 @@ Verification:
    - no merge for reference-like next paragraph,
    - table/formula reorder in plain and equation-row wrapped variants,
    - no reorder when formula context is absent.
+
+### 12.11 P9.3 Proposal: Unified score-based split repair (objective alternative)
+
+Status: proposal only, not implemented yet.
+
+Goal: replace multiple narrow heuristics (`figure/table/box/page-break`) with one
+objective merge detector that works across any non-prose interruption pattern.
+
+Core idea:
+
+1. For each candidate pair `left <p>` and `right <p>` inside a bounded window,
+   compute `merge_score(left, right, context)`.
+2. Merge only when score exceeds a conservative threshold and no hard-blocker is hit.
+3. Emit explain-logs (`score`, positive/negative features, final decision) for audit.
+
+Feature groups for `merge_score`:
+
+1. Positive continuity signals:
+   - left has no terminal punctuation (`. ! ? : ;`),
+   - right starts with continuation cues (`lowercase`, `(`, `,`, connector words),
+   - dehyphenation cue (`regis-` + `ter`),
+   - post-merge text looks less fragmented than pre-merge.
+2. Negative separation signals:
+   - right resembles new section/reference/list item,
+   - right is a standalone sentence with strong sentence-start pattern,
+   - context indicates explicit structural boundary.
+3. Hard blockers:
+   - clear reference numbering / bibliography patterns,
+   - explicit anchor/id patterns that must remain independent.
+
+Risks:
+
+1. False merges (merging two truly independent paragraphs).
+2. Silent structure degradation (style/author-intended paragraphing erodes).
+3. Domain drift (weights tuned on Wang/Teo may fail on different corpora).
+4. Harder debugging compared with single-rule behavior.
+5. Regression sensitivity when score weights/thresholds are adjusted.
+
+Risk controls:
+
+1. Keep conservative threshold (prefer false-negative over false-positive merge).
+2. Preserve hard-blockers and require explicit evidence for merge.
+3. Add explain-logs for every accepted merge.
+4. Validate on a frozen golden set (Wang, Teo, plus diverse additional docs).
+5. Roll out behind a feature flag and compare diff metrics before default enablement.
