@@ -56,6 +56,21 @@ def test_inline_images_adds_readability_and_repairs_common_text_artifacts() -> N
         shutil.rmtree(tmp_path, ignore_errors=True)
 
 
+def test_polish_html_document_refreshes_existing_readability_style() -> None:
+    html = (
+        "<html><head>"
+        "<style data-z2m-style=\"readable\">"
+        "p { margin: 0.5em 0; }"
+        "</style>"
+        "</head><body><p>Demo paragraph.</p></body></html>"
+    )
+
+    polished = polish_html_document(html)
+
+    assert polished.count('data-z2m-style="readable"') == 1
+    assert "text-indent: 1.25em;" in polished
+
+
 def test_polish_html_document_autolinks_plain_web_urls() -> None:
     html = (
         "<html><body>"

@@ -15,6 +15,10 @@ _HEAD_OPEN_PATTERN = re.compile(r"<head\b[^>]*>", re.IGNORECASE)
 _HEAD_CLOSE_PATTERN = re.compile(r"</head>", re.IGNORECASE)
 _META_CHARSET_PATTERN = re.compile(r"<meta\s+charset\s*=\s*['\"]?utf-8['\"]?\s*/?>", re.IGNORECASE)
 _HTML_OPEN_PATTERN = re.compile(r"<html\b[^>]*>", re.IGNORECASE)
+_READABILITY_STYLE_BLOCK_PATTERN = re.compile(
+    r"<style\b[^>]*\bdata-z2m-style\s*=\s*['\"]readable['\"][^>]*>[\s\S]*?</style>",
+    re.IGNORECASE,
+)
 _BODY_PATTERN = re.compile(r"(<body\b[^>]*>)(.*?)(</body>)", re.IGNORECASE | re.DOTALL)
 _TAG_SPLIT_PATTERN = re.compile(r"(<[^>]+>)")
 _OPEN_TAG_PATTERN = re.compile(r"^<\s*([a-zA-Z0-9:_-]+)")
@@ -408,8 +412,8 @@ def _to_data_url(file_path: Path) -> str | None:
 
 
 def _inject_default_styles(html: str) -> str:
-    if 'data-z2m-style="readable"' in html:
-        return html
+    if _READABILITY_STYLE_BLOCK_PATTERN.search(html):
+        return _READABILITY_STYLE_BLOCK_PATTERN.sub(_DEFAULT_READABILITY_STYLE, html, count=1)
 
     if _HEAD_CLOSE_PATTERN.search(html):
         return _HEAD_CLOSE_PATTERN.sub(f"{_DEFAULT_READABILITY_STYLE}\n</head>", html, count=1)
