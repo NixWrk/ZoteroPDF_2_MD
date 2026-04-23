@@ -1630,3 +1630,248 @@ Risk controls:
 3. Add explain-logs for every accepted merge.
 4. Validate on a frozen golden set (Wang, Teo, plus diverse additional docs).
 5. Roll out behind a feature flag and compare diff metrics before default enablement.
+
+## 13. Phase 10 — Electrodes Collection (Ahmed / Kaiju / Li), Consolidated Backlog
+
+Context: after user audit of 3 new papers in `md_output/electrodes_W7TECQDX`, часть дефектов уже совпадает с известными классами (split/citation/image), но есть и новые проблемы, которые не были полностью учтены в очереди коммитов.
+
+### 13.1 Подтверждённые дефекты (сводка)
+
+#### Ahmed
+
+EN:
+
+1. Ложные citation-links в не-ссылочном контексте:
+   - пример: `(Unit 1)` превращается в `(Unit <sup><a ...>1</a></sup>)`.
+2. Артефакты изображений при наличии чистых sidecar-файлов.
+3. Пограничные случаи размерностей/единиц около формул и superscript-ссылок (`µm`, степени, unit-exponent).
+
+RU:
+
+1. Частично не переведённые author/citation строки:
+   - `Cite this article as: Ahmed, Z., ...` в RU остаётся латиницей.
+2. Не переведён `Received: 10 October 2024`.
+3. Терминологические и грамматические дефекты (падеж, согласование, редкие доменные термины).
+4. Лексическая деградация редких терминов (`steeltrode`, `shank` и пр.).
+5. Появление figure-ref варианта там, где в source нет такого ref-линка.
+6. Sentinel leaks:
+   - `@@Z2M_A0@-Parylene C`
+   - `@@Z2M_HSEPДоступность кода`
+7. Контент после References не переводится стабильно (Data/Code availability, и т.п.).
+
+#### Kaiju
+
+EN:
+
+1. OCR-caption intrusion: в основной текст попадает крупный кусок подписи (`96ch flexible ...`, `FIGURE 1 | ...`).
+2. Нет устойчивой привязки `FIGURE 1 |` к нормальному figure-anchor/figure-block.
+3. Артефакты изображений.
+
+RU:
+
+1. Дефект DOI/citation formatting:
+   - `Neural Circuits :20. doi: ...`
+2. Перевод аббревиатур (`ECoG -> ЭКР/...`) в нежелательных местах.
+3. Неестественный перевод длинного caption-like блока.
+4. Линки литературы в RU (например, `Table 1`) — требуется отключить генерацию ссылок для RU.
+5. Деформация слова `Рисунок` (`рисуног/рисунк/рисуно`) и inconsistency терминов (`Фигура` vs `Рисунок`).
+
+#### Li
+
+EN:
+
+1. Артефакты изображений.
+2. Ложные ref-links (`Table 1`, `Fig. 2` contexts).
+3. Колонтитулы (`Page X of Y`) протекают в prose.
+4. Римские/сносковые суффиксы прилипают к словам (`Foilii`, `Laser ablationiv`, `etchingv`).
+
+RU:
+
+1. Дублирование/смешение сегментов в отдельных абзацах.
+2. Тяжёлые искажения перевода таблиц (структурно сложные table cells).
+3. Нежелательный перевод материалов/токенов (`TiN -> ТиН`).
+4. Структурные table-tail артефакты (`materials`-хвосты, разрывы строк/ячеек).
+5. Sentinel leak:
+   - `@@Z2M_HSEPКонфликт интересов`
+
+### 13.2 Глобальные корневые причины (C10.x)
+
+1. C10.1 — `_recover_bare_citations()` слишком агрессивен для единиц/служебных токенов.
+   - stoplist неполный (`unit`, ряд scientific contexts не покрыт).
+2. C10.2 — linkify вызывается и в RU path, хотя в RU это часто ухудшает текст.
+3. C10.3 — `_mark_author_line_notranslate()` наивно метит первый `<p>` после `<h1>`, что ломает `Received:` и часть метаданных.
+4. C10.4 — `translate_html_text_nodes()` отрезает `references_tail` целиком, не разделяя bibliography и post-reference prose sections.
+5. C10.5 — sentinel restore недостаточно устойчив к escaped/искажённым sentinel-вариантам (`@@Z2M_HSEP...`, `@@Z2M_A0@...`).
+6. C10.6 — caption/figure нормализация неполная:
+   - не все формы caption (`FIGURE N |`) распознаются как caption-node.
+7. C10.7 — EN structural repair не покрывает все OCR intrusion классы (header/footer, footnote numeration, roman suffix glue).
+8. C10.8 — image inliner не переинлайнивает уже встроенные `data:` URL, даже когда sidecar уже исправлены; из-за этого stale/corrupt embeds сохраняются.
+9. C10.9 — отсутствует жёсткая RU-нормализация caption-лексем (`Рисунок`), поэтому в финальном тексте остаются `рисуног/рисунк/рисуно`.
+10. C10.10 — нет constrained grammar/terminology harmonization на уровне абзаца; отсюда падежная несогласованность и редкие терминологические промахи.
+
+### 13.3 Очередь коммитов (обновлённая, покрывает все пункты)
+
+#### Commit P10.1 — Citation-link hardening + RU no-link policy (CRITICAL)
+
+Файлы:
+
+1. `src/zoteropdf2md/single_file_html.py`
+2. `tests/test_single_file_html.py`
+
+Изменения:
+
+1. Расширить stoplist и контекстные блокеры в `_recover_bare_citations()`:
+   - добавить `unit`, `supplementary`, `front`, `doi`, `vol`, `issue`, `page`,
+   - блокировать wrapping около scientific unit шаблонов.
+2. Разделить политику линковки:
+   - EN: сохраняем linkify,
+   - RU: выключаем генерацию новых `z2m-ref-link`/`z2m-fig-link` (и при необходимости удаляем auto-generated links post-translation, сохраняя plain text).
+3. Тесты:
+   - `(Unit 1)` не становится citation-link,
+   - DOI/`11:20` не ломаются,
+   - RU path не генерирует новые citation-links.
+
+#### Commit P10.2 — Metadata translation targeting (Received/Authorship) (HIGH)
+
+Файлы:
+
+1. `src/zoteropdf2md/translategemma.py`
+2. `tests/test_translategemma_html.py`
+
+Изменения:
+
+1. Заменить heuristic в `_mark_author_line_notranslate()`:
+   - детектировать действительно author-line, а не “первый `<p>` после `<h1>`”.
+2. Не маркировать `Received:` как `translate="no"`.
+3. Тесты:
+   - `Received: ...` переводится,
+   - author names остаются корректными (без порчи имён), но metadata-строки не “замораживаются” ошибочно.
+
+#### Commit P10.3 — References-tail split policy (HIGH)
+
+Файлы:
+
+1. `src/zoteropdf2md/translategemma.py`
+2. `tests/test_translategemma_html.py`
+
+Изменения:
+
+1. Отказ от “вырезать весь хвост после References”.
+2. Разделить:
+   - bibliography list (не переводим),
+   - post-reference narrative sections (`Data availability`, `Code availability`, `Conflict of interest`, `Funding`, `Acknowledgements`) — переводим.
+3. Тесты на смешанный хвост: bibliography остаётся, пост-секции переводятся.
+
+#### Commit P10.4 — Sentinel hygiene hardening (CRITICAL)
+
+Файлы:
+
+1. `src/zoteropdf2md/translategemma.py`
+2. `src/zoteropdf2md/single_file_html.py`
+3. `tests/test_translategemma_html.py`
+
+Изменения:
+
+1. Унифицировать `_normalize_sentinel_escapes()` перед restore (A/T/F/HSEP).
+2. Дополнить tolerant-restore для поломанных хвостов (`@@Z2M_A0@` и близкие варианты).
+3. Финальный post-restore guard:
+   - если `@@Z2M_` остался → warning counter `sentinel_leak_segments`.
+4. Тесты:
+   - escaped sentinel и частично испорченный sentinel корректно восстанавливаются.
+
+#### Commit P10.5 — Caption lexeme normalization (`Рисунок`) (HIGH)
+
+Файлы:
+
+1. `src/zoteropdf2md/single_file_html.py`
+2. `tests/test_single_file_html.py`
+
+Изменения:
+
+1. RU caption normalizer для figure captions:
+   - `FIGURE/Fig/Фиг/Фигура/Рис/...` + OCR-деформации (`рисуног/рисунк/рисуно`) -> каноническое `Рисунок N. ...`.
+2. Применять только в caption-context (не global replace по документу).
+3. Тесты:
+   - набор дефектных вариантов нормализуется в один канон.
+
+#### Commit P10.6 — EN structural anti-intrusion pack (HIGH)
+
+Файлы:
+
+1. `src/zoteropdf2md/single_file_html.py`
+2. `tests/test_single_file_html.py`
+
+Изменения:
+
+1. Расширить non-prose detection:
+   - page headers/footers (`Page X of Y`, journal footer lines),
+   - long affiliation-footnote blocks.
+2. Нормализатор римских/footnote suffix glue (`Foilii`, `ablationiv`, `etchingv`) в EN pre-translation path.
+3. Распознавание caption формата `FIGURE N |` как figure-caption node (anchor/link compatible).
+4. Тесты на Kaiju/Li snippets.
+
+#### Commit P10.7 — Image refresh from sidecar (CRITICAL)
+
+Файлы:
+
+1. `src/zoteropdf2md/single_file_html.py`
+2. `src/zoteropdf2md/pipeline.py` (если нужно для флага/telemetry)
+3. `tests/test_single_file_html.py`
+
+Изменения:
+
+1. Добавить режим принудительного реинлайна локальных изображений:
+   - если есть sidecar image, обновлять `<img src="data:...">` на sidecar bytes.
+2. Не менять remote/http/img-placeholder случаи.
+3. Telemetry:
+   - `inline_images_replaced`, `inline_images_skipped`, `inline_sidecar_mismatch_count`.
+4. Тесты:
+   - stale data-URI заменяется на sidecar.
+
+#### Commit P10.8 — RU quality layer: terminology + grammar harmonization (MEDIUM/HIGH)
+
+Файлы:
+
+1. `src/zoteropdf2md/translategemma.py`
+2. `src/zoteropdf2md/abbreviations.py` (или новый glossary config)
+3. `tests/test_translategemma_html.py`
+
+Изменения:
+
+1. Domain glossary (materials/biomed/EE):
+   - `steeltrode`, `shank`, `ECoG`, `TiN` и др.
+2. Constrained harmonization pass:
+   - правит только терминологию/грамматику,
+   - не трогает числа, формулы, теги, ссылки.
+3. Приоритет: paragraph-wide recovery > single leaf для сложных table/caption фрагментов.
+4. Тесты:
+   - падежная согласованность в контрольных предложениях,
+   - `TiN` не транслитеруется в `ТиН`.
+
+### 13.4 Критерии приёмки Phase 10
+
+1. Sentinel leaks:
+   - `grep -R \"@@Z2M_\" md_output/electrodes_W7TECQDX/*.ru.html` -> 0.
+2. RU no-link policy:
+   - новые `class=\"z2m-ref-link\"`/`z2m-fig-link` в RU не добавляются auto-linking шагом.
+3. Ahmed:
+   - `Received:` переводится,
+   - нет `(Unit <sup>...)` ложного citation-wrap.
+4. Kaiju:
+   - `FIGURE 1 |` корректно распознаётся как caption block,
+   - `Neural Circuits :20` дефект устранён.
+5. Li:
+   - `Page X of Y` не разрывает prose,
+   - `Foilii/ablationiv/etchingv` очищены.
+6. RU stylistics:
+   - `рисуног/рисунк/рисуно` -> 0,
+   - согласование/термины в контрольных фрагментах улучшены без structural regression.
+7. Regression safety:
+   - `pytest tests/test_single_file_html.py tests/test_translategemma_html.py -q` зелёно,
+   - повторный smoke-run на Wang/Teo без ухудшений.
+
+### 13.5 Универсальность и риск-контроль
+
+1. Все risky-правила language-gated и context-gated (caption/table/footer only), чтобы не портить общий prose.
+2. Потенциально спорные правила (`P10.8` harmonization) вводятся feature-flag-ом и проходят gold-set сравнение до default-on.
+3. Image-refresh (`P10.7`) делает замену только по локальному sidecar mapping, без внешних URL.
