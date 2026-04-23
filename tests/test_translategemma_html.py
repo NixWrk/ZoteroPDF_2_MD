@@ -263,6 +263,20 @@ def test_mark_author_line_notranslate_skips_abstract_as_first_p() -> None:
     assert 'translate="no"' not in marked
 
 
+def test_mark_author_line_notranslate_does_not_mark_received_metadata() -> None:
+    html = (
+        "<html><body>"
+        "<h1>Title</h1>"
+        "<p>Received: 10 October 2024</p>"
+        "<p>Fa Wang, Member, IEEE, and John Webster</p>"
+        "</body></html>"
+    )
+    marked = _mark_author_line_notranslate(html)
+
+    assert '<p>Received: 10 October 2024</p>' in marked
+    assert '<p translate="no">Fa Wang, Member, IEEE, and John Webster</p>' in marked
+
+
 def test_translate_html_text_nodes_respects_translate_no_attribute() -> None:
     """Elements with translate="no" must be left in their original language."""
     html = (
@@ -283,6 +297,32 @@ def test_translate_html_text_nodes_respects_translate_no_attribute() -> None:
 
     assert "Fa Wang, Member, IEEE" in translated
     assert "NORMAL TRANSLATABLE TEXT." in translated
+
+
+def test_translate_html_text_nodes_keeps_references_but_translates_post_reference_sections() -> None:
+    html = (
+        "<html><body>"
+        "<p>Main intro text.</p>"
+        "<h4>References</h4>"
+        "<ul>"
+        "<li>Smith, J. et al. Paper title.</li>"
+        "</ul>"
+        "<h4>Data availability</h4>"
+        "<p>Data available upon request.</p>"
+        "</body></html>"
+    )
+
+    def fake_translate(text: str) -> str:
+        return text.upper()
+
+    translated, _ = translate_html_text_nodes(
+        html,
+        translate_text=fake_translate,
+        max_chunk_chars=512,
+    )
+
+    assert "Smith, J. et al. Paper title." in translated
+    assert "DATA AVAILABLE UPON REQUEST." in translated
 
 
 def test_translate_html_text_nodes_strips_appended_source_echo() -> None:

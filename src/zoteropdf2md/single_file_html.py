@@ -10,7 +10,7 @@ from pathlib import Path
 from .abbreviations import RU_ABBREV_TO_LATIN
 
 
-_IMG_SRC_PATTERN = re.compile(r'(<img\b[^>]*?\bsrc\s*=\s*)(["\'])([^"\']+)(\2)', re.IGNORECASE)
+_IMG_SRC_PATTERN = re.compile(r'(<img\b[^>]*?\ssrc\s*=\s*)(["\'])([^"\']+)(\2)', re.IGNORECASE)
 _HEAD_OPEN_PATTERN = re.compile(r"<head\b[^>]*>", re.IGNORECASE)
 _HEAD_CLOSE_PATTERN = re.compile(r"</head>", re.IGNORECASE)
 _META_CHARSET_PATTERN = re.compile(r"<meta\s+charset\s*=\s*['\"]?utf-8['\"]?\s*/?>", re.IGNORECASE)
@@ -140,11 +140,26 @@ _FIG_CAPTION_PARA_PATTERN = re.compile(
 # (that would be a figure caption).  We distinguish "Fig. 3. Caption..." from "...Fig. 3."
 # (end of sentence) by requiring whitespace after the dot, i.e. ".\s" → caption lookahead.
 _FIG_REF_PATTERN = re.compile(
-    r'\b((?:Fig(?:ure)?|Рис|рис|Фиг|фиг|FIG(?:URE)?)\.?)\s*(\d+)([a-z])?\b(?!\s*\.\s)',
+    r'\b((?:Fig(?:ure)?|Рис|рис|Фиг|фиг|FIG(?:URE)?)\.?)\s*(\d+)([a-z])?\b(?!\s*(?:\.\s|\|))',
     re.IGNORECASE,
 )
 _FIG_REF_CHAIN_CONT_PATTERN = re.compile(
     r'(?P<sep>\s*(?:and|or|,|&|–|-)\s*)(?P<num>\d+)(?P<suf>[a-z])\b',
+    re.IGNORECASE,
+)
+_EXT_FIG_CAPTION_PARA_PATTERN = re.compile(
+    r'(<p\b[^>]*)>([ \t\r\n]*(?:(?:<(?:span|strong|em|b|i|sup|sub)\b[^>]*>|</(?:span|strong|em|b|i|sup|sub)>)\s*)*'
+    r'(?:FIG(?:URE)?|Fig(?:ure)?'
+    r'|\u0420\u0438\u0441(?:\u0443\u043d\u043e\u043a|\u0443\u043d\u043e\u0433|\u0443\u043d\u043a|\u0443\u043d\u043e)?'
+    r'|\u0440\u0438\u0441(?:\u0443\u043d\u043e\u043a|\u0443\u043d\u043e\u0433|\u0443\u043d\u043a|\u0443\u043d\u043e)?'
+    r'|\u0424\u0438\u0433(?:\u0443\u0440\u0430)?|\u0444\u0438\u0433(?:\u0443\u0440\u0430)?)'
+    r'\.?\s*(\d+)\s*(?:\.|\|))',
+    re.IGNORECASE,
+)
+_EXT_FIG_REF_PATTERN = re.compile(
+    r'\b((?:FIG(?:URE)?|Fig(?:ure)?'
+    r'|\u0420\u0438\u0441|\u0440\u0438\u0441|\u0424\u0438\u0433|\u0444\u0438\u0433)\.?)'
+    r'\s*(\d+)([a-z])?\b(?!\s*(?:\.\s|\|))',
     re.IGNORECASE,
 )
 _HTML_TAG_PATTERN = re.compile(r"<[^>]+>")
@@ -185,6 +200,16 @@ _SENTENCE_H_NODE_PATTERN = re.compile(
 )
 _TABLE_CAPTION_PARA_PATTERN = re.compile(
     r'(<p\b[^>]*>\s*)(TABLE|Таблица)\s+([IVXLCM\d]+)\s*[\.\-:]?\s*([^<]*?)(\s*</p>)',
+    re.IGNORECASE,
+)
+_FIGURE_CAPTION_STYLE_PATTERN = re.compile(
+    r'(<p\b[^>]*>\s*)'
+    r'(FIG(?:URE)?|Fig(?:ure)?'
+    r'|\u0420\u0438\u0441(?:\u0443\u043d\u043e\u043a|\u0443\u043d\u043e\u0433|\u0443\u043d\u043a|\u0443\u043d\u043e)?'
+    r'|\u0440\u0438\u0441(?:\u0443\u043d\u043e\u043a|\u0443\u043d\u043e\u0433|\u0443\u043d\u043a|\u0443\u043d\u043e)?'
+    r'|\u0424\u0438\u0433(?:\u0443\u0440\u0430)?|\u0444\u0438\u0433(?:\u0443\u0440\u0430)?)'
+    r'\.?\s*([IVXLCM\d]+)\s*([.\|:\-]?)\s*([^<]*?)'
+    r'(\s*</p>)',
     re.IGNORECASE,
 )
 _LEADING_SPACED_BACKSLASH_PATTERN = re.compile(r"(^|\s)\\\s+")
@@ -229,6 +254,13 @@ _FALSE_FIGURE_LABEL_SUP_PATTERN = re.compile(
 _BROKEN_URL_SPLIT_PATTERN = re.compile(
     r"((?:https?://|www\.)[^\s<>\"]+?/)\s+([A-Za-z0-9][A-Za-z0-9._~:/?#\[\]@!$&'()*+,;=%-]*)",
     re.IGNORECASE,
+)
+_PAGE_HEADER_FOOTER_LINE_PATTERN = re.compile(
+    r"\bPage\s+\d+\s+of\s+\d+\b",
+    re.IGNORECASE,
+)
+_GLUED_ROMAN_SUFFIX_PATTERN = re.compile(
+    r"\b([A-Za-z][A-Za-z\-]{3,}?)(iii|iv|ii|vi|v)\b",
 )
 _NESTED_ESCAPED_ANCHOR_AUTOLINK_PATTERN = re.compile(
     r'&lt;a\s+href="\s*<a\s+href="(?P<url>https?://[^"]+)"[^>]*>[^<]+</a>\s*"&gt;'
@@ -454,6 +486,15 @@ def _to_data_url(file_path: Path) -> str | None:
     blob = file_path.read_bytes()
     encoded = base64.b64encode(blob).decode("ascii")
     return f"data:{mime};base64,{encoded}"
+
+
+def _escape_html_attr(value: str) -> str:
+    return (
+        value.replace("&", "&amp;")
+        .replace('"', "&quot;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+    )
 
 
 def _inject_default_styles(html: str) -> str:
@@ -874,12 +915,28 @@ def _recover_bare_citations(html: str, ref_count: int) -> str:
         "sample",
         "data",
         "page",
+        "pages",
+        "unit",
+        "units",
+        "vol",
+        "volume",
+        "issue",
+        "front",
+        "supplementary",
+        "doi",
+        "pmid",
+        "isbn",
         "mhz",
         "ghz",
         "khz",
         "mm",
         "cm",
         "kg",
+        "g",
+        "mg",
+        "nm",
+        "um",
+        "µm",
     }
 
     def _stoplisted(word: str) -> bool:
@@ -916,6 +973,10 @@ def _recover_bare_citations(html: str, ref_count: int) -> str:
         except ValueError:
             return False
 
+    def _looks_like_ratio_suffix(m: re.Match[str], group_name: str = "num") -> bool:
+        tail = m.string[m.end(group_name): m.end(group_name) + 5]
+        return bool(re.match(r":\d", tail))
+
     def _wrap_glued(m: re.Match[str]) -> str:
         nums_text = m.group(1)
         normalized = _normalize_comma_citations(nums_text)
@@ -938,6 +999,8 @@ def _recover_bare_citations(html: str, ref_count: int) -> str:
         word = (m.group("word") or "").lower()
         if _stoplisted(word):
             return m.group(0)
+        if _looks_like_ratio_suffix(m, "num"):
+            return m.group(0)
         nums_text = m.group("num")
         return f"{m.group('lead')}<sup>{nums_text}</sup>" if _valid_nums(nums_text) else m.group(0)
 
@@ -950,6 +1013,8 @@ def _recover_bare_citations(html: str, ref_count: int) -> str:
     def _wrap_single_trailing(m: re.Match[str]) -> str:
         word = (m.group("word") or "").lower()
         if _stoplisted(word):
+            return m.group(0)
+        if _looks_like_ratio_suffix(m, "num"):
             return m.group(0)
         nums_text = m.group("num")
         return f"{m.group('lead')}<sup>{nums_text}</sup>" if _valid_nums(nums_text) else m.group(0)
@@ -1417,6 +1482,7 @@ def _add_figure_anchors(html: str) -> tuple[str, set[str]]:
             return f'{p_attrs} id="fig-{fig_num}">{caption_start}'
 
     result = _FIG_CAPTION_PARA_PATTERN.sub(_add_id, html)
+    result = _EXT_FIG_CAPTION_PARA_PATTERN.sub(_add_id, result)
     return result, found
 
 
@@ -1483,6 +1549,7 @@ def _link_figure_refs(html: str, found_figures: set[str]) -> str:
             out.append(part)
             continue
         linked = _FIG_REF_PATTERN.sub(_replace, part)
+        linked = _EXT_FIG_REF_PATTERN.sub(_replace, linked)
 
         # Handle compact chained subfigure refs: "Figure 1c and 1d" / "Fig. 2a-2c".
         def _replace_chain(m: re.Match[str]) -> str:
@@ -1580,6 +1647,100 @@ def _normalize_table_caption_style(html: str, *, table_caption_language: str = "
     return _TABLE_CAPTION_PARA_PATTERN.sub(_normalize, html)
 
 
+def _normalize_figure_caption_style(html: str, *, figure_caption_language: str = "ru") -> str:
+    """Normalize figure caption lexemes and punctuation in caption context only."""
+
+    def _normalize(m: re.Match[str]) -> str:
+        p_open = m.group(1)
+        source_label = m.group(2)
+        fig_no = m.group(3)
+        delimiter = m.group(4) or ""
+        tail = m.group(5)
+        p_close = m.group(6)
+
+        normalized_source = source_label.lower()
+        english_label = normalized_source.startswith("fig")
+        number = fig_no.upper()
+
+        # Skip in-text refs like "Fig. 16 shows ...".
+        if english_label and delimiter not in {".", "|", ":", "-"}:
+            return m.group(0)
+
+        cleaned_tail = re.sub(r"\s+", " ", tail).strip().strip(" .;:,|-")
+        if figure_caption_language == "en":
+            label = "Figure"
+        else:
+            # Keep English labels in RU mode; normalize only deformed RU lexemes.
+            if english_label:
+                return m.group(0)
+            label = "Рисунок"
+
+        if cleaned_tail:
+            sentence_tail = cleaned_tail[:1].upper() + cleaned_tail[1:]
+            return f"{p_open}{label} {number}. {sentence_tail}.{p_close}"
+        return f"{p_open}{label} {number}.{p_close}"
+
+    return _FIGURE_CAPTION_STYLE_PATTERN.sub(_normalize, html)
+
+
+def _drop_page_header_footer_paragraphs(html: str) -> str:
+    """Remove OCR page header/footer paragraphs such as ``Page X of Y``."""
+    pattern = re.compile(r"(<p\b[^>]*>)([\s\S]*?)(</p>)", re.IGNORECASE)
+
+    def _replace(match: re.Match[str]) -> str:
+        body = match.group(2) or ""
+        visible = _visible_text(body)
+        if not visible:
+            return match.group(0)
+        if not _PAGE_HEADER_FOOTER_LINE_PATTERN.search(visible):
+            return match.group(0)
+        low = visible.lower()
+        if (
+            "et al." in low
+            or "nature " in low
+            or "journal" in low
+            or len(visible) <= 220
+        ):
+            return ""
+        return match.group(0)
+
+    return pattern.sub(_replace, html)
+
+
+def _normalize_glued_roman_suffixes(html: str) -> str:
+    """Split OCR-glued roman suffix markers (e.g. ``ablationiv`` -> ``ablation iv``)."""
+    parts = _TAG_SPLIT_PATTERN.split(html)
+    out: list[str] = []
+    skip_stack: list[str] = []
+
+    def _replace(match: re.Match[str]) -> str:
+        root = match.group(1)
+        suffix = match.group(2)
+        lowered = root.lower()
+        if root.isupper():
+            return match.group(0)
+        # arXiv, BioRxiv, etc. are legitimate mixed-case tokens, not glued suffixes.
+        if any(ch.isupper() for ch in root[1:]):
+            return match.group(0)
+        if lowered.endswith(("h", "x")):
+            return match.group(0)
+        return f"{root} {suffix}"
+
+    for part in parts:
+        if not part:
+            continue
+        if part.startswith("<"):
+            _update_skip_stack(part, skip_stack)
+            out.append(part)
+            continue
+        if skip_stack:
+            out.append(part)
+            continue
+        out.append(_GLUED_ROMAN_SUFFIX_PATTERN.sub(_replace, part))
+
+    return "".join(out)
+
+
 def _visible_text(fragment: str) -> str:
     text = _HTML_TAG_PATTERN.sub(" ", fragment)
     text = (
@@ -1622,6 +1783,8 @@ def _looks_nonprose_gap_block(block_html: str) -> bool:
         visible = _visible_text(stripped)
         if not visible:
             return True
+        if _PAGE_HEADER_FOOTER_LINE_PATTERN.search(visible):
+            return True
         if re.match(r"^(?:table|таблица)\.?\s*[ivxlcdm\d]+\b", visible, re.IGNORECASE):
             return True
         # Table-tail math notes often rendered as standalone paragraphs.
@@ -1640,6 +1803,8 @@ def _looks_affiliation_block(raw: str) -> bool:
         return False
 
     lower = visible.lower()
+    if _PAGE_HEADER_FOOTER_LINE_PATTERN.search(visible):
+        return True
     numbered_chunks = len(re.findall(r"(?:^|\s)\d{1,2}\s*[A-Z]", visible))
     org_hits = sum(
         1
@@ -2329,9 +2494,16 @@ def _repair_sentence_breaks_around_figure_blocks(html: str) -> tuple[str, int]:
     return "".join(out_parts), repairs
 
 
-def polish_html_document(html: str, *, table_caption_language: str = "ru") -> str:
+def polish_html_document(
+    html: str,
+    *,
+    table_caption_language: str = "ru",
+    enable_citation_linkify: bool = True,
+) -> str:
     polished = _unwrap_spurious_math_captions(html)  # before all else: free captions from <math>
+    polished = _drop_page_header_footer_paragraphs(polished)
     polished = drop_repeated_phrases(polished)
+    polished = _normalize_glued_roman_suffixes(polished)
     polished = _fix_latex_text_commands(polished)
     polished = _fix_subscript_equation_spill(polished)
     polished = _fix_orphaned_sup_tags(polished)
@@ -2352,10 +2524,12 @@ def polish_html_document(html: str, *, table_caption_language: str = "ru") -> st
     polished = _mark_affiliation_paragraphs(polished)
     polished, found_sections = _add_section_anchors(polished)
     polished, found_figures = _add_figure_anchors(polished)
-    polished = _add_reference_ids_and_citation_links(polished)
-    polished = _link_section_refs(polished, found_sections)
-    polished = _link_figure_refs(polished, found_figures)
+    if enable_citation_linkify:
+        polished = _add_reference_ids_and_citation_links(polished)
+        polished = _link_section_refs(polished, found_sections)
+        polished = _link_figure_refs(polished, found_figures)
     polished = _normalize_table_caption_style(polished, table_caption_language=table_caption_language)
+    polished = _normalize_figure_caption_style(polished, figure_caption_language=table_caption_language)
     polished = _normalize_spacing_after_z2m_links(polished)
     polished = _fix_nested_autolink_in_escaped_anchor_snippets(polished)
     polished = _autolink_plain_urls(polished)
@@ -2388,6 +2562,41 @@ def inline_images_from_html_file(html_path: Path) -> InlineHtmlResult:
     text = html_path.read_text(encoding="utf-8", errors="replace")
     base_dir = html_path.parent
     inlined_count = 0
+    image_exts = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tif", ".tiff"}
+    sidecar_images = sorted(
+        (
+            p
+            for p in base_dir.iterdir()
+            if p.is_file() and p.suffix.lower() in image_exts
+        ),
+        key=lambda p: p.name.lower(),
+    )
+    img_matches = list(_IMG_SRC_PATTERN.finditer(text))
+    data_img_count = sum(1 for m in img_matches if (m.group(3) or "").strip().lower().startswith("data:"))
+    all_images_already_data = bool(img_matches) and data_img_count == len(img_matches)
+    allow_sidecar_order_refresh = all_images_already_data and len(sidecar_images) == len(img_matches)
+    sidecar_cursor = [0]
+
+    def resolve_candidate(path_value: str) -> Path | None:
+        if not path_value:
+            return None
+        clean_path = path_value.split("?", 1)[0].split("#", 1)[0]
+        decoded = urllib.parse.unquote(clean_path)
+        candidate = (base_dir / decoded).resolve(strict=False)
+        if candidate.is_file():
+            return candidate
+        return None
+
+    def add_src_hint(prefix: str, hint_path: str) -> str:
+        if re.search(r'\bdata-z2m-src\s*=', prefix, re.IGNORECASE):
+            return prefix
+        escaped_hint = _escape_html_attr(hint_path)
+        return re.sub(
+            r"\bsrc\s*=\s*$",
+            f'data-z2m-src="{escaped_hint}" src=',
+            prefix,
+            flags=re.IGNORECASE,
+        )
 
     def replace(match: re.Match[str]) -> str:
         nonlocal inlined_count
@@ -2395,15 +2604,33 @@ def inline_images_from_html_file(html_path: Path) -> InlineHtmlResult:
         quote = match.group(2)
         src_value = match.group(3).strip()
         suffix = match.group(4)
+        hint_match = re.search(
+            r'\bdata-z2m-src\s*=\s*(["\'])([^"\']+)\1',
+            prefix,
+            re.IGNORECASE,
+        )
+        src_hint = hint_match.group(2).strip() if hint_match else ""
 
-        if not src_value or _is_inline_or_remote(src_value):
+        if not src_value:
             return match.group(0)
+        src_lower = src_value.lower()
+        candidate: Path | None = None
 
-        clean_path = src_value.split("?", 1)[0].split("#", 1)[0]
-        decoded = urllib.parse.unquote(clean_path)
-        candidate = (base_dir / decoded).resolve(strict=False)
-        if not candidate.is_file():
+        if src_lower.startswith("data:"):
+            if src_hint:
+                candidate = resolve_candidate(src_hint)
+            if candidate is None and allow_sidecar_order_refresh and sidecar_cursor[0] < len(sidecar_images):
+                candidate = sidecar_images[sidecar_cursor[0]]
+                sidecar_cursor[0] += 1
+                prefix = add_src_hint(prefix, candidate.name)
+            if candidate is None:
+                return match.group(0)
+        elif _is_inline_or_remote(src_value):
             return match.group(0)
+        else:
+            candidate = resolve_candidate(src_value)
+            if candidate is None:
+                return match.group(0)
 
         data_url = _to_data_url(candidate)
         if data_url is None:
@@ -2413,5 +2640,11 @@ def inline_images_from_html_file(html_path: Path) -> InlineHtmlResult:
         return f"{prefix}{quote}{data_url}{suffix}"
 
     inlined_html = _IMG_SRC_PATTERN.sub(replace, text)
-    inlined_html = polish_html_document(inlined_html)
+    is_ru_html = html_path.name.lower().endswith(".ru.html")
+    inlined_html = polish_html_document(
+        inlined_html,
+        table_caption_language=("ru" if is_ru_html else "en"),
+        enable_citation_linkify=not is_ru_html,
+    )
     return InlineHtmlResult(html=inlined_html, inlined_images=inlined_count)
+

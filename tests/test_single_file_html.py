@@ -37,6 +37,43 @@ def test_inline_images_from_html_file() -> None:
         shutil.rmtree(tmp_path, ignore_errors=True)
 
 
+def test_inline_images_refreshes_existing_data_uri_from_sidecar_hint() -> None:
+    tmp_path = _make_temp_dir()
+    try:
+        html_path = tmp_path / "doc.html"
+        image_path = tmp_path / "img.png"
+        image_path.write_bytes(b"\x89PNG\r\n\x1a\nfresh")
+        html_path.write_text(
+            '<html><body><img data-z2m-src="img.png" src="data:image/png;base64,AAAA"></body></html>',
+            encoding="utf-8",
+        )
+
+        result = inline_images_from_html_file(html_path)
+
+        assert result.inlined_images == 1
+        assert "data:image/png;base64,AAAA" not in result.html
+        assert "data:image/png;base64," in result.html
+        assert 'data-z2m-src="img.png"' in result.html
+    finally:
+        shutil.rmtree(tmp_path, ignore_errors=True)
+
+
+def test_inline_images_polish_uses_en_mode_for_non_ru_html() -> None:
+    tmp_path = _make_temp_dir()
+    try:
+        html_path = tmp_path / "doc.html"
+        html_path.write_text(
+            "<html><body><p>TABLE I PARAMETERS FOR TWO ANTENNAS</p></body></html>",
+            encoding="utf-8",
+        )
+
+        result = inline_images_from_html_file(html_path)
+        assert "TABLE I." in result.html
+        assert "Таблица I." not in result.html
+    finally:
+        shutil.rmtree(tmp_path, ignore_errors=True)
+
+
 def test_inline_images_adds_readability_and_repairs_common_text_artifacts() -> None:
     tmp_path = _make_temp_dir()
     try:
@@ -199,6 +236,37 @@ def test_polish_html_document_normalizes_table_caption_style_en_mode() -> None:
     assert "<p>TABLE II. Параметры сенсора.</p>" in polished
 
 
+def test_polish_html_document_normalizes_ru_figure_caption_lexemes() -> None:
+    html = (
+        "<html><body>"
+        "<p>рисуног 1 test caption</p>"
+        "<p>рисунк 2 another caption</p>"
+        "<p>РИСУНО 3 third caption</p>"
+        "</body></html>"
+    )
+    polished = polish_html_document(html, table_caption_language="ru")
+    assert "<p>Рисунок 1. Test caption.</p>" in polished
+    assert "<p>Рисунок 2. Another caption.</p>" in polished
+    assert "<p>Рисунок 3. Third caption.</p>" in polished
+
+
+def test_polish_html_document_ru_mode_can_disable_citation_linkify() -> None:
+    html = (
+        "<html><body>"
+        "<p>See [1] and Fig. 2 for details.</p>"
+        "<h4>References</h4>"
+        "<ul><li>Ref one.</li><li>Ref two.</li></ul>"
+        "</body></html>"
+    )
+    polished = polish_html_document(
+        html,
+        table_caption_language="ru",
+        enable_citation_linkify=False,
+    )
+    assert 'class="z2m-ref-link"' not in polished
+    assert 'class="z2m-fig-link"' not in polished
+
+
 def test_polish_html_document_repairs_sentence_split_by_figure_block() -> None:
     html = (
         "<html><body>"
@@ -216,6 +284,30 @@ def test_polish_html_document_repairs_sentence_split_by_figure_block() -> None:
     ) in polished
     assert polished.count("at the same time, it is also sent to a NI DAQ.") == 1
     assert "<figure><img src=\"f8.png\"/></figure>" in polished
+
+
+def test_polish_html_document_drops_page_footer_paragraphs() -> None:
+    html = (
+        "<html><body>"
+        "<p>Li et al. Bioelectronic Medicine (2026) 12:6 Page 3 of 33</p>"
+        "<p>Real article text continues here.</p>"
+        "</body></html>"
+    )
+    polished = polish_html_document(html, table_caption_language="en")
+    assert "Page 3 of 33" not in polished
+    assert "Real article text continues here." in polished
+
+
+def test_polish_html_document_splits_glued_roman_suffixes() -> None:
+    html = (
+        "<html><body>"
+        "<p>Foilii Laser ablationiv Plasma etchingv are listed.</p>"
+        "</body></html>"
+    )
+    polished = polish_html_document(html, table_caption_language="en")
+    assert "Foil ii" in polished
+    assert "ablation iv" in polished
+    assert "etching v" in polished
 
 
 def test_polish_html_document_repairs_sentence_split_by_image_paragraph() -> None:
@@ -253,7 +345,7 @@ def test_polish_html_document_repairs_sentence_split_by_caption_paragraph() -> N
         "highly detailed, realistic images."
     ) in polished
     assert polished.count("highly detailed, realistic images.") == 1
-    assert "<p>Fig. 1 | Overview of the GAI development pipeline.</p>" in polished
+    assert '<p id="fig-1">Fig. 1 | Overview of the GAI development pipeline.</p>' in polished
 
 
 def test_polish_html_document_repairs_sentence_split_across_affiliation_block() -> None:
@@ -838,6 +930,32 @@ def test_polish_html_document_does_not_treat_decimal_number_as_citation() -> Non
     assert "1.5 – 2.5 mm" in polished
     assert '<sup><a href="#ref-1" class="z2m-ref-link">1</a></sup>.5' not in polished
     assert '<sup><a href="#ref-2" class="z2m-ref-link">2</a></sup>.5' not in polished
+
+
+def test_polish_html_document_does_not_link_unit_number_as_citation() -> None:
+    html = (
+        "<html><body>"
+        "<p>The scanner was calibrated in (Unit 1) before the trial.</p>"
+        "<h4>References</h4>"
+        "<ul>" + "".join(f"<li>Ref {i}.</li>" for i in range(1, 50)) + "</ul>"
+        "</body></html>"
+    )
+    polished = polish_html_document(html)
+    assert "(Unit 1)" in polished
+    assert 'href="#ref-1"' not in polished
+
+
+def test_polish_html_document_does_not_break_volume_issue_pair() -> None:
+    html = (
+        "<html><body>"
+        "<p>Front. Neural Circuits 11:20. doi: 10.3389/fncir.2017.00020</p>"
+        "<h4>References</h4>"
+        "<ul>" + "".join(f"<li>Ref {i}.</li>" for i in range(1, 40)) + "</ul>"
+        "</body></html>"
+    )
+    polished = polish_html_document(html)
+    assert "Neural Circuits 11:20." in polished
+    assert "Neural Circuits :20." not in polished
 
 
 def test_polish_html_document_repairs_existing_false_decimal_sup_citation() -> None:

@@ -134,9 +134,21 @@ _FORMULA_PATTERNS: tuple[re.Pattern[str], ...] = (
 
 # Helpers for author-line detection.
 _H1_CLOSE_PATTERN = re.compile(r"</h[1-6]\s*>", re.IGNORECASE)
+_H_OPEN_PATTERN = re.compile(r"<h[1-6]\b[^>]*>", re.IGNORECASE)
 _FIRST_P_OPEN_PATTERN = re.compile(r"<p(\b[^>]*)>", re.IGNORECASE)
 _P_CLOSE_PATTERN = re.compile(r"</p\s*>", re.IGNORECASE)
 _ABSTRACT_MARKER_PATTERN = re.compile(r"\bAbstract\b", re.IGNORECASE)
+_HTML_TAG_PATTERN = re.compile(r"<[^>]+>")
+_AUTHOR_LINE_NEGATIVE_PATTERN = re.compile(
+    r"\b("
+    r"abstract|received|accepted|published|doi|keywords?|"
+    r"data availability|code availability|conflict of interest|competing interests?|"
+    r"funding|acknowledg(?:e)?ments?|supplementary|references|bibliography|"
+    r"cite this article|correspondence"
+    r")\b",
+    re.IGNORECASE,
+)
+_AUTHOR_WORD_PATTERN = re.compile(r"\b[A-Z][a-z]+(?:[-'][A-Za-z]+)?\b")
 
 @dataclass(frozen=True)
 class TranslateGemmaConfig:
@@ -410,12 +422,12 @@ _BATCH_ITEM_PATTERN = re.compile(
 
 # Formula placeholder tokens (ASCII sentinel) kept unchanged by the model.
 _FORMULA_TOKEN_PATTERN = re.compile(r"@@Z2M(?:\\?_)?F(\d+)@@", re.IGNORECASE)
-_UNRESOLVED_SENTINEL_PATTERN = re.compile(r"@@Z2M(?:\\?_)?[A-Z0-9_]+@@", re.IGNORECASE)
+_UNRESOLVED_SENTINEL_PATTERN = re.compile(r"@@Z2M(?:\\?_)?[A-Z0-9_]+@{0,2}", re.IGNORECASE)
 # Any internal protocol marker leaking into the final translated text means the
 # reconstructed batch output is not trustworthy and the segment should be
 # recovered locally through single-segment translation.
 _INTERNAL_MARKER_LEAK_PATTERN = re.compile(
-    r"<\s*z2m-[^>]*>|@@Z2M(?:\\?_)?[A-Z0-9_]+@@",
+    r"<\s*z2m-[^>]*>|@@Z2M(?:\\?_)?[A-Z0-9_]+@{0,2}",
     re.IGNORECASE,
 )
 
@@ -426,6 +438,10 @@ _WINDOW_BATCH_TARGET_SEGMENTS = 8
 _WINDOW_BATCH_OVERLAP_SEGMENTS = 1
 _MAX_WINDOW_BATCH_CHARS = 40_000
 _HEADING_MERGE_SEPARATOR = "@@Z2M_HSEP@@"
+_HEADING_MERGE_SEPARATOR_LEAK_PATTERN = re.compile(
+    r"@@Z2M(?:\\?_)?HSEP@{0,2}",
+    re.IGNORECASE,
+)
 _HEADING_PREFIX_TOKEN_PATTERN = re.compile(r"^\s*([A-Z]|[IVXLCM]{1,8})\.\s+", re.IGNORECASE)
 _HEADING_GLOSSARY_RU: dict[str, str] = {
     "MEASUREMENT": "ИЗМЕРЕНИЕ",
@@ -530,7 +546,30 @@ def _normalize_sentinel_escapes(text: str) -> str:
     """
     if "@@Z2M" not in text and "@@z2m" not in text:
         return text
-    return re.sub(r"@@([zZ]2[mM])\\+(?=[A-Za-z_])", r"@@\1", text)
+    normalized = re.sub(r"@@([zZ]2[mM])\\+(?=[A-Za-z_])", r"@@\1", text)
+    return normalized
+
+
+def _sentinel_token_variants(token: str) -> set[str]:
+    variants = {token}
+    if "_" in token:
+        variants.add(token.replace("_", r"\_"))
+    if token.endswith("@@"):
+        short = token[:-1]
+        variants.add(short)
+        if "_" in short:
+            variants.add(short.replace("_", r"\_"))
+    return {v for v in variants if v}
+
+
+def _strip_protocol_sentinels(text: str) -> str:
+    """Remove leaked internal protocol sentinels from final text fragments."""
+    if "@@Z2M" not in text and "@@z2m" not in text:
+        return text
+    cleaned = _HEADING_MERGE_SEPARATOR_LEAK_PATTERN.sub(" ", text)
+    cleaned = re.sub(r"@@Z2M(?:\\?_)?[ATF]\d+@{0,2}", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\s{2,}", " ", cleaned)
+    return cleaned
 
 
 def _restore_formula_mask(text: str, fmap: dict[str, str]) -> str:
@@ -545,7 +584,8 @@ def _restore_formula_mask(text: str, fmap: dict[str, str]) -> str:
 
     restored = _FORMULA_TOKEN_PATTERN.sub(_replace, text)
     for token, formula in fmap.items():
-        restored = restored.replace(token, formula)
+        for variant in _sentinel_token_variants(token):
+            restored = restored.replace(variant, formula)
     return restored
 
 
@@ -626,10 +666,9 @@ def _restore_abbrev_mask(text: str, amap: dict[str, str]) -> str:
         return amap.get(token, match.group(0))
 
     restored = _ABBREV_TOKEN_PATTERN.sub(_replace, text)
-
-    # Check that all tokens were consumed; orphaned tokens signal model interference.
-    for token in amap:
-        restored = restored.replace(token, amap[token])
+    for token, original in amap.items():
+        for variant in _sentinel_token_variants(token):
+            restored = restored.replace(variant, original)
     return restored
 
 
@@ -666,7 +705,8 @@ def _restore_tag_mask(text: str, tmap: dict[str, str]) -> str:
 
     restored = _TAG_TOKEN_PATTERN.sub(_replace, text)
     for token, original in tmap.items():
-        restored = restored.replace(token, original)
+        for variant in _sentinel_token_variants(token):
+            restored = restored.replace(variant, original)
     return restored
 
 
@@ -2347,37 +2387,100 @@ def _translate_plain_fragment(
     return text[:leading_len] + translated + text[core_end:]
 
 
+def _visible_text_fragment(html_fragment: str) -> str:
+    text = _HTML_TAG_PATTERN.sub(" ", html_fragment)
+    text = (
+        text.replace("&nbsp;", " ")
+        .replace("&#160;", " ")
+        .replace("\u00a0", " ")
+    )
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _looks_author_line_paragraph(text: str) -> bool:
+    if not text:
+        return False
+    normalized = " ".join(text.split())
+    if len(normalized) < 8:
+        return False
+    if ":" in normalized:
+        return False
+    if _ABSTRACT_MARKER_PATTERN.search(normalized):
+        return False
+    if _AUTHOR_LINE_NEGATIVE_PATTERN.search(normalized):
+        return False
+    if len(re.findall(r"\d", normalized)) > 2:
+        return False
+
+    comma_count = normalized.count(",")
+    name_like_count = len(_AUTHOR_WORD_PATTERN.findall(normalized))
+    has_author_connector = bool(
+        re.search(r"\b(?:and|&|et al\.?|member|fellow|professor)\b", normalized, re.IGNORECASE)
+    )
+    return (
+        (comma_count >= 2 and name_like_count >= 2)
+        or (has_author_connector and comma_count >= 1 and name_like_count >= 2)
+    )
+
+
 def _mark_author_line_notranslate(html: str) -> str:
-    """Add translate="no" to the author-line paragraph (first <p> after the title <h1>).
+    """Mark only real author-line paragraphs as ``translate=\"no\"``.
 
-    In scientific papers the paragraph immediately following the title heading
-    contains author names.  Marking it with translate="no" prevents the
-    translation step from mangling proper names.
-
-    The paragraph is skipped if it appears to be the Abstract rather than
-    an author line (i.e. it contains the word "Abstract").
+    This avoids over-marking metadata lines such as ``Received: ...``.
     """
     h1_end = _H1_CLOSE_PATTERN.search(html)
     if h1_end is None:
         return html
 
-    p_match = _FIRST_P_OPEN_PATTERN.search(html, h1_end.end())
-    if p_match is None:
-        return html
+    search_pos = h1_end.end()
+    first_h_after_h1 = _H_OPEN_PATTERN.search(html, search_pos)
+    stop_pos = first_h_after_h1.start() if first_h_after_h1 else len(html)
 
-    # Peek at the paragraph content to make sure this is not the Abstract.
-    p_close = _P_CLOSE_PATTERN.search(html, p_match.end())
-    if p_close is not None:
-        p_content = html[p_match.end():p_close.start()]
-        if _ABSTRACT_MARKER_PATTERN.search(p_content):
+    while True:
+        p_match = _FIRST_P_OPEN_PATTERN.search(html, search_pos)
+        if p_match is None or p_match.start() >= stop_pos:
             return html
 
-    attrs = p_match.group(1)
-    if "translate" not in attrs.lower():
-        new_tag = f"<p{attrs} translate=\"no\">"
-        return html[: p_match.start()] + new_tag + html[p_match.end():]
+        p_close = _P_CLOSE_PATTERN.search(html, p_match.end())
+        if p_close is None:
+            return html
 
-    return html
+        p_content = html[p_match.end():p_close.start()]
+        visible = _visible_text_fragment(p_content)
+        if _looks_author_line_paragraph(visible):
+            attrs = p_match.group(1) or ""
+            if "translate" in attrs.lower():
+                return html
+            new_tag = f"<p{attrs} translate=\"no\">"
+            return html[: p_match.start()] + new_tag + html[p_match.end():]
+
+        search_pos = p_close.end()
+
+
+def _mark_references_block_notranslate(html: str) -> str:
+    """Mark bibliography block (references heading + list) as non-translatable.
+
+    Post-reference narrative sections remain translatable.
+    """
+    heading_match = _REFERENCES_HEADING_PATTERN.search(html)
+    if heading_match is None:
+        return html
+
+    block_start = heading_match.start()
+    next_heading = _H_OPEN_PATTERN.search(html, heading_match.end())
+    block_end = next_heading.start() if next_heading else len(html)
+    if block_end <= block_start:
+        return html
+
+    block = html[block_start:block_end]
+    if "translate=\"no\"" in block.lower():
+        return html
+    wrapped = (
+        '<div class="z2m-references-block" translate="no">'
+        f"{block}"
+        "</div>"
+    )
+    return html[:block_start] + wrapped + html[block_end:]
 
 
 def _is_context_or_memory_error(exc: Exception) -> bool:
@@ -2756,14 +2859,10 @@ def translate_html_text_nodes(
 
     The References / Bibliography section is never translated.
     """
-    # The References / Bibliography section must never be translated вЂ“ author
-    # names, journal titles and DOIs should stay in the original language.
-    heading_match = _REFERENCES_HEADING_PATTERN.search(html)
-    if heading_match is not None:
-        references_tail = html[heading_match.start():]
-        html = html[: heading_match.start()]
-    else:
-        references_tail = ""
+    # Keep bibliography entries in source language, but leave post-reference
+    # narrative sections (Data availability, Conflict of interest, etc.)
+    # translatable.
+    html = _mark_references_block_notranslate(html)
 
     parts = _TAG_SPLIT_PATTERN.split(html)
 
@@ -2815,7 +2914,7 @@ def translate_html_text_nodes(
 
     total_segments = len(translatable_indices)
     if total_segments == 0:
-        return "".join(p for p in parts if p) + references_tail, 0
+        return "".join(p for p in parts if p), 0
     target_language_code = normalize_language_code(target_language_code)
     enable_heading_oov_guard = bool(enable_heading_oov_guard)
     heading_mt_max_chars = max(8, int(heading_mt_max_chars))
@@ -2870,7 +2969,7 @@ def translate_html_text_nodes(
         # Post-split: restore original heading text nodes if separator preserved.
         parts = _split_heading_text_nodes(parts, heading_merges)
         # Clean up any residual heading separators that weren't split (safety net).
-        parts = [p.replace(_HEADING_MERGE_SEPARATOR, " ") for p in parts]
+        parts = [_HEADING_MERGE_SEPARATOR_LEAK_PATTERN.sub(" ", p) for p in parts]
         # Deterministic heading glossary pass (quality guard for short all-caps headings).
         for part_idx, source_seg, heading_group in zip(
             translatable_indices,
@@ -3078,6 +3177,10 @@ def translate_html_text_nodes(
 
             parts[part_idx] = candidate
 
+        for part_idx in translatable_indices:
+            if _UNRESOLVED_SENTINEL_PATTERN.search(parts[part_idx]):
+                parts[part_idx] = _strip_protocol_sentinels(parts[part_idx])
+
         translated_segments = sum(
             1
             for part_idx, source_seg in zip(translatable_indices, source_texts)
@@ -3112,7 +3215,7 @@ def translate_html_text_nodes(
                 on_warning(f"heading_oov_unresolved={heading_oov_unresolved}")
             except Exception:
                 pass
-        return "".join(p for p in parts if p) + references_tail, translated_segments
+        return "".join(p for p in parts if p), translated_segments
 
     if on_batch_fallback is not None:
         try:
@@ -3232,7 +3335,7 @@ def translate_html_text_nodes(
     # In the fallback path, out[] has different indices than parts[] (empty strings
     # are skipped), so index-based split is not applicable. Instead, clean up any
     # residual heading separators by replacing them with a space.
-    out = [p.replace(_HEADING_MERGE_SEPARATOR, " ") for p in out]
+    out = [_HEADING_MERGE_SEPARATOR_LEAK_PATTERN.sub(" ", p) for p in out]
     if on_warning is not None:
         en_residual_segments = sum(
             1
@@ -3254,7 +3357,11 @@ def translate_html_text_nodes(
             on_warning(f"heading_oov_unresolved={heading_oov_unresolved}")
         except Exception:
             pass
-    return "".join(out) + references_tail, translated_segments
+    out = [
+        _strip_protocol_sentinels(seg) if _UNRESOLVED_SENTINEL_PATTERN.search(seg) else seg
+        for seg in out
+    ]
+    return "".join(out), translated_segments
 
 
 class TranslateGemmaTranslator:
@@ -3705,7 +3812,11 @@ class TranslateGemmaTranslator:
         source_html_raw = html_path.read_text(encoding="utf-8", errors="replace")
         # Polish the source (EN) HTML and overwrite the file so it gets the same
         # citation links, reference IDs, math conversion, and styles as the RU file.
-        polished_source = polish_html_document(source_html_raw, table_caption_language="en")
+        polished_source = polish_html_document(
+            source_html_raw,
+            table_caption_language="en",
+            enable_citation_linkify=True,
+        )
         html_path.write_text(polished_source, encoding="utf-8")
         self._log_line(
             f"[timer] translategemma.polish_source_html: {perf_counter() - read_started_at:.2f}s"
@@ -3855,7 +3966,11 @@ class TranslateGemmaTranslator:
         )
 
         polish_started_at = perf_counter()
-        polished = polish_html_document(translated_html, table_caption_language="ru")
+        polished = polish_html_document(
+            translated_html,
+            table_caption_language="ru",
+            enable_citation_linkify=False,
+        )
         self._log_line(f"[timer] translategemma.polish_html: {perf_counter() - polish_started_at:.2f}s")
 
         language_code = normalize_language_code(self._config.target_language_code)
