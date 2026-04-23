@@ -299,6 +299,35 @@ def test_translate_html_text_nodes_respects_translate_no_attribute() -> None:
     assert "NORMAL TRANSLATABLE TEXT." in translated
 
 
+def test_translate_html_text_nodes_translates_received_metadata() -> None:
+    """Received: date metadata must be translated, not skipped."""
+    html = (
+        "<html><body>"
+        "<h1>Article Title</h1>"
+        "<p block-type=\"Text\">Received: 10 October 2024</p>"
+        "<p block-type=\"Text\">Accepted: 5 December 2025</p>"
+        "</body></html>"
+    )
+
+    def fake_translate_ru(text: str) -> str:
+        if "Received:" in text:
+            return "Принято: 10 октября 2024"
+        elif "Accepted:" in text:
+            return "Принято: 5 декабря 2025"
+        return text
+
+    translated, _ = translate_html_text_nodes(
+        html,
+        translate_text=fake_translate_ru,
+        max_chunk_chars=512,
+    )
+
+    # Received must be translated
+    assert "Received:" not in translated
+    assert "Принято: 10 октября 2024" in translated
+    assert "Принято: 5 декабря 2025" in translated
+
+
 def test_translate_html_text_nodes_keeps_references_but_translates_post_reference_sections() -> None:
     html = (
         "<html><body>"

@@ -1260,6 +1260,14 @@ def test_link_figure_refs_handles_fig_transliteration() -> None:
     assert "z2m-fig-link" in linked
 
 
+def test_link_figure_refs_handles_figura_transliteration() -> None:
+    """'Фигура 5' (extended form of 'Figure') must get a link."""
+    html = "<p>Как показано на Фигура 5 в данной работе.</p>"
+    linked = _link_figure_refs(html, {"5"})
+    assert 'href="#fig-5"' in linked
+    assert "z2m-fig-link" in linked
+
+
 def test_add_figure_anchors_handles_fig_transliteration_in_caption() -> None:
     """A caption starting with 'Фиг. 3.' must get id='fig-3'."""
     html = "<p>Фиг. 3. Схема устройства.</p>"

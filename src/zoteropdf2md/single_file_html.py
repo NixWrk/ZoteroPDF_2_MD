@@ -70,8 +70,9 @@ _LEAKED_SQRT_M_CITATION_PATTERN = re.compile(
 _LEAKED_UNIT_EXPONENT_PATTERN = re.compile(
     r'(?P<core>[\s\S]*?)'
     r'(?P<unit>('
-    r'\\mathrm\{(?:m|mm|cm|nm|um|µm|Pa|kPa|MPa|GPa|Hz|kHz|MHz|GHz|V|mV|A|mA|W|mW)\}'
-    r'|m|mm|cm|nm|um|µm|Pa|kPa|MPa|GPa|Hz|kHz|MHz|GHz|V|mV|A|mA|W|mW'
+    r'\\mathrm\{(?:m|mm|cm|nm|um|µm|Па|кПа|МПа|ГПа|Гц|кГц|МГц|ГГц|В|мВ|А|мА|Вт|мВт)\}'
+    r'|м|мм|см|нм|ум|µm|Па|кПа|МПа|ГПа|Гц|кГц|МГц|ГГц|В|мВ|А|мА|Вт|мВт'
+    r'|m|mm|cm|nm|um|Pa|kPa|MPa|GPa|Hz|kHz|MHz|GHz|V|mV|A|mA|W|mW'
     r'))\s*\^\{(?P<cite>\d{1,3})\}\s*$',
     re.IGNORECASE,
 )
@@ -133,14 +134,14 @@ _SECTION_REF_PATTERN = re.compile(
 # Russian equivalents: Рис. (standard) or Фиг. (sometimes emitted by translators)
 _FIG_CAPTION_PARA_PATTERN = re.compile(
     r'(<p\b[^>]*)>([ \t\r\n]*(?:(?:<(?:span|strong|em|b|i|sup|sub)\b[^>]*>|</(?:span|strong|em|b|i|sup|sub)>)\s*)*'
-    r'(?:Fig(?:ure)?|Рис|рис|Фиг|фиг|FIG(?:URE)?)\.?\s*(\d+)\.)',
+    r'(?:Fig(?:ure)?|Рис(?:унок)?|рис(?:унок)?|Фиг(?:ура)?|фиг(?:ура)?|FIG(?:URE)?)\.?\s*(\d+)\.)',
     re.IGNORECASE,
 )
 # In-text figure references: "Fig. 3" / "рис. 3" / "фиг. 3" NOT followed by ". <text>"
 # (that would be a figure caption).  We distinguish "Fig. 3. Caption..." from "...Fig. 3."
 # (end of sentence) by requiring whitespace after the dot, i.e. ".\s" → caption lookahead.
 _FIG_REF_PATTERN = re.compile(
-    r'\b((?:Fig(?:ure)?|Рис|рис|Фиг|фиг|FIG(?:URE)?)\.?)\s*(\d+)([a-z])?\b(?!\s*(?:\.\s|\|))',
+    r'\b((?:Fig(?:ure)?|Рис(?:унок)?|рис(?:унок)?|Фиг(?:ура)?|фиг(?:ура)?|FIG(?:URE)?)\.?)\s*(\d+)([a-z])?\b(?!\s*(?:\.\s|\|))',
     re.IGNORECASE,
 )
 _FIG_REF_CHAIN_CONT_PATTERN = re.compile(
@@ -246,7 +247,7 @@ _FALSE_DECIMAL_SUP_CITATION_PATTERN = re.compile(
     re.IGNORECASE,
 )
 _FALSE_FIGURE_LABEL_SUP_PATTERN = re.compile(
-    r'(?P<prefix>\b(?:Fig(?:ure)?|Рис|рис|Фиг|фиг|FIG(?:URE)?)\.?\s*)'
+    r'(?P<prefix>\b(?:Fig(?:ure)?|Рис(?:унок)?|рис(?:унок)?|Фиг(?:ура)?|фиг(?:ура)?|FIG(?:URE)?)\.?\s*)'
     r'<sup>\s*(?:<a\b[^>]*\bz2m-ref-link\b[^>]*>)?(?P<num>\d{1,3})(?:</a>)?\s*</sup>'
     r'(?=\s*\.)',
     re.IGNORECASE,
@@ -2544,18 +2545,32 @@ def polish_html_document(
 
 
 def _restore_abbreviations(html: str) -> str:
-    """Restore Latin abbreviations that were masked during translation."""
-    restored = html
+    """Restore Latin abbreviations in text nodes without touching HTML tags.
 
-    # Restore specific abbreviations using our mapping
-    for pattern, replacement in RU_ABBREV_TO_LATIN.items():
-        # Use word boundaries to match complete words only
-        def replace_match(match):
-            return replacement
+    This function intentionally skips tags/attributes so it cannot mutate
+    `data:image/...;base64,...` payloads in `<img src="...">`.
+    """
+    parts = _TAG_SPLIT_PATTERN.split(html)
+    out: list[str] = []
 
-        restored = re.sub(pattern, replace_match, restored, flags=re.IGNORECASE)
+    for part in parts:
+        if not part:
+            continue
+        if part.startswith("<"):
+            out.append(part)
+            continue
 
-    return restored
+        restored_part = part
+        for pattern, replacement in RU_ABBREV_TO_LATIN.items():
+            restored_part = re.sub(
+                pattern,
+                lambda _: replacement,
+                restored_part,
+                flags=re.IGNORECASE,
+            )
+        out.append(restored_part)
+
+    return "".join(out)
 
 
 def inline_images_from_html_file(html_path: Path) -> InlineHtmlResult:
